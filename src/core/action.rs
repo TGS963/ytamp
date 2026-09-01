@@ -28,7 +28,11 @@ pub enum Action {
     RepeatCycled,
     NoticeDismissed(usize),
 
+    // From the shell at startup.
+    StoredCookiesFound(String),
+
     // From the effect runtime.
+    NoticePosted(String),
     AuthVerified(Result<(), String>),
     SearchLoaded(Result<SearchResults, String>),
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),

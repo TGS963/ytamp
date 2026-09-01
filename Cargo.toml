@@ -8,12 +8,15 @@ description = "YouTube Music, native and fast. A client with no browser engine."
 repository = "https://github.com/suvojit-0x55aa/ytamp"
 
 [dependencies]
+directories = "6.0.0"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "persistence"] }
 egui = "0.36"
 env_logger = "0.11.11"
 fastrand = "2.5.0"
 log = "0.4.34"
 serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+ytmapi-rs = "0.3.3"
 
 [profile.release]
 lto = "thin"

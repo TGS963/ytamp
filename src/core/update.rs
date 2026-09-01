@@ -75,6 +75,14 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             }
             vec![]
         }
+        Action::StoredCookiesFound(cookies) => {
+            state.auth = AuthState::Verifying;
+            vec![Effect::Api(ApiRequest::VerifyAuth { cookies })]
+        }
+        Action::NoticePosted(message) => {
+            state.notices.push(message);
+            vec![]
+        }
         Action::Player(event) => apply_player_event(state, event),
     }
 }

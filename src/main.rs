@@ -1,4 +1,6 @@
+mod api;
 mod app;
+mod auth;
 mod core;
 mod runtime;
 mod theme;
@@ -6,10 +8,10 @@ mod ui;
 
 use std::sync::mpsc;
 
+use crate::core::action::Action;
+
 fn main() -> eframe::Result {
     env_logger::init();
-    let (action_sender, action_receiver) = mpsc::channel();
-    let effect_runtime = runtime::EffectRuntime::new(action_sender);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
@@ -20,6 +22,16 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "ytamp",
         options,
-        Box::new(move |_cc| Ok(Box::new(app::App::new(effect_runtime, action_receiver)))),
+        Box::new(|creation| {
+            let (action_sender, action_receiver) = mpsc::channel();
+            let egui_ctx = creation.egui_ctx.clone();
+            let effect_runtime =
+                runtime::EffectRuntime::new(action_sender, move || egui_ctx.request_repaint());
+            let mut app = app::App::new(effect_runtime, action_receiver);
+            if let Some(cookies) = auth::load_cookies() {
+                app.queue_action(Action::StoredCookiesFound(cookies));
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
