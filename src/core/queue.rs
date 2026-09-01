@@ -162,6 +162,21 @@ impl Queue {
         self.user_queue.iter().chain(context_rest)
     }
 
+    /// The track that would play after the current one, without
+    /// changing state. Mirrors `on_track_end` and `next`, so a caller
+    /// can prefetch it. In repeat-one mode, the next track is the
+    /// current track.
+    pub fn peek_next(&self) -> Option<Track> {
+        if self.repeat == RepeatMode::One {
+            return self.current().cloned();
+        }
+        if let Some(track) = self.user_queue.front() {
+            return Some(track.clone());
+        }
+        let cursor = self.advanced_cursor()?;
+        Some(self.context[self.order[cursor]].clone())
+    }
+
     fn advanced_cursor(&self) -> Option<usize> {
         let next = self.cursor? + 1;
         if next < self.order.len() {
@@ -334,5 +349,36 @@ mod tests {
         let mut queue = Queue::default();
         queue.play_context(tracks(&["a"]), 0, &mut no_random);
         assert_eq!(queue.on_track_end(), None);
+    }
+
+    #[test]
+    fn peek_next_reads_the_context_without_advancing() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        assert_eq!(queue.peek_next().unwrap().id.0, "b");
+        assert_eq!(current_id(&queue), "a");
+    }
+
+    #[test]
+    fn peek_next_prefers_the_user_queue() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.queue_track(track("q"));
+        assert_eq!(queue.peek_next().unwrap().id.0, "q");
+    }
+
+    #[test]
+    fn peek_next_in_repeat_one_is_the_current_track() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.repeat = RepeatMode::One;
+        assert_eq!(queue.peek_next().unwrap().id.0, "a");
+    }
+
+    #[test]
+    fn peek_next_is_none_at_the_context_end_in_repeat_off() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a"]), 0, &mut no_random);
+        assert_eq!(queue.peek_next(), None);
     }
 }

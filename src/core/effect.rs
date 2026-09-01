@@ -61,6 +61,10 @@ pub enum ApiRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerCommand {
     Load(Track),
+    /// Downloads `Track` in the background, so a later Load can play it
+    /// at once. The engine runs this at a lower priority than an
+    /// active download and skips it when the track is already cached.
+    Prefetch(Track),
     Pause,
     Resume,
     Seek(Duration),

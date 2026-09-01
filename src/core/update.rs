@@ -68,7 +68,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::ContextPlayed { tracks, start } => play_context(state, tracks, start, random_below),
         Action::TrackQueued(track) => {
             state.playback.queue.queue_track(track);
-            vec![]
+            prefetch_next(state)
         }
         Action::PlayToggled => toggle_play(state),
         Action::NextPressed => load_or_stop(state, |state| state.playback.queue.next()),
@@ -81,11 +81,11 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::ShuffleToggled => {
             let on = !state.playback.queue.shuffle;
             state.playback.queue.set_shuffle(on, random_below);
-            vec![]
+            prefetch_next(state)
         }
         Action::RepeatCycled => {
             state.playback.queue.repeat = state.playback.queue.repeat.cycled();
-            vec![]
+            prefetch_next(state)
         }
         Action::QueuePanelToggled => {
             state.queue_open = !state.queue_open;
@@ -306,11 +306,12 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
         PlayerEvent::TrackStarted { duration } => {
             state.playback.status = PlayStatus::Playing;
             state.playback.track_duration = duration;
-            let Some(position) = state.playback.resume_position.take() else {
-                return vec![];
-            };
-            state.playback.position = position;
-            vec![Effect::Player(PlayerCommand::Seek(position))]
+            let mut effects = prefetch_next(state);
+            if let Some(position) = state.playback.resume_position.take() {
+                state.playback.position = position;
+                effects.push(Effect::Player(PlayerCommand::Seek(position)));
+            }
+            effects
         }
         PlayerEvent::PositionChanged(position) => {
             state.playback.position = position;
@@ -344,6 +345,15 @@ fn load_track(state: &mut State, track: Option<Track>) -> Vec<Effect> {
     state.playback.position = Duration::ZERO;
     state.playback.track_duration = track.duration;
     vec![Effect::Player(PlayerCommand::Load(track))]
+}
+
+/// The effect that warms the cache for the track after the current
+/// one, or no effect when the queue has nothing more to play.
+fn prefetch_next(state: &State) -> Vec<Effect> {
+    match state.playback.queue.peek_next() {
+        Some(track) => vec![Effect::Player(PlayerCommand::Prefetch(track))],
+        None => vec![],
+    }
 }
 
 fn set_loadable<T>(slot: &mut Loadable<T>, result: Result<T, String>) {
@@ -580,5 +590,95 @@ mod tests {
         let mut state = State::default();
         apply(&mut state, Action::VolumeSet(1.7));
         assert_eq!(state.playback.volume, 1.0);
+    }
+
+    #[test]
+    fn a_track_start_prefetches_the_next_track() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b")],
+                start: 0,
+            },
+        );
+        let effects = apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Prefetch(track("b")))]
+        );
+    }
+
+    #[test]
+    fn queuing_a_track_prefetches_it_ahead_of_the_context() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::TrackQueued(track("q")));
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Prefetch(track("q")))]
+        );
+    }
+
+    #[test]
+    fn toggling_shuffle_prefetches_the_new_next_track() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b"), track("c")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::ShuffleToggled);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            effects[0],
+            Effect::Player(PlayerCommand::Prefetch(_))
+        ));
+    }
+
+    #[test]
+    fn cycling_repeat_to_one_prefetches_the_current_track() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b")],
+                start: 0,
+            },
+        );
+        apply(&mut state, Action::RepeatCycled); // Off -> All
+        let effects = apply(&mut state, Action::RepeatCycled); // All -> One
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Prefetch(track("a")))]
+        );
+    }
+
+    #[test]
+    fn a_track_start_at_the_queue_end_prefetches_nothing() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        let effects = apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        assert_eq!(effects, vec![]);
     }
 }

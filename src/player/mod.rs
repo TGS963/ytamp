@@ -5,6 +5,11 @@
 //! stale download can never interrupt the track the user chose later.
 //! The engine polls its own state a few times per second to report
 //! the position and the end of a track.
+//!
+//! A small cache holds fully downloaded bytes for up to two tracks.
+//! A Prefetch command warms it for the track that plays next, at
+//! lower priority than the active download. A later Load for the
+//! same track then skips the download and plays at once.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -15,6 +20,7 @@ use rodio::source::Source;
 
 use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
+use crate::core::model::Track;
 use crate::stream::ResolverChain;
 
 const TICK: Duration = Duration::from_millis(250);
@@ -33,6 +39,12 @@ enum PlayerMsg {
     Command(PlayerCommand),
     Loaded {
         generation: u64,
+        video_id: String,
+        result: Result<Vec<u8>, String>,
+    },
+    Prefetched {
+        generation: u64,
+        video_id: String,
         result: Result<Vec<u8>, String>,
     },
 }
@@ -54,6 +66,43 @@ pub fn spawn(
     PlayerHandle { sender }
 }
 
+/// Fully downloaded track bytes, keyed by video id. Holds at most
+/// `CAPACITY` entries and drops the least recently used one first.
+struct PrefetchCache {
+    /// Most recently used entry first.
+    entries: Vec<(String, Vec<u8>)>,
+}
+
+impl PrefetchCache {
+    const CAPACITY: usize = 2;
+
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn contains(&self, video_id: &str) -> bool {
+        self.entries.iter().any(|(id, _)| id == video_id)
+    }
+
+    /// The cached bytes for `video_id`, if present. Marks the entry as
+    /// most recently used.
+    fn get(&mut self, video_id: &str) -> Option<Vec<u8>> {
+        let index = self.entries.iter().position(|(id, _)| id == video_id)?;
+        let entry = self.entries.remove(index);
+        let bytes = entry.1.clone();
+        self.entries.insert(0, entry);
+        Some(bytes)
+    }
+
+    /// Stores `bytes` under `video_id` as the most recently used entry.
+    /// Evicts the least recently used entry when the cache is full.
+    fn insert(&mut self, video_id: String, bytes: Vec<u8>) {
+        self.entries.retain(|(id, _)| id != &video_id);
+        self.entries.insert(0, (video_id, bytes));
+        self.entries.truncate(Self::CAPACITY);
+    }
+}
+
 struct Engine {
     deliver: Box<dyn Fn(Action)>,
     tokio: tokio::runtime::Handle,
@@ -64,6 +113,19 @@ struct Engine {
     generation: u64,
     volume: f32,
     track_loaded: bool,
+    /// True between the start of an active download and its result.
+    /// A prefetch waits for this to clear before it starts, so it
+    /// never competes with the active download for bandwidth.
+    active_loading: bool,
+    prefetch_cache: PrefetchCache,
+    /// Discards a prefetch result superseded by a newer prefetch
+    /// request, the same way `generation` discards a stale active
+    /// download.
+    prefetch_generation: u64,
+    prefetch_inflight_id: Option<String>,
+    /// A prefetch request that arrived while the active download was
+    /// still in flight. Starts once that download finishes.
+    pending_prefetch: Option<Track>,
 }
 
 struct AudioOutput {
@@ -89,6 +151,11 @@ impl Engine {
             generation: 0,
             volume: 1.0,
             track_loaded: false,
+            active_loading: false,
+            prefetch_cache: PrefetchCache::new(),
+            prefetch_generation: 0,
+            prefetch_inflight_id: None,
+            pending_prefetch: None,
         }
     }
 
@@ -96,7 +163,16 @@ impl Engine {
         loop {
             match receiver.recv_timeout(TICK) {
                 Ok(PlayerMsg::Command(command)) => self.apply_command(command),
-                Ok(PlayerMsg::Loaded { generation, result }) => self.apply_load(generation, result),
+                Ok(PlayerMsg::Loaded {
+                    generation,
+                    video_id,
+                    result,
+                }) => self.apply_load(generation, video_id, result),
+                Ok(PlayerMsg::Prefetched {
+                    generation,
+                    video_id,
+                    result,
+                }) => self.apply_prefetched(generation, video_id, result),
                 Err(RecvTimeoutError::Timeout) => self.tick(),
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -105,7 +181,8 @@ impl Engine {
 
     fn apply_command(&mut self, command: PlayerCommand) {
         match command {
-            PlayerCommand::Load(track) => self.start_download(track.id.0),
+            PlayerCommand::Load(track) => self.load(track),
+            PlayerCommand::Prefetch(track) => self.prefetch(track),
             PlayerCommand::Pause => self.with_player(|player| player.pause()),
             PlayerCommand::Resume => self.with_player(|player| player.play()),
             PlayerCommand::Seek(position) => self.seek(position),
@@ -114,31 +191,68 @@ impl Engine {
         }
     }
 
+    /// Loads `track` for active playback. Cached bytes from an earlier
+    /// prefetch play at once; otherwise the track downloads now.
+    fn load(&mut self, track: Track) {
+        match self.prefetch_cache.get(&track.id.0) {
+            Some(bytes) => {
+                self.stop();
+                self.finish_load(track.id.0, Ok(bytes));
+            }
+            None => self.start_download(track.id.0),
+        }
+    }
+
     /// Downloads happen off this thread. The generation number makes
     /// every download older than the newest Load a no-op on arrival.
     fn start_download(&mut self, video_id: String) {
         self.stop();
+        self.active_loading = true;
         let generation = self.generation;
         let resolvers = self.resolvers.clone();
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
             let result = resolvers.fetch_audio(&http, &video_id).await;
-            let _ = results.send(PlayerMsg::Loaded { generation, result });
+            let _ = results.send(PlayerMsg::Loaded {
+                generation,
+                video_id,
+                result,
+            });
         });
     }
 
-    fn apply_load(&mut self, generation: u64, result: Result<Vec<u8>, String>) {
+    fn apply_load(&mut self, generation: u64, video_id: String, result: Result<Vec<u8>, String>) {
         if generation != self.generation {
             return;
         }
-        match result.and_then(|bytes| self.play_bytes(bytes)) {
+        self.finish_load(video_id, result);
+    }
+
+    /// Applies a decoded result for `video_id`: plays it on success, or
+    /// reports the failure. A success also enters the cache, so a
+    /// repeat-one replay of the same track skips its own download.
+    /// Either way, a prefetch that waited for this download now starts.
+    fn finish_load(&mut self, video_id: String, result: Result<Vec<u8>, String>) {
+        self.active_loading = false;
+        match result.and_then(|bytes| self.play_and_cache(video_id, bytes)) {
             Ok(duration) => {
                 self.track_loaded = true;
                 (self.deliver)(Action::Player(PlayerEvent::TrackStarted { duration }));
             }
             Err(message) => (self.deliver)(Action::Player(PlayerEvent::Failed(message))),
         }
+        self.start_pending_prefetch();
+    }
+
+    fn play_and_cache(
+        &mut self,
+        video_id: String,
+        bytes: Vec<u8>,
+    ) -> Result<Option<Duration>, String> {
+        let duration = self.play_bytes(bytes.clone())?;
+        self.prefetch_cache.insert(video_id, bytes);
+        Ok(duration)
     }
 
     fn play_bytes(&mut self, bytes: Vec<u8>) -> Result<Option<Duration>, String> {
@@ -152,6 +266,65 @@ impl Engine {
         output.player.append(source);
         output.player.play();
         Ok(duration)
+    }
+
+    /// Warms the cache for `track` in the background. A no-op when the
+    /// track is already cached or an identical prefetch is already in
+    /// flight. Waits for the active download to finish first, so the
+    /// active track never competes for bandwidth.
+    fn prefetch(&mut self, track: Track) {
+        let video_id = track.id.0.clone();
+        if self.prefetch_cache.contains(&video_id) {
+            return;
+        }
+        if self.prefetch_inflight_id.as_deref() == Some(video_id.as_str()) {
+            return;
+        }
+        if self.active_loading {
+            self.pending_prefetch = Some(track);
+            return;
+        }
+        self.start_prefetch(video_id);
+    }
+
+    fn start_prefetch(&mut self, video_id: String) {
+        self.prefetch_generation += 1;
+        let generation = self.prefetch_generation;
+        self.prefetch_inflight_id = Some(video_id.clone());
+        let resolvers = self.resolvers.clone();
+        let http = self.http.clone();
+        let results = self.self_sender.clone();
+        self.tokio.spawn(async move {
+            let result = resolvers.fetch_audio(&http, &video_id).await;
+            let _ = results.send(PlayerMsg::Prefetched {
+                generation,
+                video_id,
+                result,
+            });
+        });
+    }
+
+    fn start_pending_prefetch(&mut self) {
+        if let Some(track) = self.pending_prefetch.take() {
+            self.prefetch(track);
+        }
+    }
+
+    /// Applies a finished background prefetch. A stale result,
+    /// superseded by a newer prefetch, is discarded. A failure stays
+    /// silent: the track downloads normally when it plays later.
+    fn apply_prefetched(&mut self, generation: u64, video_id: String, result: Result<Vec<u8>, String>) {
+        if generation != self.prefetch_generation {
+            return;
+        }
+        self.prefetch_inflight_id = None;
+        match result {
+            Ok(bytes) => {
+                log::debug!("prefetch ready for {video_id}");
+                self.prefetch_cache.insert(video_id, bytes);
+            }
+            Err(error) => log::debug!("prefetch failed for {video_id}: {error}"),
+        }
     }
 
     fn output(&mut self) -> Result<&AudioOutput, String> {
@@ -189,6 +362,7 @@ impl Engine {
     fn stop(&mut self) {
         self.generation += 1;
         self.track_loaded = false;
+        self.active_loading = false;
         self.with_player(|player| player.stop());
     }
 
