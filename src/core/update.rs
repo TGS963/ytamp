@@ -23,6 +23,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.sign_in.draft = draft;
             vec![]
         }
+        Action::AuthUserDraftChanged(draft) => {
+            state.sign_in.authuser_draft = draft;
+            vec![]
+        }
         Action::CookiesSubmitted => submit_cookies(state),
         Action::AuthVerified(result) => finish_sign_in(state, result),
         Action::SearchInputChanged(input) => {
@@ -79,9 +83,9 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             }
             vec![]
         }
-        Action::StoredCookiesFound(cookies) => {
+        Action::StoredCredentialsFound(credentials) => {
             state.auth = AuthState::Verifying;
-            vec![Effect::Api(ApiRequest::VerifyAuth { cookies })]
+            vec![Effect::Api(ApiRequest::VerifyAuth(credentials))]
         }
         Action::SessionRestored(session) => restore_session(state, session),
         Action::NoticePosted(message) => {
@@ -120,11 +124,49 @@ fn submit_cookies(state: &mut State) -> Vec<Effect> {
     if cookies.is_empty() {
         return vec![];
     }
+    let missing = missing_session_cookies(&cookies);
+    if !missing.is_empty() {
+        state.auth = AuthState::Failed(format!(
+            "The paste misses the {} cookies. Copy the full Cookie header \
+             from a signed-in request to music.youtube.com.",
+            missing.join(", ")
+        ));
+        return vec![];
+    }
+    let authuser = normalized_authuser(&state.sign_in.authuser_draft);
+    let credentials = crate::core::effect::Credentials { cookies, authuser };
     state.auth = AuthState::Verifying;
     vec![
-        Effect::SaveCookies(cookies.clone()),
-        Effect::Api(ApiRequest::VerifyAuth { cookies }),
+        Effect::SaveCredentials(credentials.clone()),
+        Effect::Api(ApiRequest::VerifyAuth(credentials)),
     ]
+}
+
+/// The session cookies a signed-in request always carries. Without
+/// them YouTube answers every browse request as signed out, while the
+/// SAPISID hash still passes, so the failure would surface late and
+/// look like an empty library.
+fn missing_session_cookies(cookies: &str) -> Vec<&'static str> {
+    ["SID", "SAPISID", "__Secure-3PAPISID", "__Secure-3PSID"]
+        .into_iter()
+        .filter(|name| !has_cookie(cookies, name))
+        .collect()
+}
+
+fn has_cookie(cookies: &str, name: &str) -> bool {
+    cookies
+        .split(';')
+        .any(|pair| pair.trim().split('=').next() == Some(name))
+}
+
+/// The account index for the X-Goog-AuthUser header: "0" when the
+/// field stays empty.
+fn normalized_authuser(draft: &str) -> String {
+    let trimmed = draft.trim();
+    if trimmed.is_empty() {
+        return "0".to_string();
+    }
+    trimmed.to_string()
 }
 
 fn finish_sign_in(state: &mut State, result: Result<(), String>) -> Vec<Effect> {
@@ -309,19 +351,42 @@ mod tests {
 
     #[test]
     fn cookie_submission_saves_and_verifies() {
+        const FULL: &str = "SID=a; SAPISID=b; __Secure-3PAPISID=c; __Secure-3PSID=d";
         let mut state = State::default();
-        state.sign_in.draft = "  c=1  ".into();
+        state.sign_in.draft = format!("  {FULL}  ");
+        state.sign_in.authuser_draft = " 2 ".into();
         let effects = apply(&mut state, Action::CookiesSubmitted);
+        let credentials = crate::core::effect::Credentials {
+            cookies: FULL.into(),
+            authuser: "2".into(),
+        };
         assert_eq!(state.auth, AuthState::Verifying);
         assert_eq!(
             effects,
             vec![
-                Effect::SaveCookies("c=1".into()),
-                Effect::Api(ApiRequest::VerifyAuth {
-                    cookies: "c=1".into()
-                }),
+                Effect::SaveCredentials(credentials.clone()),
+                Effect::Api(ApiRequest::VerifyAuth(credentials)),
             ]
         );
+    }
+
+    #[test]
+    fn an_empty_authuser_field_means_account_zero() {
+        assert_eq!(normalized_authuser("  "), "0");
+        assert_eq!(normalized_authuser(" 1 "), "1");
+    }
+
+    #[test]
+    fn a_paste_without_session_cookies_fails_at_once() {
+        let mut state = State::default();
+        state.sign_in.draft = "SAPISID=b; YSC=x".into();
+        let effects = apply(&mut state, Action::CookiesSubmitted);
+        assert_eq!(effects, vec![]);
+        let AuthState::Failed(message) = &state.auth else {
+            panic!("expected a failure, got {:?}", state.auth);
+        };
+        assert!(message.contains("SID"));
+        assert!(message.contains("__Secure-3PSID"));
     }
 
     #[test]

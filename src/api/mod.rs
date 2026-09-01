@@ -5,10 +5,11 @@
 
 mod convert;
 
-use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{PlaylistID, YoutubeID};
+use ytmapi_rs::{YtMusic, YtMusicBuilder};
 
+use crate::core::effect::Credentials;
 use crate::core::model::{Playlist, PlaylistId, SearchResults, Track};
 
 #[derive(Clone)]
@@ -17,10 +18,16 @@ pub struct Api {
 }
 
 impl Api {
-    /// Builds a client from the pasted cookies and proves it works with
-    /// one authenticated request.
-    pub async fn sign_in(cookies: &str) -> Result<Api, String> {
-        let yt = YtMusic::from_cookie(cookies)
+    /// Builds a client from the pasted credentials and proves it works
+    /// with one authenticated request. Every request carries the
+    /// X-Goog-AuthUser header: without it, a browser session with
+    /// several Google accounts answers for account 0, and the library
+    /// comes back from the wrong account.
+    pub async fn sign_in(credentials: &Credentials) -> Result<Api, String> {
+        let client = authuser_client(&credentials.authuser)?;
+        let yt = YtMusicBuilder::new_with_client(client)
+            .with_browser_token_cookie(credentials.cookies.clone())
+            .build()
             .await
             .map_err(|error| format!("The cookies did not work: {}", error_chain(&error)))?;
         let api = Api { yt };
@@ -30,11 +37,22 @@ impl Api {
         Ok(api)
     }
 
+    /// Three filtered queries, the way youtui searches. Basic search
+    /// adds a top-result card whose parse breaks often; the filtered
+    /// endpoints skip it. Songs are the core result: a song failure
+    /// fails the search, a failure of the other two degrades to an
+    /// empty section and a log line.
     pub async fn search(&self, query: &str) -> Result<SearchResults, String> {
-        let query: ytmapi_rs::query::SearchQuery<'_, ytmapi_rs::query::search::BasicSearch> =
-            query.into();
-        let results = self.yt.query(query).await.map_err(readable)?;
-        Ok(convert::search_results(results))
+        let (songs, albums, artists) = tokio::join!(
+            self.yt.search_songs(query),
+            self.yt.search_albums(query),
+            self.yt.search_artists(query),
+        );
+        Ok(convert::search_results(
+            songs.map_err(readable)?,
+            section_or_empty("albums", albums),
+            section_or_empty("artists", artists),
+        ))
     }
 
     pub async fn library_playlists(&self) -> Result<Vec<Playlist>, String> {
@@ -72,6 +90,29 @@ impl Api {
     }
 }
 
+/// An HTTP client that sends the X-Goog-AuthUser account index with
+/// every request, the header ytmusicapi requires for browser auth.
+fn authuser_client(authuser: &str) -> Result<ytmapi_rs::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    let value = reqwest::header::HeaderValue::from_str(authuser)
+        .map_err(|_| format!("'{authuser}' does not work as an account index"))?;
+    headers.insert("X-Goog-AuthUser", value);
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|error| format!("The HTTP client failed to build: {error}"))?;
+    Ok(ytmapi_rs::Client::new_from_reqwest_client(client))
+}
+
+/// A failed side section of a search becomes an empty list, so a
+/// brittle album or artist parse never blocks the songs.
+fn section_or_empty<T>(name: &str, result: Result<Vec<T>, ytmapi_rs::Error>) -> Vec<T> {
+    result.unwrap_or_else(|error| {
+        log::warn!("search {name} section failed: {}", error_chain(&error));
+        vec![]
+    })
+}
+
 /// ytmusicapi's rule: the browse endpoint takes "VL" + the playlist id,
 /// unless the id already carries the prefix.
 fn playlist_browse_id(playlist_id: &str) -> String {
@@ -79,18 +120,6 @@ fn playlist_browse_id(playlist_id: &str) -> String {
         return playlist_id.to_string();
     }
     format!("VL{playlist_id}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::playlist_browse_id;
-
-    #[test]
-    fn browse_ids_get_the_vl_prefix_once() {
-        assert_eq!(playlist_browse_id("LM"), "VLLM");
-        assert_eq!(playlist_browse_id("PL123"), "VLPL123");
-        assert_eq!(playlist_browse_id("VLPL123"), "VLPL123");
-    }
 }
 
 fn readable(error: ytmapi_rs::Error) -> String {
@@ -126,4 +155,16 @@ fn error_chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     parts.join(" <- ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playlist_browse_id;
+
+    #[test]
+    fn browse_ids_get_the_vl_prefix_once() {
+        assert_eq!(playlist_browse_id("LM"), "VLLM");
+        assert_eq!(playlist_browse_id("PL123"), "VLPL123");
+        assert_eq!(playlist_browse_id("VLPL123"), "VLPL123");
+    }
 }

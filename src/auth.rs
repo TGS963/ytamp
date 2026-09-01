@@ -1,8 +1,9 @@
-//! Cookie storage: one file in the platform config directory.
+//! Credential storage: one JSON file in the platform config directory.
 //!
-//! The file holds the raw Cookie header the user pasted. It is secret
-//! material, so it gets owner-only permissions on Unix and its content
-//! never appears in a log.
+//! The file holds the Cookie header the user pasted and the
+//! X-Goog-AuthUser account index. It is secret material, so it gets
+//! owner-only permissions on Unix and its content never appears in a
+//! log. A legacy plain cookies.txt loads as account 0.
 
 use std::fs;
 use std::io;
@@ -10,28 +11,44 @@ use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
-pub fn load_cookies() -> Option<String> {
-    let text = fs::read_to_string(cookie_path()?).ok()?;
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+use crate::core::effect::Credentials;
+
+pub fn load_credentials() -> Option<Credentials> {
+    let dir = config_dir()?;
+    if let Ok(json) = fs::read_to_string(dir.join("auth.json"))
+        && let Ok(credentials) = serde_json::from_str::<Credentials>(&json)
+        && !credentials.cookies.trim().is_empty()
+    {
+        return Some(credentials);
+    }
+    load_legacy_cookies(&dir)
 }
 
-pub fn save_cookies(cookies: &str) -> io::Result<()> {
-    let Some(path) = cookie_path() else {
+fn load_legacy_cookies(dir: &std::path::Path) -> Option<Credentials> {
+    let text = fs::read_to_string(dir.join("cookies.txt")).ok()?;
+    let cookies = text.trim();
+    (!cookies.is_empty()).then(|| Credentials {
+        cookies: cookies.to_string(),
+        authuser: "0".to_string(),
+    })
+}
+
+pub fn save_credentials(credentials: &Credentials) -> io::Result<()> {
+    let Some(dir) = config_dir() else {
         return Err(io::Error::other("no config directory on this system"));
     };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    fs::create_dir_all(&dir)?;
+    let json = serde_json::to_string(credentials).map_err(io::Error::other)?;
+    let path = dir.join("auth.json");
     let temp = path.with_extension("tmp");
-    fs::write(&temp, cookies)?;
+    fs::write(&temp, json)?;
     restrict_to_owner(&temp)?;
     fs::rename(&temp, &path)
 }
 
-fn cookie_path() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     let dirs = ProjectDirs::from("", "", "ytamp")?;
-    Some(dirs.config_dir().join("cookies.txt"))
+    Some(dirs.config_dir().to_path_buf())
 }
 
 #[cfg(unix)]

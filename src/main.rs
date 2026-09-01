@@ -39,8 +39,8 @@ fn main() -> eframe::Result {
             });
             let mut app = app::App::new(effect_runtime, action_receiver, media_keys);
             app.restore_session(creation.storage);
-            if let Some(cookies) = auth::load_cookies() {
-                app.queue_action(Action::StoredCookiesFound(cookies));
+            if let Some(credentials) = auth::load_credentials() {
+                app.queue_action(Action::StoredCredentialsFound(credentials));
             }
             Ok(Box::new(app))
         }),

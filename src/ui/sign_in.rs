@@ -27,11 +27,15 @@ fn instructions(ui: &mut egui::Ui, theme: &dyn Theme) {
         "1. Open music.youtube.com in your browser and log in.",
         "2. Open the developer tools and select the Network tab.",
         "3. Select a request to music.youtube.com.",
-        "4. Copy the full value of the Cookie request header.",
-        "5. Paste it below.",
+        "4. Copy the full value of the Cookie request header and paste it below.",
+        "5. Copy the X-Goog-AuthUser request header into the account field.",
     ] {
         ui.label(theme.secondary_label(TextRole::Body, line));
     }
+    ui.label(theme.secondary_label(
+        TextRole::Caption,
+        "The account field picks the Google account when several are signed in. Empty means 0.",
+    ));
 }
 
 fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
@@ -43,6 +47,16 @@ fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     if ui.add(edit).changed() {
         out.push(Action::CookieDraftChanged(draft));
     }
+    ui.horizontal(|ui| {
+        ui.label("Account (X-Goog-AuthUser):");
+        let mut authuser = state.sign_in.authuser_draft.clone();
+        let field = egui::TextEdit::singleline(&mut authuser)
+            .hint_text("0")
+            .desired_width(40.0);
+        if ui.add(field).changed() {
+            out.push(Action::AuthUserDraftChanged(authuser));
+        }
+    });
 }
 
 fn status_line(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {

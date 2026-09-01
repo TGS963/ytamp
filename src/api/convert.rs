@@ -5,7 +5,6 @@ use std::time::Duration;
 use ytmapi_rs::common::{Thumbnail, YoutubeID};
 use ytmapi_rs::parse::{
     LibraryPlaylist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
-    SearchResults,
 };
 
 use crate::core::model::{
@@ -13,11 +12,15 @@ use crate::core::model::{
     Track, TrackId,
 };
 
-pub fn search_results(results: SearchResults) -> ModelSearchResults {
+pub fn search_results(
+    songs: Vec<SearchResultSong>,
+    albums: Vec<SearchResultAlbum>,
+    artists: Vec<SearchResultArtist>,
+) -> ModelSearchResults {
     ModelSearchResults {
-        songs: results.songs.into_iter().map(song_to_track).collect(),
-        albums: results.albums.into_iter().map(album_result).collect(),
-        artists: results.artists.into_iter().map(artist_result).collect(),
+        songs: songs.into_iter().map(song_to_track).collect(),
+        albums: albums.into_iter().map(album_result).collect(),
+        artists: artists.into_iter().map(artist_result).collect(),
         playlists: vec![],
     }
 }

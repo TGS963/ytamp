@@ -52,7 +52,7 @@ impl EffectRuntime {
     pub fn run(&self, effect: Effect) {
         match effect {
             Effect::Api(request) => self.run_api_request(request),
-            Effect::SaveCookies(cookies) => self.save_cookies(cookies),
+            Effect::SaveCredentials(credentials) => self.save_credentials(credentials),
             Effect::Player(command) => self.player.send(command),
         }
     }
@@ -65,10 +65,10 @@ impl EffectRuntime {
         });
     }
 
-    fn save_cookies(&self, cookies: String) {
+    fn save_credentials(&self, credentials: crate::core::effect::Credentials) {
         let deliver = self.delivery();
         self.tokio.spawn_blocking(move || {
-            if let Err(error) = auth::save_cookies(&cookies) {
+            if let Err(error) = auth::save_credentials(&credentials) {
                 deliver(Action::NoticePosted(format!(
                     "Saving the sign-in failed: {error}"
                 )));
@@ -94,8 +94,8 @@ fn delivery(
 }
 
 async fn execute_api_request(slot: &ApiSlot, request: ApiRequest) -> Action {
-    if let ApiRequest::VerifyAuth { cookies } = request {
-        return sign_in(slot, &cookies).await;
+    if let ApiRequest::VerifyAuth(credentials) = request {
+        return sign_in(slot, &credentials).await;
     }
     let signed_in = slot.read().expect("api lock").clone();
     match signed_in {
@@ -104,8 +104,8 @@ async fn execute_api_request(slot: &ApiSlot, request: ApiRequest) -> Action {
     }
 }
 
-async fn sign_in(slot: &ApiSlot, cookies: &str) -> Action {
-    match Api::sign_in(cookies).await {
+async fn sign_in(slot: &ApiSlot, credentials: &crate::core::effect::Credentials) -> Action {
+    match Api::sign_in(credentials).await {
         Ok(api) => {
             *slot.write().expect("api lock") = Some(api);
             Action::AuthVerified(Ok(()))
@@ -116,7 +116,7 @@ async fn sign_in(slot: &ApiSlot, cookies: &str) -> Action {
 
 async fn execute_signed_in(api: &Api, request: ApiRequest) -> Action {
     match request {
-        ApiRequest::VerifyAuth { .. } => unreachable!("handled before the sign-in check"),
+        ApiRequest::VerifyAuth(_) => unreachable!("handled before the sign-in check"),
         ApiRequest::Search { query } => Action::SearchLoaded(api.search(&query).await),
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(api.library_playlists().await),
         ApiRequest::FetchLiked => Action::LikedLoaded(api.liked_songs().await),
@@ -130,7 +130,7 @@ async fn execute_signed_in(api: &Api, request: ApiRequest) -> Action {
 /// The failure action that matches what a request loads.
 fn request_failure(request: ApiRequest, message: String) -> Action {
     match request {
-        ApiRequest::VerifyAuth { .. } => Action::AuthVerified(Err(message)),
+        ApiRequest::VerifyAuth(_) => Action::AuthVerified(Err(message)),
         ApiRequest::Search { .. } => Action::SearchLoaded(Err(message)),
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(Err(message)),
         ApiRequest::FetchLiked => Action::LikedLoaded(Err(message)),

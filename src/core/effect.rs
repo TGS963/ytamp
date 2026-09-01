@@ -5,18 +5,28 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use super::model::{PlaylistId, Track};
+
+/// What a YouTube Music session needs: the Cookie header, and the
+/// X-Goog-AuthUser index that picks the account inside the session.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Credentials {
+    pub cookies: String,
+    pub authuser: String,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Api(ApiRequest),
     Player(PlayerCommand),
-    SaveCookies(String),
+    SaveCredentials(Credentials),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApiRequest {
-    VerifyAuth { cookies: String },
+    VerifyAuth(Credentials),
     Search { query: String },
     FetchPlaylists,
     FetchLiked,

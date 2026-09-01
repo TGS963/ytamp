@@ -45,10 +45,14 @@ pub enum Page {
     Playlist(PlaylistId),
 }
 
-/// The cookie text the user is pasting on the sign-in page.
+/// What the user is entering on the sign-in page.
 #[derive(Clone, Debug, Default)]
 pub struct SignInState {
+    /// The Cookie header value.
     pub draft: String,
+    /// The X-Goog-AuthUser header value: which signed-in Google
+    /// account the session belongs to. Empty means account 0.
+    pub authuser_draft: String,
 }
 
 #[derive(Clone, Debug, Default)]

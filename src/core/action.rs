@@ -13,6 +13,7 @@ pub enum Action {
     // From the user.
     NavigatedTo(Page),
     CookieDraftChanged(String),
+    AuthUserDraftChanged(String),
     CookiesSubmitted,
     SearchInputChanged(String),
     SearchSubmitted,
@@ -30,7 +31,7 @@ pub enum Action {
     NoticeDismissed(usize),
 
     // From the shell at startup.
-    StoredCookiesFound(String),
+    StoredCredentialsFound(crate::core::effect::Credentials),
     SessionRestored(crate::core::session::SavedSession),
 
     // From the effect runtime.
