@@ -42,10 +42,14 @@ fn instructions(ui: &mut egui::Ui, theme: &dyn Theme) {
 fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     let mut draft = state.sign_in.draft.clone();
     let edit = egui::TextEdit::multiline(&mut draft)
-        .hint_text("Cookie header value")
-        .desired_rows(4)
+        .hint_text("Cookie header value, or the whole Copy-as-cURL text")
+        .desired_rows(6)
         .desired_width(f32::INFINITY);
-    if ui.add(edit).changed() {
+    let changed = egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .show(ui, |ui| ui.add(edit).changed())
+        .inner;
+    if changed {
         out.push(Action::CookieDraftChanged(draft));
     }
     ui.horizontal(|ui| {
