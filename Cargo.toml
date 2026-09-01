@@ -8,6 +8,7 @@ description = "YouTube Music, native and fast. A client with no browser engine."
 repository = "https://github.com/suvojit-0x55aa/ytamp"
 
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
 
 [profile.release]
 lto = "thin"

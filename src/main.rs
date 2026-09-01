@@ -1,3 +1,5 @@
+mod core;
+
 fn main() {
-    println!("Hello, world!");
+    println!("ytamp: the UI shell arrives in a later commit");
 }
