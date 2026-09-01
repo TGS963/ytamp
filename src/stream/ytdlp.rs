@@ -20,6 +20,11 @@ use super::{AudioSource, BoxFuture, BufferWriter};
 /// itag 140 is AAC 128kbps in M4A, the format the player decodes.
 const FORMAT_SELECTION: &str = "140/bestaudio[ext=m4a]";
 
+/// yt-dlp downloads the HLS and DASH manifests before it picks a
+/// format. Our format is a plain progressive stream, so the manifests
+/// only cost time: about 700 ms of the 2300 ms to the first byte.
+const EXTRACTOR_ARGS: &str = "youtube:skip=hls,dash,translated_subs";
+
 /// The chunk size for reading yt-dlp's stdout.
 const CHUNK_BYTES: usize = 64 * 1024;
 
@@ -67,7 +72,9 @@ impl AudioSource for YtDlpSource {
 /// never leaves the process running.
 fn spawn_yt_dlp(binary: &str, video_id: &str) -> Result<Child, String> {
     Command::new(binary)
-        .args(["--quiet", "--no-warnings", "--format", FORMAT_SELECTION])
+        .args(["--quiet", "--no-warnings", "--no-playlist"])
+        .args(["--format", FORMAT_SELECTION])
+        .args(["--extractor-args", EXTRACTOR_ARGS])
         .args(["--output", "-"])
         .arg(format!("https://music.youtube.com/watch?v={video_id}"))
         .stdout(Stdio::piped())
