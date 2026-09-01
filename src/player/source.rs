@@ -154,17 +154,25 @@ fn run_decoder(
 /// Applies a pending seek, decodes one sample, and sends it, in a
 /// loop. Ends on a `Stop` command, on the sample channel losing its
 /// receiver, or when the decoder itself runs out of samples.
-/// The decoder reports as seekable, so a seek works during the
-/// download. The byte length reaches the decoder when a source
-/// announced it or the download is complete; symphonia needs it for
-/// the duration and for accurate seeks.
+/// The decoder reports as seekable only once the byte length is
+/// known: a source announced it, or the download is complete.
+/// Symphonia needs the length for accurate seeks, and for some
+/// containers it also needs the length to probe the header at all.
+/// A seekable reader with no known length makes symphonia seek
+/// during initialization; that seek then fails against a buffer that
+/// cannot answer "how far from the end", and rodio treats a seek
+/// failure at that point as an internal error, not a normal decode
+/// failure. yt-dlp never announces a length while it fills the
+/// buffer, so this guard is what keeps every yt-dlp track from
+/// crashing the decoder thread on open.
 fn build_decoder(
     buffer: &AudioBuffer,
 ) -> Result<rodio::Decoder<crate::stream::BufferReader>, rodio::decoder::DecoderError> {
+    let known_len = buffer.known_len();
     let mut builder = rodio::Decoder::builder()
         .with_data(buffer.reader())
-        .with_seekable(true);
-    if let Some(len) = buffer.known_len() {
+        .with_seekable(known_len.is_some());
+    if let Some(len) = known_len {
         builder = builder.with_byte_len(len);
     }
     builder.build()

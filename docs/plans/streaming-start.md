@@ -1,5 +1,37 @@
 # Streaming start: play while the download runs
 
+## Status
+
+Phases A, B, and C are done, in commits `61a7080`, `e2ce499`,
+`509e7f1`, `1eb7d85`, and the phase C commit that adds this section.
+
+A track plays while its download still runs. `examples/stream_probe.rs`
+drives the real pipeline for one video id and proves it, with two
+runs against `dQw4w9WgXcQ`:
+
+- A fresh network download: first byte at 3034 ms, decoder `Ready`
+  at 3034 ms, buffer `Complete` at 3333 ms. The decoder opens on a
+  partial download and reports before the download ends.
+- A disk cache hit: first byte, `Ready`, and `Complete` all land at
+  or under 54 ms, with no network use.
+- A two-second sample pull, paced at real speed, found 176,400 real
+  samples and 0 silence samples in both runs. The decode keeps up
+  with playback once the network is not the bottleneck.
+
+The probe found one defect, now fixed. `build_decoder` in
+`src/player/source.rs` told rodio the stream was seekable before a
+byte length was known. Symphonia then tried to seek during its own
+setup, against a buffer that could not yet answer "how far from the
+end". Rodio treats a seek failure at that point as an internal
+error, not a normal decode failure, so it panicked. This hit every
+yt-dlp-sourced track, since yt-dlp never announces a byte length
+while it fills the buffer. The fix: report the stream as seekable
+only once a byte length is known. A seek during an in-progress
+yt-dlp download now returns a normal error from `try_seek`, instead
+of a panic on decoder startup. A seek on a source that does announce
+a length up front, or once a download completes, still works as
+designed.
+
 ## Goal
 
 A track starts to play as soon as its header and a few seconds of

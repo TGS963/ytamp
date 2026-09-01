@@ -15,7 +15,7 @@
 //! later Load for the same track then finds its buffer already in
 //! the cache and streams from it at once.
 
-mod source;
+pub mod source;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
