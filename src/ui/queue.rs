@@ -2,8 +2,11 @@
 
 use egui::Ui;
 
+use crate::core::model::Track;
 use crate::core::state::State;
 use crate::theme::{MetricRole, TextRole, Theme};
+
+use super::rows;
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) {
     egui::Panel::right("queue")
@@ -26,9 +29,15 @@ fn now_playing_entry(ui: &mut Ui, state: &State, theme: &dyn Theme) {
 }
 
 fn upcoming_entries(ui: &mut Ui, state: &State, theme: &dyn Theme) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for track in state.playback.queue.upcoming() {
-            ui.label(theme.secondary_label(TextRole::Body, &track.title));
-        }
-    });
+    let upcoming: Vec<&Track> = state.playback.queue.upcoming().collect();
+    let row_height = theme.metric(MetricRole::RowHeight);
+    egui::ScrollArea::vertical()
+        .id_salt("queue_upcoming")
+        .show_rows(ui, row_height, upcoming.len(), |ui, row_range| {
+            for index in row_range {
+                rows::row_frame(ui, theme, |ui| {
+                    ui.label(theme.secondary_label(TextRole::Body, &upcoming[index].title));
+                });
+            }
+        });
 }

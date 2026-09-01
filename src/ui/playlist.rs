@@ -17,9 +17,7 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
         Loadable::Loaded(tracks) => {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                rows::track_list(ui, tracks, theme, out);
-            });
+            rows::track_list(ui, "playlist_tracks", tracks, theme, out);
         }
     }
 }

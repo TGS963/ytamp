@@ -7,6 +7,10 @@ use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
 use super::rows;
 
+/// How many song rows show before the songs panel scrolls internally.
+/// Caps the panel so albums and artists, drawn below it, stay reachable.
+const SONGS_VISIBLE_ROWS: f32 = 10.0;
+
 pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     query_box(ui, state, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
@@ -44,14 +48,27 @@ fn results_view(
     theme: &dyn Theme,
     out: &mut Vec<Action>,
 ) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        if !results.songs.is_empty() {
-            ui.label(theme.label(TextRole::Heading, "Songs"));
-            rows::track_list(ui, &results.songs, theme, out);
-        }
-        albums_section(ui, results, theme);
-        artists_section(ui, results, theme);
-    });
+    egui::ScrollArea::vertical()
+        .id_salt("search_results")
+        .show(ui, |ui| {
+            songs_section(ui, results, theme, out);
+            albums_section(ui, results, theme);
+            artists_section(ui, results, theme);
+        });
+}
+
+fn songs_section(
+    ui: &mut egui::Ui,
+    results: &SearchResults,
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+) {
+    if results.songs.is_empty() {
+        return;
+    }
+    ui.label(theme.label(TextRole::Heading, "Songs"));
+    let max_height = theme.metric(MetricRole::RowHeight) * SONGS_VISIBLE_ROWS;
+    rows::track_list_capped(ui, "search_songs", &results.songs, max_height, theme, out);
 }
 
 fn albums_section(ui: &mut egui::Ui, results: &SearchResults, theme: &dyn Theme) {
