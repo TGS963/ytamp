@@ -25,7 +25,7 @@ impl Api {
     pub async fn sign_in(cookies: &str) -> Result<Api, String> {
         let yt = YtMusic::from_cookie(cookies)
             .await
-            .map_err(|error| format!("The cookies did not work: {error}"))?;
+            .map_err(|error| format!("The cookies did not work: {}", error_chain(&error)))?;
         let api = Api { yt };
         api.library_playlists()
             .await
@@ -67,5 +67,18 @@ impl Api {
 }
 
 fn readable(error: ytmapi_rs::Error) -> String {
-    format!("YouTube Music request failed: {error}")
+    format!("YouTube Music request failed: {}", error_chain(&error))
+}
+
+/// The error and every cause under it, on one line. A bare reqwest
+/// message like "error sending request" hides the real reason (DNS,
+/// TLS, a dropped connection); the chain names it.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    parts.join(" <- ")
 }
