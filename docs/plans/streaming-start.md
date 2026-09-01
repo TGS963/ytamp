@@ -18,19 +18,17 @@ runs against `dQw4w9WgXcQ`:
   samples and 0 silence samples in both runs. The decode keeps up
   with playback once the network is not the bottleneck.
 
-The probe found one defect, now fixed. `build_decoder` in
-`src/player/source.rs` told rodio the stream was seekable before a
-byte length was known. Symphonia then tried to seek during its own
-setup, against a buffer that could not yet answer "how far from the
-end". Rodio treats a seek failure at that point as an internal
-error, not a normal decode failure, so it panicked. This hit every
-yt-dlp-sourced track, since yt-dlp never announces a byte length
-while it fills the buffer. The fix: report the stream as seekable
-only once a byte length is known. A seek during an in-progress
-yt-dlp download now returns a normal error from `try_seek`, instead
-of a panic on decoder startup. A seek on a source that does announce
-a length up front, or once a download completes, still works as
-designed.
+The probe found one defect, fixed in the review of phase C. A
+decoder that reports as seekable makes symphonia's MP4 demuxer
+require the byte length and parse every atom to the end of the
+file. With no length it panics inside rodio. With a length it reads
+the whole download before it starts, so it never streams. The
+decoder now starts non-seekable and streams. A seek then takes one
+of three paths: a complete buffer gets a real seek on a fresh
+seekable decoder, a filling buffer skips forward through decoded
+samples, and a backward seek on a filling buffer restarts from the
+front and skips. A second fresh download, `kJQP7kiw5Fk`: first byte
+and `Ready` at 2412 ms, `Complete` at 2853 ms.
 
 ## Goal
 

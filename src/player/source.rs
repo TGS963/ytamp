@@ -127,6 +127,8 @@ pub fn spawn_decoder(
     }
 }
 
+type BufferDecoder = rodio::Decoder<crate::stream::BufferReader>;
+
 /// The decoder thread's whole job: open the stream, report its
 /// shape, then decode until the track ends, the buffer fails, or the
 /// caller lets go of the source.
@@ -136,7 +138,7 @@ fn run_decoder(
     samples: SyncSender<f32>,
     commands: Receiver<DecoderCommand>,
 ) {
-    let mut decoder = match build_decoder(&buffer) {
+    let decoder = match build_streaming_decoder(&buffer) {
         Ok(decoder) => decoder,
         Err(error) => {
             report(Err(format!("The audio did not decode: {error}")));
@@ -148,52 +150,136 @@ fn run_decoder(
         sample_rate: decoder.sample_rate(),
         total_duration: decoder.total_duration(),
     }));
-    decode_until_done(&mut decoder, &samples, &commands);
+    let mut state = DecodeState::new(decoder, buffer);
+    decode_until_done(&mut state, &samples, &commands);
+}
+
+/// A decoder that reads the stream front to back, with no seeking.
+/// Symphonia then parses the header up to the first data atom and
+/// starts, so playback begins while the download still runs. A
+/// seekable decoder would parse every atom to the end of the file
+/// first, and needs the byte length, which a filling buffer lacks.
+fn build_streaming_decoder(
+    buffer: &AudioBuffer,
+) -> Result<BufferDecoder, rodio::decoder::DecoderError> {
+    rodio::Decoder::builder()
+        .with_data(buffer.reader())
+        .with_seekable(false)
+        .build()
+}
+
+/// A decoder over a complete buffer, with real seeks. Only valid once
+/// the download is complete, because symphonia reads every atom of a
+/// seekable stream before it starts.
+fn build_seekable_decoder(
+    buffer: &AudioBuffer,
+    len: u64,
+) -> Result<BufferDecoder, rodio::decoder::DecoderError> {
+    rodio::Decoder::builder()
+        .with_data(buffer.reader())
+        .with_seekable(true)
+        .with_byte_len(len)
+        .build()
+}
+
+/// The decoder plus where it stands, in samples since the track
+/// start, so a seek can compute how far to skip.
+struct DecodeState {
+    decoder: BufferDecoder,
+    buffer: AudioBuffer,
+    position_samples: u64,
+    samples_per_second: u64,
+}
+
+impl DecodeState {
+    fn new(decoder: BufferDecoder, buffer: AudioBuffer) -> Self {
+        let samples_per_second =
+            u64::from(decoder.channels().get()) * u64::from(decoder.sample_rate().get());
+        Self {
+            decoder,
+            buffer,
+            position_samples: 0,
+            samples_per_second,
+        }
+    }
+
+    fn next_sample(&mut self) -> Option<f32> {
+        let sample = self.decoder.next()?;
+        self.position_samples += 1;
+        Some(sample)
+    }
+
+    /// Three seek strategies. A complete buffer gets a real seek on a
+    /// fresh seekable decoder. A filling buffer skips forward through
+    /// decoded samples, or restarts from the front and then skips.
+    fn seek(&mut self, target: Duration) -> Result<(), String> {
+        let target_samples = samples_at(target, self.samples_per_second);
+        match self.buffer.complete_bytes().map(|bytes| bytes.len() as u64) {
+            Some(len) => self.seek_in_complete_buffer(target, target_samples, len),
+            None if target_samples >= self.position_samples => {
+                self.skip_to(target_samples);
+                Ok(())
+            }
+            None => self.restart_and_skip_to(target_samples),
+        }
+    }
+
+    fn seek_in_complete_buffer(
+        &mut self,
+        target: Duration,
+        target_samples: u64,
+        len: u64,
+    ) -> Result<(), String> {
+        let mut decoder = build_seekable_decoder(&self.buffer, len)
+            .map_err(|error| format!("The audio did not decode: {error}"))?;
+        decoder
+            .try_seek(target)
+            .map_err(|error| format!("The seek failed: {error}"))?;
+        self.decoder = decoder;
+        self.position_samples = target_samples;
+        Ok(())
+    }
+
+    fn restart_and_skip_to(&mut self, target_samples: u64) -> Result<(), String> {
+        self.decoder = build_streaming_decoder(&self.buffer)
+            .map_err(|error| format!("The audio did not decode: {error}"))?;
+        self.position_samples = 0;
+        self.skip_to(target_samples);
+        Ok(())
+    }
+
+    fn skip_to(&mut self, target_samples: u64) {
+        while self.position_samples < target_samples && self.next_sample().is_some() {}
+    }
+}
+
+/// The sample index at `position`, counting every channel.
+fn samples_at(position: Duration, samples_per_second: u64) -> u64 {
+    position.as_nanos() as u64 / 1_000_000_000 * samples_per_second
+        + (position.as_nanos() as u64 % 1_000_000_000) * samples_per_second / 1_000_000_000
 }
 
 /// Applies a pending seek, decodes one sample, and sends it, in a
 /// loop. Ends on a `Stop` command, on the sample channel losing its
 /// receiver, or when the decoder itself runs out of samples.
-/// The decoder reports as seekable only once the byte length is
-/// known: a source announced it, or the download is complete.
-/// Symphonia needs the length for accurate seeks, and for some
-/// containers it also needs the length to probe the header at all.
-/// A seekable reader with no known length makes symphonia seek
-/// during initialization; that seek then fails against a buffer that
-/// cannot answer "how far from the end", and rodio treats a seek
-/// failure at that point as an internal error, not a normal decode
-/// failure. yt-dlp never announces a length while it fills the
-/// buffer, so this guard is what keeps every yt-dlp track from
-/// crashing the decoder thread on open.
-fn build_decoder(
-    buffer: &AudioBuffer,
-) -> Result<rodio::Decoder<crate::stream::BufferReader>, rodio::decoder::DecoderError> {
-    let known_len = buffer.known_len();
-    let mut builder = rodio::Decoder::builder()
-        .with_data(buffer.reader())
-        .with_seekable(known_len.is_some());
-    if let Some(len) = known_len {
-        builder = builder.with_byte_len(len);
-    }
-    builder.build()
-}
-
 fn decode_until_done(
-    decoder: &mut rodio::Decoder<crate::stream::BufferReader>,
+    state: &mut DecodeState,
     samples: &SyncSender<f32>,
     commands: &Receiver<DecoderCommand>,
 ) {
     loop {
         match commands.try_recv() {
             Ok(DecoderCommand::Seek(position)) => {
-                let _ = decoder.try_seek(position);
+                if let Err(error) = state.seek(position) {
+                    log::warn!("seek failed: {error}");
+                }
                 continue;
             }
             Ok(DecoderCommand::Stop) => return,
             Err(TryRecvError::Disconnected) => return,
             Err(TryRecvError::Empty) => {}
         }
-        let Some(sample) = decoder.next() else {
+        let Some(sample) = state.next_sample() else {
             return;
         };
         if samples.send(sample).is_err() {
@@ -294,6 +380,13 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn samples_at_inverts_played_duration() {
+        assert_eq!(samples_at(Duration::from_secs(2), 88_200), 176_400);
+        assert_eq!(samples_at(Duration::from_millis(500), 96_000), 48_000);
+        assert_eq!(samples_at(Duration::ZERO, 96_000), 0);
+    }
+
+    #[test]
     fn played_duration_counts_samples_of_every_channel() {
         assert_eq!(played_duration(96_000, 96_000), Duration::from_secs(1));
         assert_eq!(played_duration(48_000, 96_000), Duration::from_millis(500));
@@ -353,6 +446,28 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the decoder reports Ready or an error");
         (ready, handle)
+    }
+
+    #[test]
+    fn a_seek_on_a_complete_buffer_lands_at_the_target() {
+        let sample_count = 8_000;
+        let buffer = AudioBuffer::from_complete(wav_bytes(8_000, sample_count).into());
+        let (ready, handle) = wait_for_ready(buffer);
+        let info = ready.expect("a well-formed WAV decodes");
+        let (mut source, position) = handle.into_source(info);
+        source.try_seek(Duration::from_millis(500)).expect("seek is accepted");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut real = 0u64;
+        while std::time::Instant::now() < deadline {
+            match source.next() {
+                Some(sample) if sample != 0.0 => real += 1,
+                Some(_) => thread::sleep(Duration::from_millis(1)),
+                None => break,
+            }
+        }
+        assert!((3_900..=4_100).contains(&real), "played {real} samples after the seek");
+        assert!(position.position() >= Duration::from_millis(900));
     }
 
     #[test]
