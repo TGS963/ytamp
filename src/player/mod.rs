@@ -233,7 +233,7 @@ impl Engine {
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
+            let result = disk_cache::fetch_complete(&resolvers, &http, &video_id).await;
             let _ = results.send(PlayerMsg::Loaded {
                 generation,
                 video_id,
@@ -319,7 +319,7 @@ impl Engine {
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
+            let result = disk_cache::fetch_complete(&resolvers, &http, &video_id).await;
             let _ = results.send(PlayerMsg::Prefetched {
                 generation,
                 video_id,

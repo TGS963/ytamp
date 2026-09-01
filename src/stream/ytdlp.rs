@@ -6,14 +6,22 @@
 //!
 //! yt-dlp writes the audio to stdout. A URL from `--get-url` binds to
 //! yt-dlp's own session and answers 403 to another program's fetch,
-//! so handing over bytes is the only reliable contract.
+//! so handing over bytes is the only reliable contract. This source
+//! reads those bytes in chunks and pushes each one, so a decoder
+//! reading the buffer can start before yt-dlp finishes.
 
-use tokio::process::Command;
+use std::process::Stdio;
 
-use super::{AudioSource, BoxFuture};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+
+use super::{AudioSource, BoxFuture, BufferWriter};
 
 /// itag 140 is AAC 128kbps in M4A, the format the player decodes.
 const FORMAT_SELECTION: &str = "140/bestaudio[ext=m4a]";
+
+/// The chunk size for reading yt-dlp's stdout.
+const CHUNK_BYTES: usize = 64 * 1024;
 
 pub struct YtDlpSource {
     binary: String,
@@ -36,28 +44,92 @@ impl AudioSource for YtDlpSource {
         &'a self,
         _http: &'a reqwest::Client,
         video_id: &'a str,
-    ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
+        writer: BufferWriter,
+    ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let output = Command::new(&self.binary)
-                .args(["--quiet", "--no-warnings", "--format", FORMAT_SELECTION])
-                .args(["--output", "-"])
-                .arg(format!("https://music.youtube.com/watch?v={video_id}"))
-                .output()
+            let mut child = spawn_yt_dlp(&self.binary, video_id)?;
+            let stdout = child.stdout.take().expect("stdout is piped");
+            let stderr = child.stderr.take().expect("stderr is piped");
+            let stderr_task = tokio::spawn(collect_stderr(stderr));
+            let read_result = push_chunks(stdout, &writer).await;
+            let status = child
+                .wait()
                 .await
-                .map_err(|error| format!("could not run yt-dlp: {error}"))?;
-            audio_from_output(output.status.success(), output.stdout, &output.stderr)
+                .map_err(|error| format!("yt-dlp did not exit cleanly: {error}"))?;
+            let stderr_bytes = stderr_task.await.unwrap_or_default();
+            report_outcome(status.success(), read_result, writer, &stderr_bytes)
         })
     }
 }
 
-fn audio_from_output(succeeded: bool, stdout: Vec<u8>, stderr: &[u8]) -> Result<Vec<u8>, String> {
-    if !succeeded {
-        return Err(first_line(stderr).unwrap_or_else(|| "yt-dlp failed".to_string()));
+/// Starts yt-dlp with its stdout and stderr piped, and `kill_on_drop`
+/// so an abandoned attempt (the chain moving to the next source)
+/// never leaves the process running.
+fn spawn_yt_dlp(binary: &str, video_id: &str) -> Result<Child, String> {
+    Command::new(binary)
+        .args(["--quiet", "--no-warnings", "--format", FORMAT_SELECTION])
+        .args(["--output", "-"])
+        .arg(format!("https://music.youtube.com/watch?v={video_id}"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("could not run yt-dlp: {error}"))
+}
+
+/// Reads `stdout` in fixed-size chunks and pushes each one to
+/// `writer`, until the process closes the stream.
+async fn push_chunks(mut stdout: ChildStdout, writer: &BufferWriter) -> Result<(), String> {
+    let mut chunk = vec![0u8; CHUNK_BYTES];
+    loop {
+        let read = stdout
+            .read(&mut chunk)
+            .await
+            .map_err(|error| format!("reading yt-dlp output failed: {error}"))?;
+        if read == 0 {
+            return Ok(());
+        }
+        writer.push(&chunk[..read]);
     }
-    if stdout.is_empty() {
-        return Err("yt-dlp produced no audio".to_string());
+}
+
+/// Reads all of `stderr` into memory. yt-dlp's error text is a few
+/// lines at most, so this never competes for memory with the audio.
+async fn collect_stderr(mut stderr: ChildStderr) -> Vec<u8> {
+    let mut collected = Vec::new();
+    let _ = stderr.read_to_end(&mut collected).await;
+    collected
+}
+
+/// Turns the process exit status and the read outcome into the
+/// trait's contract: `finish` the writer and return `Ok` on a clean
+/// run, otherwise fail the writer only if bytes already reached it,
+/// and report the failure either way.
+fn report_outcome(
+    exited_cleanly: bool,
+    read_result: Result<(), String>,
+    writer: BufferWriter,
+    stderr: &[u8],
+) -> Result<(), String> {
+    match read_result {
+        Ok(()) if exited_cleanly => {
+            writer.finish();
+            Ok(())
+        }
+        Ok(()) => conclude_failure(failure_message(stderr), writer),
+        Err(message) => conclude_failure(message, writer),
     }
-    Ok(stdout)
+}
+
+fn failure_message(stderr: &[u8]) -> String {
+    first_line(stderr).unwrap_or_else(|| "yt-dlp failed".to_string())
+}
+
+fn conclude_failure(message: String, writer: BufferWriter) -> Result<(), String> {
+    if writer.delivered_any() {
+        writer.fail(message.clone());
+    }
+    Err(message)
 }
 
 fn first_line(bytes: &[u8]) -> Option<String> {
@@ -69,23 +141,54 @@ fn first_line(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stdout_bytes_become_audio() {
-        assert_eq!(
-            audio_from_output(true, vec![1, 2, 3], b""),
-            Ok(vec![1, 2, 3])
-        );
-    }
+    use crate::stream::AudioBuffer;
 
     #[test]
     fn a_failure_reports_the_first_stderr_line() {
-        let result = audio_from_output(false, vec![], b"ERROR: video unavailable\nmore");
+        let result = report_outcome(
+            false,
+            Ok(()),
+            AudioBuffer::new(None).writer(),
+            b"ERROR: video unavailable\nmore",
+        );
         assert_eq!(result.unwrap_err(), "ERROR: video unavailable");
     }
 
     #[test]
-    fn empty_output_is_an_error() {
-        assert!(audio_from_output(true, vec![], b"").is_err());
+    fn a_clean_exit_finishes_the_writer() {
+        let buffer = AudioBuffer::new(None);
+        let writer = buffer.writer();
+        report_outcome(true, Ok(()), writer, b"").expect("a clean exit is ok");
+        assert_eq!(buffer.status(), crate::stream::BufferStatus::Complete);
+    }
+
+    #[test]
+    fn a_failure_after_delivery_fails_the_writer() {
+        let buffer = AudioBuffer::new(None);
+        let writer = buffer.writer();
+        writer.push(b"partial");
+        let result = report_outcome(false, Ok(()), writer, b"ERROR: cut off");
+        assert_eq!(result.unwrap_err(), "ERROR: cut off");
+        assert_eq!(
+            buffer.status(),
+            crate::stream::BufferStatus::Failed("ERROR: cut off".to_string())
+        );
+    }
+
+    #[test]
+    fn a_read_error_is_reported_over_a_missing_stderr_line() {
+        let result = report_outcome(
+            true,
+            Err("reading yt-dlp output failed: broken pipe".to_string()),
+            AudioBuffer::new(None).writer(),
+            b"",
+        );
+        assert_eq!(result.unwrap_err(), "reading yt-dlp output failed: broken pipe");
+    }
+
+    #[test]
+    fn empty_stderr_falls_back_to_a_generic_message() {
+        let result = report_outcome(false, Ok(()), AudioBuffer::new(None).writer(), b"");
+        assert_eq!(result.unwrap_err(), "yt-dlp failed");
     }
 }

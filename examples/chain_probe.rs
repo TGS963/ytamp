@@ -2,7 +2,7 @@
 //! reports which source produced them.
 //! Usage: cargo run --example chain_probe [video_id]
 
-use ytamp::stream::ResolverChain;
+use ytamp::stream::{AudioBuffer, ResolverChain};
 
 #[tokio::main]
 async fn main() {
@@ -10,8 +10,14 @@ async fn main() {
     let video_id = std::env::args().nth(1).unwrap_or("dQw4w9WgXcQ".to_string());
     let chain = ResolverChain::with_default_resolvers();
     let http = reqwest::Client::new();
-    match chain.fetch_audio(&http, &video_id).await {
-        Ok(bytes) => println!("ok: {} bytes for {video_id}", bytes.len()),
-        Err(message) => println!("failed: {message}"),
+    let buffer = AudioBuffer::new(None);
+    let writer = buffer.writer();
+    if let Err(message) = chain.fetch_audio(&http, &video_id, writer).await {
+        println!("failed: {message}");
+        return;
+    }
+    match buffer.complete_bytes() {
+        Some(bytes) => println!("ok: {} bytes for {video_id}", bytes.len()),
+        None => println!("failed: the chain reported success without completing the buffer"),
     }
 }

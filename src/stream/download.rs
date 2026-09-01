@@ -1,10 +1,15 @@
-//! Downloads a resolved stream into memory.
+//! Downloads a resolved stream, pushing each chunk to a growing
+//! buffer as it arrives.
 //!
 //! googlevideo rejects a fetch whose user agent does not match the
 //! InnerTube client that produced the URL, and it throttles or
 //! rejects plain full-file GETs. So the fetch sends the client's user
 //! agent and takes googlevideo in ~9MB chunks through the `range` URL
-//! parameter, the same way rustypipe-downloader does.
+//! parameter, the same way rustypipe-downloader does. Each chunk
+//! reaches the buffer as soon as it arrives, so a reader downstream
+//! can start decoding long before the whole file is down.
+
+use super::BufferWriter;
 
 const DOWNLOAD_CHUNK: u64 = 9_000_000;
 
@@ -25,15 +30,21 @@ pub struct DownloadError {
     pub forbidden: bool,
 }
 
+/// Downloads `stream` into `writer`, one chunk at a time. Does not
+/// call `writer.finish`: the caller decides that once the whole
+/// resolver attempt succeeds.
 pub async fn download_audio(
     http: &reqwest::Client,
     stream: &ResolvedStream,
-) -> Result<Vec<u8>, DownloadError> {
+    writer: &BufferWriter,
+) -> Result<(), DownloadError> {
     match googlevideo_size(stream) {
-        Some(size) => download_googlevideo(http, stream, size).await,
-        None => Ok(fetch_bytes(http, &stream.url, stream.user_agent.as_deref())
-            .await?
-            .to_vec()),
+        Some(size) => download_googlevideo(http, stream, size, writer).await,
+        None => {
+            let bytes = fetch_bytes(http, &stream.url, stream.user_agent.as_deref()).await?;
+            writer.push(&bytes);
+            Ok(())
+        }
     }
 }
 
@@ -60,8 +71,9 @@ async fn download_googlevideo(
     http: &reqwest::Client,
     stream: &ResolvedStream,
     size: u64,
-) -> Result<Vec<u8>, DownloadError> {
-    let mut bytes = Vec::with_capacity(size as usize);
+    writer: &BufferWriter,
+) -> Result<(), DownloadError> {
+    writer.set_expected_len(size);
     let mut offset = 0;
     while offset < size {
         let end = (offset + DOWNLOAD_CHUNK - 1).min(size - 1);
@@ -74,9 +86,9 @@ async fn download_googlevideo(
             });
         }
         offset += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
+        writer.push(&chunk);
     }
-    Ok(bytes)
+    Ok(())
 }
 
 async fn fetch_bytes(

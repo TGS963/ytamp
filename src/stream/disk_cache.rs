@@ -9,12 +9,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytes::Bytes;
 use directories::ProjectDirs;
 
-use crate::stream::ResolverChain;
+use crate::stream::{AudioBuffer, ResolverChain};
 
 /// Total disk space the cache may use before it evicts old entries.
 const CAP_BYTES: u64 = 512 * 1024 * 1024;
@@ -22,25 +23,65 @@ const CAP_BYTES: u64 = 512 * 1024 * 1024;
 /// The character count of a YouTube video id.
 const VIDEO_ID_LEN: usize = 11;
 
-/// Fetches audio for `video_id`. Checks the disk cache first; a hit
-/// returns at once with no network use. A miss runs the resolver
-/// chain and, on success, writes the bytes to disk before it
-/// returns.
+/// Fetches audio for `video_id` and returns a buffer that fills as
+/// the bytes arrive.
+///
+/// A disk hit returns an already-complete buffer at once, with no
+/// network use. A miss returns an empty, filling buffer right away
+/// and starts the resolver chain in the background; a reader can
+/// start decoding as soon as the chain's first bytes land. Once the
+/// chain finishes, the bytes are written to disk on the blocking
+/// pool.
 ///
 /// Both the active-load path and the prefetch path in the player
 /// call this one function, so the cache logic lives in a single
 /// place.
 pub async fn fetch_audio(
-    resolvers: &ResolverChain,
+    resolvers: &Arc<ResolverChain>,
+    http: &reqwest::Client,
+    video_id: &str,
+) -> AudioBuffer {
+    if let Some(bytes) = read_off_thread(video_id.to_string()).await {
+        return AudioBuffer::from_complete(bytes);
+    }
+    spawn_download(resolvers.clone(), http.clone(), video_id.to_string())
+}
+
+/// Fetches audio for `video_id` and waits for the whole download to
+/// finish, the way the player did before it read from a buffer
+/// mid-download. A thin adapter for callers not yet updated to stream
+/// from the buffer as it fills.
+pub async fn fetch_complete(
+    resolvers: &Arc<ResolverChain>,
     http: &reqwest::Client,
     video_id: &str,
 ) -> Result<Bytes, String> {
-    if let Some(bytes) = read_off_thread(video_id.to_string()).await {
-        return Ok(bytes);
+    fetch_audio(resolvers, http, video_id)
+        .await
+        .wait_complete()
+        .await
+}
+
+/// Starts a buffer, runs the resolver chain into it on a background
+/// task, and returns the buffer right away. Once the chain ends, a
+/// completed buffer's bytes are written to disk.
+fn spawn_download(resolvers: Arc<ResolverChain>, http: reqwest::Client, video_id: String) -> AudioBuffer {
+    let buffer = AudioBuffer::new(None);
+    let writer = buffer.writer();
+    let task_buffer = buffer.clone();
+    tokio::spawn(async move {
+        let _ = resolvers.fetch_audio(&http, &video_id, writer).await;
+        persist_if_complete(&task_buffer, &video_id).await;
+    });
+    buffer
+}
+
+/// Writes the buffer's bytes to disk, when the chain completed it. A
+/// failed or somehow still-filling buffer has nothing to persist.
+async fn persist_if_complete(buffer: &AudioBuffer, video_id: &str) {
+    if let Some(bytes) = buffer.complete_bytes() {
+        write_off_thread(video_id.to_string(), bytes).await;
     }
-    let bytes = Bytes::from(resolvers.fetch_audio(http, video_id).await?);
-    write_off_thread(video_id.to_string(), bytes.clone()).await;
-    Ok(bytes)
 }
 
 /// Deletes the cache entry for `video_id`. The player calls this when

@@ -4,8 +4,8 @@
 use rustypipe::client::RustyPipe;
 use rustypipe::model::{AudioCodec, AudioStream};
 
-use super::download::{ResolvedStream, download_audio};
-use super::{AudioSource, BoxFuture};
+use super::download::{DownloadError, ResolvedStream, download_audio};
+use super::{AudioSource, BoxFuture, BufferWriter};
 
 pub struct RustyPipeSource {
     client: RustyPipe,
@@ -28,7 +28,8 @@ impl AudioSource for RustyPipeSource {
         &'a self,
         http: &'a reqwest::Client,
         video_id: &'a str,
-    ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
+        writer: BufferWriter,
+    ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let player = self
                 .client
@@ -48,7 +49,7 @@ impl AudioSource for RustyPipeSource {
                 ),
                 size: Some(stream.size),
             };
-            let result = download_audio(http, &resolved).await;
+            let result = download_audio(http, &resolved, &writer).await;
             if let Err(error) = &result
                 && error.forbidden
                 && let Some(visitor_data) = &player.visitor_data
@@ -57,8 +58,26 @@ impl AudioSource for RustyPipeSource {
                 // the way rustypipe-downloader reacts to the same error.
                 self.client.query().remove_visitor_data(visitor_data);
             }
-            result.map_err(|error| error.message)
+            conclude(result, writer)
         })
+    }
+}
+
+/// Finishes `writer` on success. On failure, fails `writer` only when
+/// bytes already reached it, matching the trait's contract for a
+/// source in a fallback chain.
+fn conclude(result: Result<(), DownloadError>, writer: BufferWriter) -> Result<(), String> {
+    match result {
+        Ok(()) => {
+            writer.finish();
+            Ok(())
+        }
+        Err(error) => {
+            if writer.delivered_any() {
+                writer.fail(error.message.clone());
+            }
+            Err(error.message)
+        }
     }
 }
 
@@ -83,6 +102,7 @@ fn best_decodable_index(streams: impl Iterator<Item = (bool, u32)>) -> Option<us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::AudioBuffer;
 
     #[test]
     fn the_highest_bitrate_decodable_stream_wins() {
@@ -93,5 +113,30 @@ mod tests {
     #[test]
     fn undecodable_only_lists_resolve_to_nothing() {
         assert_eq!(best_decodable_index([(false, 160_000)].into_iter()), None);
+    }
+
+    #[test]
+    fn conclude_finishes_the_writer_on_success() {
+        let buffer = AudioBuffer::new(None);
+        let writer = buffer.writer();
+        conclude(Ok(()), writer).expect("ok");
+        assert_eq!(buffer.status(), crate::stream::BufferStatus::Complete);
+    }
+
+    #[test]
+    fn conclude_leaves_the_buffer_untouched_when_nothing_was_delivered() {
+        let buffer = AudioBuffer::new(None);
+        let primary = buffer.writer();
+        let attempt = primary.share();
+        let error = conclude(
+            Err(DownloadError {
+                message: "boom".to_string(),
+                forbidden: false,
+            }),
+            attempt,
+        )
+        .unwrap_err();
+        assert_eq!(error, "boom");
+        assert_eq!(buffer.status(), crate::stream::BufferStatus::Filling);
     }
 }
