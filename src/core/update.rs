@@ -170,15 +170,17 @@ fn normalized_authuser(draft: &str) -> String {
     trimmed.to_string()
 }
 
-/// Back to the sign-in page with fresh library state. Playback keeps
-/// running: the loaded audio needs no session.
+/// Back to the sign-in page with a fresh state. Playback stops and
+/// the queue empties: nothing of the session stays audible. Only the
+/// volume setting survives.
 fn sign_out(state: &mut State) -> Vec<Effect> {
-    state.auth = AuthState::SignedOut;
-    state.sign_in = Default::default();
-    state.library = Default::default();
-    state.search = Default::default();
-    state.page = Page::SignIn;
-    vec![Effect::ClearCredentials]
+    let volume = state.playback.volume;
+    *state = State::default();
+    state.playback.volume = volume;
+    vec![
+        Effect::Player(PlayerCommand::Stop),
+        Effect::ClearCredentials,
+    ]
 }
 
 fn finish_sign_in(state: &mut State, result: Result<(), String>) -> Vec<Effect> {
@@ -386,6 +388,30 @@ mod tests {
     fn an_empty_authuser_field_means_account_zero() {
         assert_eq!(normalized_authuser("  "), "0");
         assert_eq!(normalized_authuser(" 1 "), "1");
+    }
+
+    #[test]
+    fn sign_out_stops_playback_and_keeps_the_volume() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(&mut state, Action::VolumeSet(0.3));
+        let effects = apply(&mut state, Action::SignOutRequested);
+        assert_eq!(state.playback.queue.current(), None);
+        assert_eq!(state.playback.status, PlayStatus::Stopped);
+        assert_eq!(state.playback.volume, 0.3);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Player(PlayerCommand::Stop),
+                Effect::ClearCredentials,
+            ]
+        );
     }
 
     #[test]
