@@ -24,6 +24,15 @@ pub struct Credentials {
     pub headers: Vec<(String, String)>,
 }
 
+/// One way to authenticate the YouTube Music session.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuthMethod {
+    Browser(Credentials),
+    /// A serialized ytmapi-rs OAuth token, from the device flow.
+    /// It embeds the client id and secret, so it refreshes itself.
+    OAuthToken(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Api(ApiRequest),
@@ -34,8 +43,16 @@ pub enum Effect {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApiRequest {
-    VerifyAuth(Credentials),
-    Search { query: String },
+    VerifyAuth(AuthMethod),
+    /// Runs the whole OAuth device flow: gets a device code, reports
+    /// the verification URL back, and polls until the user finishes.
+    StartOAuth {
+        client_id: String,
+        client_secret: String,
+    },
+    Search {
+        query: String,
+    },
     FetchPlaylists,
     FetchLiked,
     FetchPlaylistTracks(PlaylistId),

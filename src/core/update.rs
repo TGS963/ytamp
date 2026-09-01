@@ -29,6 +29,19 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         }
         Action::CookiesSubmitted => submit_cookies(state),
         Action::SignOutRequested => sign_out(state),
+        Action::OAuthClientIdChanged(draft) => {
+            state.sign_in.client_id_draft = draft;
+            vec![]
+        }
+        Action::OAuthClientSecretChanged(draft) => {
+            state.sign_in.client_secret_draft = draft;
+            vec![]
+        }
+        Action::OAuthStartRequested => start_oauth(state),
+        Action::OAuthUrlReady(url) => {
+            state.sign_in.oauth_url = Some(url);
+            vec![]
+        }
         Action::AuthVerified(result) => finish_sign_in(state, result),
         Action::SearchInputChanged(input) => {
             state.search.input = input;
@@ -84,9 +97,9 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             }
             vec![]
         }
-        Action::StoredCredentialsFound(credentials) => {
+        Action::StoredAuthFound(method) => {
             state.auth = AuthState::Verifying;
-            vec![Effect::Api(ApiRequest::VerifyAuth(credentials))]
+            vec![Effect::Api(ApiRequest::VerifyAuth(method))]
         }
         Action::SessionRestored(session) => restore_session(state, session),
         Action::NoticePosted(message) => {
@@ -139,7 +152,9 @@ fn submit_cookies(state: &mut State) -> Vec<Effect> {
     state.auth = AuthState::Verifying;
     vec![
         Effect::SaveCredentials(credentials.clone()),
-        Effect::Api(ApiRequest::VerifyAuth(credentials)),
+        Effect::Api(ApiRequest::VerifyAuth(
+            crate::core::effect::AuthMethod::Browser(credentials),
+        )),
     ]
 }
 
@@ -151,6 +166,22 @@ fn normalized_authuser(draft: &str) -> String {
         return "0".to_string();
     }
     trimmed.to_string()
+}
+
+fn start_oauth(state: &mut State) -> Vec<Effect> {
+    let client_id = state.sign_in.client_id_draft.trim().to_string();
+    let client_secret = state.sign_in.client_secret_draft.trim().to_string();
+    if client_id.is_empty() || client_secret.is_empty() {
+        state.auth =
+            AuthState::Failed("Enter both the OAuth client id and the client secret.".to_string());
+        return vec![];
+    }
+    state.auth = AuthState::Verifying;
+    state.sign_in.oauth_url = None;
+    vec![Effect::Api(ApiRequest::StartOAuth {
+        client_id,
+        client_secret,
+    })]
 }
 
 /// Back to the sign-in page with a fresh state. Playback stops and
@@ -363,7 +394,9 @@ mod tests {
             effects,
             vec![
                 Effect::SaveCredentials(credentials.clone()),
-                Effect::Api(ApiRequest::VerifyAuth(credentials)),
+                Effect::Api(ApiRequest::VerifyAuth(
+                    crate::core::effect::AuthMethod::Browser(credentials)
+                )),
             ]
         );
     }

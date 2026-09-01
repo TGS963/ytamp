@@ -47,12 +47,38 @@ pub fn save_credentials(credentials: &Credentials) -> io::Result<()> {
     fs::rename(&temp, &path)
 }
 
-/// Removes the stored credentials, the legacy cookie file included.
+/// The stored sign-in, preferring the OAuth token over cookies.
+pub fn load_auth_method() -> Option<crate::core::effect::AuthMethod> {
+    if let Some(token) = load_oauth_token() {
+        return Some(crate::core::effect::AuthMethod::OAuthToken(token));
+    }
+    load_credentials().map(crate::core::effect::AuthMethod::Browser)
+}
+
+pub fn load_oauth_token() -> Option<String> {
+    let json = fs::read_to_string(config_dir()?.join("oauth.json")).ok()?;
+    (!json.trim().is_empty()).then_some(json)
+}
+
+pub fn save_oauth_token(json: &str) -> io::Result<()> {
+    let Some(dir) = config_dir() else {
+        return Err(io::Error::other("no config directory on this system"));
+    };
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("oauth.json");
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, json)?;
+    restrict_to_owner(&temp)?;
+    fs::rename(&temp, &path)
+}
+
+/// Removes every stored sign-in: the OAuth token, the credentials,
+/// and the legacy cookie file.
 pub fn delete_credentials() -> io::Result<()> {
     let Some(dir) = config_dir() else {
         return Ok(());
     };
-    for name in ["auth.json", "cookies.txt"] {
+    for name in ["oauth.json", "auth.json", "cookies.txt"] {
         let path = dir.join(name);
         if path.exists() {
             fs::remove_file(&path)?;

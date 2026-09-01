@@ -62,7 +62,7 @@ impl EffectRuntime {
         let api = self.api.clone();
         let deliver = self.delivery();
         self.tokio.spawn(async move {
-            deliver(execute_api_request(&api, request).await);
+            execute_api_request(&api, request, &deliver).await;
         });
     }
 
@@ -104,19 +104,32 @@ fn delivery(
     }
 }
 
-async fn execute_api_request(slot: &ApiSlot, request: ApiRequest) -> Action {
-    if let ApiRequest::VerifyAuth(credentials) = request {
-        return sign_in(slot, &credentials).await;
-    }
-    let signed_in = slot.read().expect("api lock").clone();
-    match signed_in {
-        Some(api) => execute_signed_in(&api, request).await,
-        None => request_failure(request, "not signed in".to_string()),
+async fn execute_api_request(
+    slot: &ApiSlot,
+    request: ApiRequest,
+    deliver: &(impl Fn(Action) + Send),
+) {
+    match request {
+        ApiRequest::VerifyAuth(method) => deliver(sign_in(slot, &method).await),
+        ApiRequest::StartOAuth {
+            client_id,
+            client_secret,
+        } => {
+            run_oauth_flow(slot, client_id, client_secret, deliver).await;
+        }
+        other => {
+            let signed_in = slot.read().expect("api lock").clone();
+            let action = match signed_in {
+                Some(api) => execute_signed_in(&api, other).await,
+                None => request_failure(other, "not signed in".to_string()),
+            };
+            deliver(action);
+        }
     }
 }
 
-async fn sign_in(slot: &ApiSlot, credentials: &crate::core::effect::Credentials) -> Action {
-    match Api::sign_in(credentials).await {
+async fn sign_in(slot: &ApiSlot, method: &crate::core::effect::AuthMethod) -> Action {
+    match Api::sign_in(method).await {
         Ok(api) => {
             *slot.write().expect("api lock") = Some(api);
             Action::AuthVerified(Ok(()))
@@ -125,9 +138,71 @@ async fn sign_in(slot: &ApiSlot, credentials: &crate::core::effect::Credentials)
     }
 }
 
+/// How long and how often the flow polls Google while the user
+/// finishes the sign-in in the browser. Five seconds is the device
+/// flow's standard interval.
+const OAUTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const OAUTH_POLL_ATTEMPTS: u32 = 60;
+
+/// The OAuth device flow: get a device code, hand the verification URL
+/// to the UI, poll until the user finishes, then store the token and
+/// sign in with it.
+async fn run_oauth_flow(
+    slot: &ApiSlot,
+    client_id: String,
+    client_secret: String,
+    deliver: &(impl Fn(Action) + Send),
+) {
+    let result = oauth_token_from_device_flow(&client_id, &client_secret, deliver).await;
+    let action = match result {
+        Ok(token_json) => {
+            if let Err(error) = auth::save_oauth_token(&token_json) {
+                deliver(Action::NoticePosted(format!(
+                    "Saving the sign-in failed: {error}"
+                )));
+            }
+            sign_in(
+                slot,
+                &crate::core::effect::AuthMethod::OAuthToken(token_json),
+            )
+            .await
+        }
+        Err(message) => Action::AuthVerified(Err(message)),
+    };
+    deliver(action);
+}
+
+async fn oauth_token_from_device_flow(
+    client_id: &str,
+    client_secret: &str,
+    deliver: &(impl Fn(Action) + Send),
+) -> Result<String, String> {
+    let client = ytmapi_rs::Client::new()
+        .map_err(|error| format!("The HTTP client failed to build: {error}"))?;
+    let (code, url) = ytmapi_rs::generate_oauth_code_and_url(&client, client_id)
+        .await
+        .map_err(|error| format!("The OAuth start failed: {error}. Check the client id."))?;
+    deliver(Action::OAuthUrlReady(url));
+    let mut last_error = String::new();
+    for _ in 0..OAUTH_POLL_ATTEMPTS {
+        tokio::time::sleep(OAUTH_POLL_INTERVAL).await;
+        match ytmapi_rs::generate_oauth_token(&client, code.clone(), client_id, client_secret).await
+        {
+            Ok(token) => {
+                return serde_json::to_string(&token)
+                    .map_err(|error| format!("The token does not serialize: {error}"));
+            }
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    Err(format!("The sign-in did not finish in time: {last_error}"))
+}
+
 async fn execute_signed_in(api: &Api, request: ApiRequest) -> Action {
     match request {
-        ApiRequest::VerifyAuth(_) => unreachable!("handled before the sign-in check"),
+        ApiRequest::VerifyAuth(_) | ApiRequest::StartOAuth { .. } => {
+            unreachable!("handled before the sign-in check")
+        }
         ApiRequest::Search { query } => Action::SearchLoaded(api.search(&query).await),
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(api.library_playlists().await),
         ApiRequest::FetchLiked => Action::LikedLoaded(api.liked_songs().await),
@@ -141,7 +216,9 @@ async fn execute_signed_in(api: &Api, request: ApiRequest) -> Action {
 /// The failure action that matches what a request loads.
 fn request_failure(request: ApiRequest, message: String) -> Action {
     match request {
-        ApiRequest::VerifyAuth(_) => Action::AuthVerified(Err(message)),
+        ApiRequest::VerifyAuth(_) | ApiRequest::StartOAuth { .. } => {
+            Action::AuthVerified(Err(message))
+        }
         ApiRequest::Search { .. } => Action::SearchLoaded(Err(message)),
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(Err(message)),
         ApiRequest::FetchLiked => Action::LikedLoaded(Err(message)),

@@ -36,8 +36,8 @@ fn main() -> eframe::Result {
             });
             let mut app = app::App::new(effect_runtime, action_receiver, media_keys);
             app.restore_session(creation.storage);
-            if let Some(credentials) = auth::load_credentials() {
-                app.queue_action(Action::StoredCredentialsFound(credentials));
+            if let Some(method) = auth::load_auth_method() {
+                app.queue_action(Action::StoredAuthFound(method));
             }
             Ok(Box::new(app))
         }),

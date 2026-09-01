@@ -16,10 +16,19 @@ pub enum Action {
     AuthUserDraftChanged(String),
     CookiesSubmitted,
     SignOutRequested,
+    OAuthClientIdChanged(String),
+    OAuthClientSecretChanged(String),
+    OAuthStartRequested,
+    /// The device flow produced its verification URL; the user opens
+    /// it while the runtime polls for completion.
+    OAuthUrlReady(String),
     SearchInputChanged(String),
     SearchSubmitted,
     PlaylistOpened(PlaylistId),
-    ContextPlayed { tracks: Vec<Track>, start: usize },
+    ContextPlayed {
+        tracks: Vec<Track>,
+        start: usize,
+    },
     TrackQueued(Track),
     PlayToggled,
     NextPressed,
@@ -32,7 +41,7 @@ pub enum Action {
     NoticeDismissed(usize),
 
     // From the shell at startup.
-    StoredCredentialsFound(crate::core::effect::Credentials),
+    StoredAuthFound(crate::core::effect::AuthMethod),
     SessionRestored(crate::core::session::SavedSession),
 
     // From the effect runtime.

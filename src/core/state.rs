@@ -48,11 +48,16 @@ pub enum Page {
 /// What the user is entering on the sign-in page.
 #[derive(Clone, Debug, Default)]
 pub struct SignInState {
-    /// The Cookie header value.
+    /// The Cookie header value (the fallback path).
     pub draft: String,
     /// The X-Goog-AuthUser header value: which signed-in Google
     /// account the session belongs to. Empty means account 0.
     pub authuser_draft: String,
+    /// The user's own Google Cloud OAuth client (TV type).
+    pub client_id_draft: String,
+    pub client_secret_draft: String,
+    /// The verification URL of a running device flow, once known.
+    pub oauth_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

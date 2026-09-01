@@ -1,4 +1,5 @@
-//! The sign-in page: paste the cookies of a music.youtube.com session.
+//! The sign-in page. The main path is the OAuth device flow with the
+//! user's own Google Cloud client. Cookie paste stays as the fallback.
 
 use egui::Ui;
 
@@ -8,45 +9,105 @@ use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     egui::CentralPanel::default_margins().show(ui, |ui| {
-        ui.add_space(theme.metric(MetricRole::PagePadding) * 3.0);
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(560.0);
-            ui.label(theme.label(TextRole::Title, "Sign in to YouTube Music"));
-            ui.add_space(theme.metric(MetricRole::GapLarge));
-            instructions(ui, theme);
-            ui.add_space(theme.metric(MetricRole::GapLarge));
-            cookie_editor(ui, state, out);
-            ui.add_space(theme.metric(MetricRole::GapSmall));
-            status_line(ui, state, theme, out);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.add_space(theme.metric(MetricRole::PagePadding) * 2.0);
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(560.0);
+                ui.label(theme.label(TextRole::Title, "Sign in to YouTube Music"));
+                ui.add_space(theme.metric(MetricRole::GapLarge));
+                oauth_section(ui, state, theme, out);
+                ui.add_space(theme.metric(MetricRole::GapLarge));
+                ui.separator();
+                cookie_section(ui, state, theme, out);
+                ui.add_space(theme.metric(MetricRole::GapSmall));
+                status_line(ui, state, theme);
+            });
         });
     });
 }
 
-fn instructions(ui: &mut egui::Ui, theme: &dyn Theme) {
+fn oauth_section(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    ui.label(theme.label(TextRole::Heading, "Sign in with Google"));
     for line in [
-        "1. Open music.youtube.com in your browser and log in.",
-        "2. Open the developer tools and select the Network tab.",
-        "3. Type 'browse' in the filter and right-click a browse request.",
-        "4. Select Copy as cURL and paste the whole text below.",
-        "5. Copy the X-Goog-AuthUser request header into the account field.",
+        "Uses your own Google Cloud OAuth client of the type",
+        "\"TVs and Limited Input devices\". One-time setup, then the",
+        "sign-in refreshes itself.",
     ] {
         ui.label(theme.secondary_label(TextRole::Body, line));
     }
-    ui.label(theme.secondary_label(
-        TextRole::Caption,
-        "Copy as cURL avoids the shortened display text that a direct copy takes. \
-         The account field picks the Google account when several are signed in. Empty means 0.",
-    ));
+    ui.add_space(theme.metric(MetricRole::GapSmall));
+    labeled_field(
+        ui,
+        state.sign_in.client_id_draft.clone(),
+        "Client id",
+        false,
+        out,
+        |draft| Action::OAuthClientIdChanged(draft),
+    );
+    labeled_field(
+        ui,
+        state.sign_in.client_secret_draft.clone(),
+        "Client secret",
+        true,
+        out,
+        Action::OAuthClientSecretChanged,
+    );
+    ui.add_space(theme.metric(MetricRole::GapSmall));
+    match (&state.auth, &state.sign_in.oauth_url) {
+        (AuthState::Verifying, Some(url)) => {
+            ui.hyperlink_to("Open the Google sign-in page", url);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(theme.secondary_label(TextRole::Body, "Waiting for the sign-in…"));
+            });
+        }
+        (AuthState::Verifying, None) => {
+            ui.spinner();
+        }
+        _ => {
+            if ui.button("Sign in with Google").clicked() {
+                out.push(Action::OAuthStartRequested);
+            }
+        }
+    }
 }
 
-fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
+fn labeled_field(
+    ui: &mut Ui,
+    mut draft: String,
+    label: &str,
+    secret: bool,
+    out: &mut Vec<Action>,
+    action: impl Fn(String) -> Action,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let field = egui::TextEdit::singleline(&mut draft)
+            .password(secret)
+            .desired_width(f32::INFINITY);
+        if ui.add(field).changed() {
+            out.push(action(draft));
+        }
+    });
+}
+
+fn cookie_section(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    ui.label(theme.label(TextRole::Heading, "Fallback: cookie paste"));
+    for line in [
+        "1. In the browser's Network tab, right-click a music.youtube.com",
+        "   browse request and select Copy as cURL.",
+        "2. Paste the whole text below.",
+    ] {
+        ui.label(theme.secondary_label(TextRole::Body, line));
+    }
     let mut draft = state.sign_in.draft.clone();
     let edit = egui::TextEdit::multiline(&mut draft)
         .hint_text("Cookie header value, or the whole Copy-as-cURL text")
-        .desired_rows(6)
+        .desired_rows(4)
         .desired_width(f32::INFINITY);
     let changed = egui::ScrollArea::vertical()
-        .max_height(160.0)
+        .id_salt("cookie_paste")
+        .max_height(120.0)
         .show(ui, |ui| ui.add(edit).changed())
         .inner;
     if changed {
@@ -61,28 +122,18 @@ fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
         if ui.add(field).changed() {
             out.push(Action::AuthUserDraftChanged(authuser));
         }
+        let enabled = !state.sign_in.draft.trim().is_empty();
+        if ui
+            .add_enabled(enabled, egui::Button::new("Sign in with cookies"))
+            .clicked()
+        {
+            out.push(Action::CookiesSubmitted);
+        }
     });
 }
 
-fn status_line(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
-    match &state.auth {
-        AuthState::Verifying => {
-            ui.spinner();
-        }
-        AuthState::Failed(message) => {
-            ui.colored_label(theme.color(ColorRole::Danger), message);
-            sign_in_button(ui, state, out);
-        }
-        _ => sign_in_button(ui, state, out),
-    }
-}
-
-fn sign_in_button(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
-    let enabled = !state.sign_in.draft.trim().is_empty();
-    if ui
-        .add_enabled(enabled, egui::Button::new("Sign in"))
-        .clicked()
-    {
-        out.push(Action::CookiesSubmitted);
+fn status_line(ui: &mut Ui, state: &State, theme: &dyn Theme) {
+    if let AuthState::Failed(message) = &state.auth {
+        ui.colored_label(theme.color(ColorRole::Danger), message);
     }
 }
