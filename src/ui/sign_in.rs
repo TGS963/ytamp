@@ -55,6 +55,15 @@ fn oauth_section(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Ac
     ui.add_space(theme.metric(MetricRole::GapSmall));
     match (&state.auth, &state.sign_in.oauth_url) {
         (AuthState::Verifying, Some(url)) => {
+            if let Some(code) = user_code_of(url) {
+                ui.horizontal(|ui| {
+                    ui.label(theme.secondary_label(TextRole::Body, "Your device code:"));
+                    ui.label(theme.label(TextRole::Heading, &code));
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(code);
+                    }
+                });
+            }
             ui.hyperlink_to("Open the Google sign-in page", url);
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -130,6 +139,15 @@ fn cookie_section(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
             out.push(Action::CookiesSubmitted);
         }
     });
+}
+
+/// The device code inside the verification URL's user_code parameter.
+fn user_code_of(url: &str) -> Option<String> {
+    let (_, query) = url.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("user_code="))
+        .map(|code| code.replace("%2D", "-"))
 }
 
 fn status_line(ui: &mut Ui, state: &State, theme: &dyn Theme) {
