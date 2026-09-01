@@ -131,17 +131,20 @@ fn track_row(
     all: &[Track],
     theme: &dyn Theme,
 ) -> Vec<Action> {
-    let mut actions = Vec::new();
+    let mut button_action = None;
     let response = row_frame(ui, theme, |ui| {
-        actions.extend(row_content(ui, track, theme));
+        button_action = row_content(ui, track, theme);
     });
-    actions.extend(hover_prefetch_action(ui, &response, track, theme));
-    if actions.is_empty() && response.clicked() {
-        actions.push(Action::ContextPlayed {
+    let mut actions = Vec::new();
+    match button_action {
+        Some(action) => actions.push(action),
+        None if response.clicked() => actions.push(Action::ContextPlayed {
             tracks: all.to_vec(),
             start: index,
-        });
+        }),
+        None => {}
     }
+    actions.extend(hover_prefetch_action(ui, &response, track, theme));
     actions
 }
 
@@ -174,13 +177,16 @@ fn hover_prefetch_action(
             None
         }
         DwellDecision::Emit => {
-            ui.ctx().data_mut(|data| data.remove::<f64>(id));
+            ui.ctx().data_mut(|data| data.insert_temp(id, EMITTED));
             Some(Action::TrackHovered(track.clone()))
         }
         DwellDecision::Reset => {
-            ui.ctx().data_mut(|data| data.remove::<f64>(id));
+            if start.is_some() {
+                ui.ctx().data_mut(|data| data.remove::<f64>(id));
+            }
             None
         }
+        DwellDecision::Done => None,
     }
 }
 
@@ -192,8 +198,14 @@ enum DwellDecision {
     Start,
     Wait { remaining: Duration },
     Emit,
+    /// The row emitted already during this hover.
+    Done,
     Reset,
 }
+
+/// The timer value after an emit. A row emits once per hover: the
+/// pointer must leave and return before it emits again.
+const EMITTED: f64 = f64::INFINITY;
 
 /// Decides `DwellDecision` from a row's hover state and clock. `start`
 /// is the dwell's own recorded start time, `now` and `delay` come
@@ -202,6 +214,7 @@ fn dwell_decision(hovered: bool, start: Option<f64>, now: f64, delay: f64) -> Dw
     match (hovered, start) {
         (false, _) => DwellDecision::Reset,
         (true, None) => DwellDecision::Start,
+        (true, Some(start)) if start == EMITTED => DwellDecision::Done,
         (true, Some(start)) if now - start >= delay => DwellDecision::Emit,
         (true, Some(start)) => DwellDecision::Wait {
             remaining: Duration::from_secs_f64((delay - (now - start)).max(0.0)),
@@ -265,6 +278,12 @@ mod tests {
     #[test]
     fn a_hover_at_the_delay_emits() {
         assert_eq!(dwell_decision(true, Some(10.0), 10.4, 0.4), DwellDecision::Emit);
+    }
+
+    #[test]
+    fn a_row_that_emitted_stays_quiet_until_the_pointer_leaves() {
+        assert_eq!(dwell_decision(true, Some(EMITTED), 99.0, 0.4), DwellDecision::Done);
+        assert_eq!(dwell_decision(false, Some(EMITTED), 99.0, 0.4), DwellDecision::Reset);
     }
 
     #[test]
