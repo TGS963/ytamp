@@ -1,21 +1,25 @@
-//! The yt-dlp resolver: a subprocess fallback.
+//! The yt-dlp source: a subprocess fallback.
 //!
 //! The yt-dlp team repairs YouTube breakage within days, so this
-//! resolver keeps playback alive while a rustypipe fix is pending.
-//! It needs the yt-dlp binary on PATH and does nothing without it.
+//! source keeps playback alive while a rustypipe fix is pending. It
+//! needs the yt-dlp binary on PATH and does nothing without it.
+//!
+//! yt-dlp writes the audio to stdout. A URL from `--get-url` binds to
+//! yt-dlp's own session and answers 403 to another program's fetch,
+//! so handing over bytes is the only reliable contract.
 
 use tokio::process::Command;
 
-use super::{BoxFuture, ResolvedStream, StreamResolver};
+use super::{AudioSource, BoxFuture};
 
 /// itag 140 is AAC 128kbps in M4A, the format the player decodes.
 const FORMAT_SELECTION: &str = "140/bestaudio[ext=m4a]";
 
-pub struct YtDlpResolver {
+pub struct YtDlpSource {
     binary: String,
 }
 
-impl YtDlpResolver {
+impl YtDlpSource {
     pub fn new() -> Self {
         Self {
             binary: "yt-dlp".to_string(),
@@ -23,45 +27,37 @@ impl YtDlpResolver {
     }
 }
 
-impl StreamResolver for YtDlpResolver {
+impl AudioSource for YtDlpSource {
     fn name(&self) -> &'static str {
         "yt-dlp"
     }
 
-    fn resolve<'a>(&'a self, video_id: &'a str) -> BoxFuture<'a, Result<ResolvedStream, String>> {
+    fn fetch_audio<'a>(
+        &'a self,
+        _http: &'a reqwest::Client,
+        video_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
         Box::pin(async move {
             let output = Command::new(&self.binary)
-                .args([
-                    "--quiet",
-                    "--no-warnings",
-                    "--format",
-                    FORMAT_SELECTION,
-                    "--get-url",
-                ])
+                .args(["--quiet", "--no-warnings", "--format", FORMAT_SELECTION])
+                .args(["--output", "-"])
                 .arg(format!("https://music.youtube.com/watch?v={video_id}"))
                 .output()
                 .await
                 .map_err(|error| format!("could not run yt-dlp: {error}"))?;
-            stream_from_output(output.status.success(), &output.stdout, &output.stderr)
+            audio_from_output(output.status.success(), output.stdout, &output.stderr)
         })
     }
 }
 
-fn stream_from_output(
-    succeeded: bool,
-    stdout: &[u8],
-    stderr: &[u8],
-) -> Result<ResolvedStream, String> {
+fn audio_from_output(succeeded: bool, stdout: Vec<u8>, stderr: &[u8]) -> Result<Vec<u8>, String> {
     if !succeeded {
         return Err(first_line(stderr).unwrap_or_else(|| "yt-dlp failed".to_string()));
     }
-    let url = first_line(stdout).ok_or("yt-dlp printed no URL")?;
-    Ok(ResolvedStream {
-        url,
-        mime: "audio/mp4".to_string(),
-        user_agent: None,
-        size: None,
-    })
+    if stdout.is_empty() {
+        return Err("yt-dlp produced no audio".to_string());
+    }
+    Ok(stdout)
 }
 
 fn first_line(bytes: &[u8]) -> Option<String> {
@@ -75,19 +71,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_url_line_becomes_a_stream() {
-        let result = stream_from_output(true, b"https://example.com/a\n", b"");
-        assert_eq!(result.unwrap().url, "https://example.com/a");
+    fn stdout_bytes_become_audio() {
+        assert_eq!(
+            audio_from_output(true, vec![1, 2, 3], b""),
+            Ok(vec![1, 2, 3])
+        );
     }
 
     #[test]
     fn a_failure_reports_the_first_stderr_line() {
-        let result = stream_from_output(false, b"", b"ERROR: video unavailable\nmore");
+        let result = audio_from_output(false, vec![], b"ERROR: video unavailable\nmore");
         assert_eq!(result.unwrap_err(), "ERROR: video unavailable");
     }
 
     #[test]
     fn empty_output_is_an_error() {
-        assert!(stream_from_output(true, b"\n", b"").is_err());
+        assert!(audio_from_output(true, vec![], b"").is_err());
     }
 }

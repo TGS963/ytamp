@@ -1,17 +1,7 @@
-mod api;
-mod app;
-mod auth;
-mod core;
-mod media_keys;
-mod player;
-mod runtime;
-mod stream;
-mod theme;
-mod ui;
-
 use std::sync::mpsc;
 
-use crate::core::action::Action;
+use ytamp::core::action::Action;
+use ytamp::{app, auth, media_keys, runtime};
 
 fn main() -> eframe::Result {
     env_logger::init();

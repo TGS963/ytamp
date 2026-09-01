@@ -1,68 +1,71 @@
-//! Stream resolution: a video id in, a playable audio URL out.
+//! Stream sourcing: a video id in, playable audio bytes out.
 //!
-//! YouTube changes its stream protection often, so resolution WILL
+//! YouTube changes its stream protection often, so sourcing WILL
 //! break from time to time. The seam here keeps that churn contained:
-//! resolvers implement one trait, and the chain tries each in order
-//! until one produces a stream.
+//! sources implement one trait, and the chain tries each in order
+//! until one produces bytes.
 //!
-//! The chain today: rustypipe first, the yt-dlp subprocess as the
-//! fallback when it is installed.
+//! The chain today: rustypipe (pure Rust InnerTube extraction), then
+//! the yt-dlp subprocess when the binary is installed. yt-dlp
+//! downloads the bytes itself, because a URL from `--get-url` binds
+//! to yt-dlp's own session and rejects another program's fetch.
 
+mod download;
 mod rustypipe;
 mod ytdlp;
 
 use std::future::Future;
 use std::pin::Pin;
 
-pub use rustypipe::RustyPipeResolver;
-pub use ytdlp::YtDlpResolver;
+pub use rustypipe::RustyPipeSource;
+pub use ytdlp::YtDlpSource;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// A playable audio stream. The player decodes AAC in M4A, so
-/// resolvers must prefer that container.
-#[derive(Clone, Debug)]
-pub struct ResolvedStream {
-    pub url: String,
-    pub mime: String,
-    /// The user agent of the InnerTube client that produced the URL.
-    /// googlevideo rejects a download whose user agent does not match.
-    pub user_agent: Option<String>,
-    /// The audio size in bytes, when the resolver knows it.
-    pub size: Option<u64>,
-}
-
-pub trait StreamResolver: Send + Sync {
+/// One way to turn a video id into audio bytes the decoder reads
+/// (AAC in M4A preferred).
+pub trait AudioSource: Send + Sync {
     fn name(&self) -> &'static str;
-    fn resolve<'a>(&'a self, video_id: &'a str) -> BoxFuture<'a, Result<ResolvedStream, String>>;
+    fn fetch_audio<'a>(
+        &'a self,
+        http: &'a reqwest::Client,
+        video_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, String>>;
 }
 
-/// Tries each resolver in order and returns the first stream.
+/// Tries each source in order until one produces audio bytes.
 pub struct ResolverChain {
-    resolvers: Vec<Box<dyn StreamResolver>>,
+    sources: Vec<Box<dyn AudioSource>>,
 }
 
 impl ResolverChain {
     pub fn with_default_resolvers() -> Self {
         Self {
-            resolvers: vec![
-                Box::new(RustyPipeResolver::new()),
-                Box::new(YtDlpResolver::new()),
+            sources: vec![
+                Box::new(RustyPipeSource::new()),
+                Box::new(YtDlpSource::new()),
             ],
         }
     }
 
-    /// The error text names every resolver that failed and why.
-    pub async fn resolve(&self, video_id: &str) -> Result<ResolvedStream, String> {
+    /// The error text names every source that failed and why.
+    pub async fn fetch_audio(
+        &self,
+        http: &reqwest::Client,
+        video_id: &str,
+    ) -> Result<Vec<u8>, String> {
         let mut failures = Vec::new();
-        for resolver in &self.resolvers {
-            match resolver.resolve(video_id).await {
-                Ok(stream) => return Ok(stream),
-                Err(message) => failures.push(format!("{}: {message}", resolver.name())),
+        for source in &self.sources {
+            match source.fetch_audio(http, video_id).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(message) => {
+                    log::warn!("{}: {message}", source.name());
+                    failures.push(format!("{}: {message}", source.name()));
+                }
             }
         }
         Err(format!(
-            "No resolver produced a stream. {}",
+            "No source produced audio. {}",
             failures.join(" / ")
         ))
     }

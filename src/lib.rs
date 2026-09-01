@@ -1,0 +1,15 @@
+//! ytamp: YouTube Music, native and fast.
+//!
+//! The library exists so examples and integration tests can drive the
+//! same modules the binary runs.
+
+pub mod api;
+pub mod app;
+pub mod auth;
+pub mod core;
+pub mod media_keys;
+pub mod player;
+pub mod runtime;
+pub mod stream;
+pub mod theme;
+pub mod ui;
