@@ -26,15 +26,16 @@ fn instructions(ui: &mut egui::Ui, theme: &dyn Theme) {
     for line in [
         "1. Open music.youtube.com in your browser and log in.",
         "2. Open the developer tools and select the Network tab.",
-        "3. Select a request to music.youtube.com.",
-        "4. Copy the full value of the Cookie request header and paste it below.",
+        "3. Type 'browse' in the filter and right-click a browse request.",
+        "4. Select Copy as cURL and paste the whole text below.",
         "5. Copy the X-Goog-AuthUser request header into the account field.",
     ] {
         ui.label(theme.secondary_label(TextRole::Body, line));
     }
     ui.label(theme.secondary_label(
         TextRole::Caption,
-        "The account field picks the Google account when several are signed in. Empty means 0.",
+        "Copy as cURL avoids the shortened display text that a direct copy takes. \
+         The account field picks the Google account when several are signed in. Empty means 0.",
     ));
 }
 

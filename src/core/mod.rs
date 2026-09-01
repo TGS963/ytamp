@@ -4,6 +4,7 @@
 //! clock, or the filesystem.
 
 pub mod action;
+pub mod cookie_paste;
 pub mod effect;
 pub mod model;
 pub mod queue;

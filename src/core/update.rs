@@ -121,19 +121,16 @@ fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
 }
 
 fn submit_cookies(state: &mut State) -> Vec<Effect> {
-    let cookies = state.sign_in.draft.trim().to_string();
-    if cookies.is_empty() {
+    if state.sign_in.draft.trim().is_empty() {
         return vec![];
     }
-    let missing = missing_session_cookies(&cookies);
-    if !missing.is_empty() {
-        state.auth = AuthState::Failed(format!(
-            "The paste misses the {} cookies. Copy the full Cookie header \
-             from a signed-in request to music.youtube.com.",
-            missing.join(", ")
-        ));
-        return vec![];
-    }
+    let cookies = match super::cookie_paste::cookies_from_paste(&state.sign_in.draft) {
+        Ok(cookies) => cookies,
+        Err(problem) => {
+            state.auth = AuthState::Failed(problem);
+            return vec![];
+        }
+    };
     let authuser = normalized_authuser(&state.sign_in.authuser_draft);
     let credentials = crate::core::effect::Credentials { cookies, authuser };
     state.auth = AuthState::Verifying;
@@ -141,23 +138,6 @@ fn submit_cookies(state: &mut State) -> Vec<Effect> {
         Effect::SaveCredentials(credentials.clone()),
         Effect::Api(ApiRequest::VerifyAuth(credentials)),
     ]
-}
-
-/// The session cookies a signed-in request always carries. Without
-/// them YouTube answers every browse request as signed out, while the
-/// SAPISID hash still passes, so the failure would surface late and
-/// look like an empty library.
-fn missing_session_cookies(cookies: &str) -> Vec<&'static str> {
-    ["SID", "SAPISID", "__Secure-3PAPISID", "__Secure-3PSID"]
-        .into_iter()
-        .filter(|name| !has_cookie(cookies, name))
-        .collect()
-}
-
-fn has_cookie(cookies: &str, name: &str) -> bool {
-    cookies
-        .split(';')
-        .any(|pair| pair.trim().split('=').next() == Some(name))
 }
 
 /// The account index for the X-Goog-AuthUser header: "0" when the
