@@ -86,10 +86,14 @@ fn liked_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut 
             ui.label(theme.secondary_label(TextRole::Body, "No liked songs yet."));
         }
         Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) => {
-            rows::track_list(ui, "library_liked", tracks, theme, out);
-            if state.library.liked_loading_more {
-                rows::loading_more_row(ui, theme);
-            }
+            rows::track_list(
+                ui,
+                "library_liked",
+                tracks,
+                state.library.liked_loading_more,
+                theme,
+                out,
+            );
         }
     }
 }

@@ -16,14 +16,18 @@ use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 /// appends one track to the user queue.
 ///
 /// `id_salt` must be unique among the scroll areas on the same page.
+/// While `loading_more` is true, a spinner row follows the last track
+/// inside the scroll area, so it stays visible on a list that fills
+/// the page.
 pub fn track_list(
     ui: &mut egui::Ui,
     id_salt: &str,
     tracks: &[Track],
+    loading_more: bool,
     theme: &dyn Theme,
     out: &mut Vec<Action>,
 ) {
-    track_list_area(ui, id_salt, tracks, None, theme, out);
+    track_list_area(ui, id_salt, tracks, loading_more, None, theme, out);
 }
 
 /// Draws `tracks` the same way as [`track_list`], but caps the visible
@@ -36,13 +40,14 @@ pub fn track_list_capped(
     theme: &dyn Theme,
     out: &mut Vec<Action>,
 ) {
-    track_list_area(ui, id_salt, tracks, Some(max_height), theme, out);
+    track_list_area(ui, id_salt, tracks, false, Some(max_height), theme, out);
 }
 
 fn track_list_area(
     ui: &mut egui::Ui,
     id_salt: &str,
     tracks: &[Track],
+    loading_more: bool,
     max_height: Option<f32>,
     theme: &dyn Theme,
     out: &mut Vec<Action>,
@@ -52,10 +57,12 @@ fn track_list_area(
     if let Some(height) = max_height {
         area = area.max_height(height);
     }
-    area.show_rows(ui, row_height, tracks.len(), |ui, row_range| {
+    let row_count = tracks.len() + usize::from(loading_more);
+    area.show_rows(ui, row_height, row_count, |ui, row_range| {
         for index in row_range {
-            if let Some(action) = track_row(ui, &tracks[index], index, tracks, theme) {
-                out.push(action);
+            match tracks.get(index) {
+                Some(track) => out.extend(track_row(ui, track, index, tracks, theme)),
+                None => loading_more_row(ui, theme),
             }
         }
     });
@@ -106,9 +113,9 @@ pub fn row_frame(
     response
 }
 
-/// A `RowHeight`-tall row with a centered spinner, drawn under a list
-/// that is still receiving pages from the network.
-pub fn loading_more_row(ui: &mut egui::Ui, theme: &dyn Theme) {
+/// A `RowHeight`-tall row with a centered spinner: the last row of a
+/// list that still receives pages from the network.
+fn loading_more_row(ui: &mut egui::Ui, theme: &dyn Theme) {
     row_frame(ui, theme, |ui| {
         ui.spinner();
     });
