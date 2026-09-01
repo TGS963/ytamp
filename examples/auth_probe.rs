@@ -1,55 +1,58 @@
-//! Runs the sign-in check against the saved cookie file and prints
-//! the exact failure with its full error chain.
-//!
-//! It runs the check twice: once on a plain runtime, once spawned on
-//! a two-worker runtime the way the app does it.
+//! Runs every API call the app makes against the saved cookie file
+//! and prints each result with its full error chain.
 //! Usage: cargo run --example auth_probe
 
 use std::error::Error as StdError;
 use std::fs;
 
 use directories::ProjectDirs;
+use ytmapi_rs::common::{PlaylistID, YoutubeID};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let dirs = ProjectDirs::from("", "", "ytamp").expect("a config directory");
     let path = dirs.config_dir().join("cookies.txt");
     let cookies = fs::read_to_string(&path).expect("the saved cookie file");
-    let cookies = cookies.trim().to_string();
-    println!("cookie file: {} ({} bytes)", path.display(), cookies.len());
-
-    let plain = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    println!("[plain runtime] {}", plain.block_on(check(&cookies)));
-
-    let app_like = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let spawned = app_like.spawn(check_owned(cookies));
     println!(
-        "[spawned, 2 workers] {}",
-        app_like.block_on(spawned).expect("join")
+        "cookie file: {} ({} bytes)",
+        path.display(),
+        cookies.trim().len()
+    );
+
+    let yt = match ytmapi_rs::YtMusic::from_cookie(cookies.trim()).await {
+        Ok(yt) => yt,
+        Err(error) => {
+            println!("token build failed: {}", chain(&error));
+            return;
+        }
+    };
+
+    report(
+        "library playlists",
+        &yt.get_library_playlists().await.map(|list| list.len()),
+    );
+    report(
+        "liked songs (VLLM)",
+        &yt.get_playlist_tracks(PlaylistID::from_raw("VLLM"))
+            .await
+            .map(|list| list.len()),
+    );
+    let query: ytmapi_rs::query::SearchQuery<'_, ytmapi_rs::query::search::BasicSearch> =
+        "test".into();
+    report(
+        "search",
+        &yt.query(query).await.map(|results| results.songs.len()),
     );
 }
 
-async fn check_owned(cookies: String) -> String {
-    check(&cookies).await
-}
-
-async fn check(cookies: &str) -> String {
-    match ytmapi_rs::YtMusic::from_cookie(cookies).await {
-        Err(error) => format!("token build failed: {}", chain(&error)),
-        Ok(yt) => match yt.get_library_playlists().await {
-            Err(error) => format!("library check failed: {}", chain(&error)),
-            Ok(playlists) => format!("signed in, {} playlists", playlists.len()),
-        },
+fn report<T>(name: &str, result: &Result<T, ytmapi_rs::Error>) {
+    match result {
+        Ok(_) => println!("[{name}] ok"),
+        Err(error) => println!("[{name}] failed: {}", chain(error)),
     }
 }
 
-/// The error and every source under it, joined for one line.
+/// The error and every cause under it, joined for one line.
 fn chain(error: &dyn StdError) -> String {
     let mut parts = vec![error.to_string()];
     let mut source = error.source();

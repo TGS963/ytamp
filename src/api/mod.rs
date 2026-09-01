@@ -11,9 +11,6 @@ use ytmapi_rs::common::{PlaylistID, YoutubeID};
 
 use crate::core::model::{Playlist, PlaylistId, SearchResults, Track};
 
-/// The playlist id YouTube Music gives every account's liked songs.
-const LIKED_SONGS_PLAYLIST: &str = "LM";
-
 #[derive(Clone)]
 pub struct Api {
     yt: YtMusic<BrowserToken>,
@@ -48,17 +45,26 @@ impl Api {
             .collect())
     }
 
+    /// The Liked Music playlist, "LM", per ytmusicapi's get_liked_songs.
+    /// A fresh account has an empty one, which parses as a missing
+    /// shelf, so that one failure counts as zero songs.
     pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
-        self.playlist_tracks(&PlaylistId(LIKED_SONGS_PLAYLIST.to_string()))
-            .await
+        match self.raw_playlist_tracks("LM").await {
+            Ok(tracks) => Ok(tracks),
+            Err(error) => empty_playlist_or_error(error),
+        }
     }
 
     pub async fn playlist_tracks(&self, id: &PlaylistId) -> Result<Vec<Track>, String> {
+        self.raw_playlist_tracks(&id.0).await.map_err(readable)
+    }
+
+    async fn raw_playlist_tracks(&self, id: &str) -> Result<Vec<Track>, ytmapi_rs::Error> {
+        let browse_id = playlist_browse_id(id);
         let items = self
             .yt
-            .get_playlist_tracks(PlaylistID::from_raw(&id.0))
-            .await
-            .map_err(readable)?;
+            .get_playlist_tracks(PlaylistID::from_raw(&browse_id))
+            .await?;
         Ok(items
             .into_iter()
             .filter_map(convert::playlist_item_to_track)
@@ -66,8 +72,47 @@ impl Api {
     }
 }
 
+/// ytmusicapi's rule: the browse endpoint takes "VL" + the playlist id,
+/// unless the id already carries the prefix.
+fn playlist_browse_id(playlist_id: &str) -> String {
+    if playlist_id.starts_with("VL") {
+        return playlist_id.to_string();
+    }
+    format!("VL{playlist_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playlist_browse_id;
+
+    #[test]
+    fn browse_ids_get_the_vl_prefix_once() {
+        assert_eq!(playlist_browse_id("LM"), "VLLM");
+        assert_eq!(playlist_browse_id("PL123"), "VLPL123");
+        assert_eq!(playlist_browse_id("VLPL123"), "VLPL123");
+    }
+}
+
 fn readable(error: ytmapi_rs::Error) -> String {
-    format!("YouTube Music request failed: {}", error_chain(&error))
+    readable_ref(&error)
+}
+
+/// An empty playlist carries no music shelf, which the parser reports
+/// as a JSON parsing error. Treat that as zero songs and keep every
+/// other failure an error.
+fn empty_playlist_or_error(error: ytmapi_rs::Error) -> Result<Vec<Track>, String> {
+    let message = readable_ref(&error);
+    match error.into_kind() {
+        ytmapi_rs::error::ErrorKind::JsonParsing(_) => {
+            log::info!("liked songs parse failed, treating as empty: {message}");
+            Ok(vec![])
+        }
+        _ => Err(message),
+    }
+}
+
+fn readable_ref(error: &ytmapi_rs::Error) -> String {
+    format!("YouTube Music request failed: {}", error_chain(error))
 }
 
 /// The error and every cause under it, on one line. A bare reqwest
