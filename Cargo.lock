@@ -5673,6 +5673,7 @@ dependencies = [
  "rodio",
  "rustypipe",
  "serde",
+ "serde_json",
  "tokio",
  "ytmapi-rs",
 ]

@@ -30,6 +30,7 @@ fn main() -> eframe::Result {
             let effect_runtime =
                 runtime::EffectRuntime::new(action_sender, move || egui_ctx.request_repaint());
             let mut app = app::App::new(effect_runtime, action_receiver);
+            app.restore_session(creation.storage);
             if let Some(cookies) = auth::load_cookies() {
                 app.queue_action(Action::StoredCookiesFound(cookies));
             }

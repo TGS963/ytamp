@@ -18,6 +18,7 @@ reqwest = "0.13.4"
 rodio = "0.22.2"
 rustypipe = "0.11.4"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 ytmapi-rs = "0.3.3"
 

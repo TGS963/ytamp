@@ -81,6 +81,9 @@ pub struct PlaybackState {
     pub position: Duration,
     pub track_duration: Option<Duration>,
     pub volume: f32,
+    /// Where the next started track seeks to: set when a restored
+    /// session resumes mid-track.
+    pub resume_position: Option<Duration>,
 }
 
 impl Default for PlaybackState {
@@ -91,6 +94,7 @@ impl Default for PlaybackState {
             position: Duration::ZERO,
             track_duration: None,
             volume: 1.0,
+            resume_position: None,
         }
     }
 }

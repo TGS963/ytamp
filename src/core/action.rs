@@ -31,6 +31,7 @@ pub enum Action {
 
     // From the shell at startup.
     StoredCookiesFound(String),
+    SessionRestored(crate::core::session::SavedSession),
 
     // From the effect runtime.
     NoticePosted(String),

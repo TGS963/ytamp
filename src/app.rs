@@ -48,10 +48,30 @@ impl App {
     }
 }
 
+const SESSION_STORAGE_KEY: &str = "session";
+
+impl App {
+    pub fn restore_session(&mut self, storage: Option<&dyn eframe::Storage>) {
+        let Some(json) = storage.and_then(|storage| storage.get_string(SESSION_STORAGE_KEY)) else {
+            return;
+        };
+        if let Some(session) = crate::core::session::SavedSession::from_json(&json) {
+            self.queue_action(Action::SessionRestored(session));
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut actions: Vec<Action> = self.incoming.try_iter().collect();
         actions.extend(ui::view(ui, &self.state, self.theme.as_ref()));
         self.reduce(actions);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let session = crate::core::session::SavedSession::capture(&self.state);
+        if let Some(json) = session.to_json() {
+            storage.set_string(SESSION_STORAGE_KEY, json);
+        }
     }
 }

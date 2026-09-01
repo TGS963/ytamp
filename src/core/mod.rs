@@ -7,5 +7,6 @@ pub mod action;
 pub mod effect;
 pub mod model;
 pub mod queue;
+pub mod session;
 pub mod state;
 pub mod update;

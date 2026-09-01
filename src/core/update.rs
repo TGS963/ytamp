@@ -83,6 +83,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.auth = AuthState::Verifying;
             vec![Effect::Api(ApiRequest::VerifyAuth { cookies })]
         }
+        Action::SessionRestored(session) => restore_session(state, session),
         Action::NoticePosted(message) => {
             state.notices.push(message);
             vec![]
@@ -185,8 +186,35 @@ fn toggle_play(state: &mut State) -> Vec<Effect> {
             state.playback.status = PlayStatus::Playing;
             vec![Effect::Player(PlayerCommand::Resume)]
         }
-        PlayStatus::Stopped | PlayStatus::Loading => vec![],
+        PlayStatus::Stopped => restart_current(state),
+        PlayStatus::Loading => vec![],
     }
+}
+
+/// Play on a stopped player reloads the current track and continues
+/// where it stopped. This is how a restored session resumes.
+fn restart_current(state: &mut State) -> Vec<Effect> {
+    let Some(track) = state.playback.queue.current().cloned() else {
+        return vec![];
+    };
+    let position = state.playback.position;
+    state.playback.resume_position = (!position.is_zero()).then_some(position);
+    load_track(state, Some(track))
+}
+
+fn restore_session(state: &mut State, session: crate::core::session::SavedSession) -> Vec<Effect> {
+    state.playback.position = session.position();
+    state.playback.queue = session.queue;
+    state.playback.volume = session.volume.clamp(0.0, 1.0);
+    state.playback.status = PlayStatus::Stopped;
+    state.playback.track_duration = state
+        .playback
+        .queue
+        .current()
+        .and_then(|track| track.duration);
+    vec![Effect::Player(PlayerCommand::SetVolume(
+        state.playback.volume,
+    ))]
 }
 
 fn go_previous(state: &mut State) -> Vec<Effect> {
@@ -208,7 +236,11 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
         PlayerEvent::TrackStarted { duration } => {
             state.playback.status = PlayStatus::Playing;
             state.playback.track_duration = duration;
-            vec![]
+            let Some(position) = state.playback.resume_position.take() else {
+                return vec![];
+            };
+            state.playback.position = position;
+            vec![Effect::Player(PlayerCommand::Seek(position))]
         }
         PlayerEvent::PositionChanged(position) => {
             state.playback.position = position;
@@ -387,6 +419,40 @@ mod tests {
             Action::PlaylistTracksLoaded(PlaylistId("p1".into()), Ok(vec![track("a")])),
         );
         assert_eq!(state.library.open_playlist, Loadable::Loading);
+    }
+
+    #[test]
+    fn a_restored_session_resumes_at_the_old_position() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        state.playback.position = Duration::from_secs(30);
+        let saved = crate::core::session::SavedSession::capture(&state);
+
+        let mut restored = State::default();
+        apply(&mut restored, Action::SessionRestored(saved));
+        assert_eq!(restored.playback.status, PlayStatus::Stopped);
+        assert_eq!(restored.playback.position, Duration::from_secs(30));
+
+        let effects = apply(&mut restored, Action::PlayToggled);
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Load(track("a")))]
+        );
+        let effects = apply(
+            &mut restored,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Seek(Duration::from_secs(30)))]
+        );
+        assert_eq!(restored.playback.position, Duration::from_secs(30));
     }
 
     #[test]
