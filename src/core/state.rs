@@ -14,6 +14,9 @@ pub enum Loadable<T> {
     #[default]
     NotAsked,
     Loading,
+    /// A cached value shows while the network refresh still runs. The
+    /// UI renders this like `Loaded`, with no spinner.
+    Refreshing(T),
     Loaded(T),
     Failed(String),
 }
@@ -21,7 +24,7 @@ pub enum Loadable<T> {
 impl<T> Loadable<T> {
     pub fn loaded(&self) -> Option<&T> {
         match self {
-            Self::Loaded(value) => Some(value),
+            Self::Loaded(value) | Self::Refreshing(value) => Some(value),
             _ => None,
         }
     }

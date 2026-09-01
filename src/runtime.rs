@@ -10,7 +10,9 @@ use std::sync::{Arc, RwLock};
 use crate::api::Api;
 use crate::auth;
 use crate::core::action::Action;
-use crate::core::effect::{ApiRequest, Effect};
+use crate::core::effect::{ApiRequest, Effect, LibraryCacheWrite};
+use crate::core::model::PlaylistId;
+use crate::library_cache;
 use crate::player::PlayerHandle;
 use crate::stream::ResolverChain;
 
@@ -55,6 +57,10 @@ impl EffectRuntime {
             Effect::SaveCredentials(credentials) => self.save_credentials(credentials),
             Effect::ClearCredentials => self.clear_credentials(),
             Effect::Player(command) => self.player.send(command),
+            Effect::LoadLibraryCache => self.load_library_cache(),
+            Effect::LoadPlaylistTracksCache(id) => self.load_playlist_tracks_cache(id),
+            Effect::SaveLibraryCache(write) => self.save_library_cache(write),
+            Effect::ClearLibraryCache => self.clear_library_cache(),
         }
     }
 
@@ -85,6 +91,46 @@ impl EffectRuntime {
                 deliver(Action::NoticePosted(format!("Signing out failed: {error}")));
             }
         });
+    }
+
+    /// Reads the cached playlist list and liked songs, and delivers
+    /// them together even when one or both are a miss. The reducer
+    /// decides what a miss means for each slot.
+    fn load_library_cache(&self) {
+        let deliver = self.delivery();
+        self.tokio.spawn_blocking(move || {
+            let playlists = library_cache::load_playlists();
+            let liked = library_cache::load_liked();
+            deliver(Action::LibraryCacheLoaded { playlists, liked });
+        });
+    }
+
+    /// Reads one playlist's cached track list. Delivers nothing on a
+    /// miss, since a loading page already shows a spinner.
+    fn load_playlist_tracks_cache(&self, id: PlaylistId) {
+        let deliver = self.delivery();
+        self.tokio.spawn_blocking(move || {
+            if let Some(tracks) = library_cache::load_playlist_tracks(&id) {
+                deliver(Action::PlaylistTracksCacheLoaded(id, tracks));
+            }
+        });
+    }
+
+    /// Writes one piece of fresh network data to the library cache.
+    /// The reducer has already applied it to the state by the time
+    /// this effect runs.
+    fn save_library_cache(&self, write: LibraryCacheWrite) {
+        self.tokio.spawn_blocking(move || match write {
+            LibraryCacheWrite::Playlists(playlists) => library_cache::save_playlists(&playlists),
+            LibraryCacheWrite::Liked(tracks) => library_cache::save_liked(&tracks),
+            LibraryCacheWrite::PlaylistTracks(id, tracks) => {
+                library_cache::save_playlist_tracks(&id, &tracks)
+            }
+        });
+    }
+
+    fn clear_library_cache(&self) {
+        self.tokio.spawn_blocking(library_cache::clear);
     }
 
     /// One closure that sends an action to the app and wakes the UI.

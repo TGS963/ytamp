@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{PlaylistId, Track};
+use super::model::{Playlist, PlaylistId, Track};
 
 /// What a YouTube Music session needs: the Cookie header, the
 /// X-Goog-AuthUser index that picks the account inside the session,
@@ -39,6 +39,25 @@ pub enum Effect {
     Player(PlayerCommand),
     SaveCredentials(Credentials),
     ClearCredentials,
+    /// Reads the cached playlist list and liked songs from disk.
+    LoadLibraryCache,
+    /// Reads the cached track list for one playlist from disk.
+    LoadPlaylistTracksCache(PlaylistId),
+    /// Writes fresh network data to the library cache, after the
+    /// reducer has already applied it to the state.
+    SaveLibraryCache(LibraryCacheWrite),
+    /// Deletes the whole library cache. Sign-out pairs this with
+    /// `ClearCredentials`, so no stale library survives for the next
+    /// account.
+    ClearLibraryCache,
+}
+
+/// One fresh network result to persist to the library cache.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LibraryCacheWrite {
+    Playlists(Vec<Playlist>),
+    Liked(Vec<Track>),
+    PlaylistTracks(PlaylistId, Vec<Track>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

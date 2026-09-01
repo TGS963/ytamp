@@ -24,7 +24,9 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
         Loadable::Failed(message) => {
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
-        Loadable::Loaded(results) => results_view(ui, results, theme, out),
+        Loadable::Loaded(results) | Loadable::Refreshing(results) => {
+            results_view(ui, results, theme, out)
+        }
     }
 }
 

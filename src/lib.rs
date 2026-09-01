@@ -7,6 +7,7 @@ pub mod api;
 pub mod app;
 pub mod auth;
 pub mod core;
+pub mod library_cache;
 pub mod media_keys;
 pub mod player;
 pub mod runtime;

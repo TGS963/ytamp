@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use super::action::{Action, PlayerEvent};
-use super::effect::{ApiRequest, Effect, PlayerCommand};
-use super::model::{PlaylistId, Track};
+use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
+use super::model::{Playlist, PlaylistId, Track};
 use super::queue::RandomBelow;
 use super::state::{AuthState, Loadable, Page, PlayStatus, State};
 
@@ -53,17 +53,14 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             vec![]
         }
         Action::PlaylistOpened(id) => open_playlist(state, id),
-        Action::PlaylistsLoaded(result) => {
-            set_loadable(&mut state.library.playlists, result);
-            vec![]
+        Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
+        Action::LikedLoaded(result) => finish_liked_load(state, result),
+        Action::PlaylistTracksLoaded(id, result) => finish_playlist_load(state, id, result),
+        Action::LibraryCacheLoaded { playlists, liked } => {
+            apply_library_cache(state, playlists, liked)
         }
-        Action::LikedLoaded(result) => {
-            set_loadable(&mut state.library.liked, result);
-            vec![]
-        }
-        Action::PlaylistTracksLoaded(id, result) => {
-            finish_playlist_load(state, id, result);
-            vec![]
+        Action::PlaylistTracksCacheLoaded(id, tracks) => {
+            apply_playlist_tracks_cache(state, id, tracks)
         }
         Action::ContextPlayed { tracks, start } => play_context(state, tracks, start, random_below),
         Action::TrackQueued(track) => {
@@ -119,16 +116,25 @@ fn navigate(state: &mut State, page: Page) -> Vec<Effect> {
     effects
 }
 
-/// The library fetches that have not run yet. Keeps Library cheap to reopen.
+/// The library fetches that have not run yet. Keeps Library cheap to
+/// reopen. The first fetch also reads the disk cache, so the last
+/// session's library shows at once while the network call is still
+/// in flight.
 fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
     let mut effects = vec![];
+    let mut needs_cache = false;
     if state.library.playlists == Loadable::NotAsked {
         state.library.playlists = Loadable::Loading;
         effects.push(Effect::Api(ApiRequest::FetchPlaylists));
+        needs_cache = true;
     }
     if state.library.liked == Loadable::NotAsked {
         state.library.liked = Loadable::Loading;
         effects.push(Effect::Api(ApiRequest::FetchLiked));
+        needs_cache = true;
+    }
+    if needs_cache {
+        effects.push(Effect::LoadLibraryCache);
     }
     effects
 }
@@ -194,6 +200,7 @@ fn sign_out(state: &mut State) -> Vec<Effect> {
     vec![
         Effect::Player(PlayerCommand::Stop),
         Effect::ClearCredentials,
+        Effect::ClearLibraryCache,
     ]
 }
 
@@ -222,15 +229,86 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
 fn open_playlist(state: &mut State, id: PlaylistId) -> Vec<Effect> {
     state.library.open_playlist = Loadable::Loading;
     state.page = Page::Playlist(id.clone());
-    vec![Effect::Api(ApiRequest::FetchPlaylistTracks(id))]
+    vec![
+        Effect::Api(ApiRequest::FetchPlaylistTracks(id.clone())),
+        Effect::LoadPlaylistTracksCache(id),
+    ]
 }
 
+/// Applies a fresh track list and schedules it for the cache.
 /// Ignores a result for a playlist the user has already left.
-fn finish_playlist_load(state: &mut State, id: PlaylistId, result: Result<Vec<Track>, String>) {
-    if state.page != Page::Playlist(id) {
-        return;
+fn finish_playlist_load(
+    state: &mut State,
+    id: PlaylistId,
+    result: Result<Vec<Track>, String>,
+) -> Vec<Effect> {
+    if state.page != Page::Playlist(id.clone()) {
+        return vec![];
     }
-    set_loadable(&mut state.library.open_playlist, result);
+    let Ok(tracks) = result else {
+        state.library.open_playlist = Loadable::Failed(result.unwrap_err());
+        return vec![];
+    };
+    state.library.open_playlist = Loadable::Loaded(tracks.clone());
+    vec![Effect::SaveLibraryCache(LibraryCacheWrite::PlaylistTracks(
+        id, tracks,
+    ))]
+}
+
+/// Applies a fresh playlist list and schedules it for the cache.
+fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String>) -> Vec<Effect> {
+    let Ok(playlists) = result else {
+        state.library.playlists = Loadable::Failed(result.unwrap_err());
+        return vec![];
+    };
+    state.library.playlists = Loadable::Loaded(playlists.clone());
+    vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+        playlists,
+    ))]
+}
+
+/// Applies a fresh liked-songs list and schedules it for the cache.
+fn finish_liked_load(state: &mut State, result: Result<Vec<Track>, String>) -> Vec<Effect> {
+    let Ok(tracks) = result else {
+        state.library.liked = Loadable::Failed(result.unwrap_err());
+        return vec![];
+    };
+    state.library.liked = Loadable::Loaded(tracks.clone());
+    vec![Effect::SaveLibraryCache(LibraryCacheWrite::Liked(tracks))]
+}
+
+/// Applies cached library data. A slot accepts the cache only while
+/// it is still loading, so fresh network data that already landed,
+/// or a load that already failed, never loses to a late cache hit.
+fn apply_library_cache(
+    state: &mut State,
+    playlists: Option<Vec<Playlist>>,
+    liked: Option<Vec<Track>>,
+) -> Vec<Effect> {
+    apply_cached_if_loading(&mut state.library.playlists, playlists);
+    apply_cached_if_loading(&mut state.library.liked, liked);
+    vec![]
+}
+
+/// Applies a playlist's cached track list, honoring the same
+/// still-loading rule as `apply_library_cache`. Ignores a cache hit
+/// for a playlist the user has already left.
+fn apply_playlist_tracks_cache(state: &mut State, id: PlaylistId, tracks: Vec<Track>) -> Vec<Effect> {
+    if state.page == Page::Playlist(id) {
+        apply_cached_if_loading(&mut state.library.open_playlist, Some(tracks));
+    }
+    vec![]
+}
+
+/// Puts `cached` into `slot` as a silent refresh, but only while
+/// `slot` is still loading. A slot that already holds fresh or
+/// failed data keeps it, so a late cache hit can never overwrite a
+/// network result.
+fn apply_cached_if_loading<T>(slot: &mut Loadable<T>, cached: Option<T>) {
+    let Some(value) = cached else { return };
+    if matches!(slot, Loadable::Loading) {
+        *slot = Loadable::Refreshing(value);
+    }
 }
 
 fn play_context(
@@ -437,6 +515,7 @@ mod tests {
             vec![
                 Effect::Player(PlayerCommand::Stop),
                 Effect::ClearCredentials,
+                Effect::ClearLibraryCache,
             ]
         );
     }
@@ -473,6 +552,7 @@ mod tests {
             vec![
                 Effect::Api(ApiRequest::FetchPlaylists),
                 Effect::Api(ApiRequest::FetchLiked),
+                Effect::LoadLibraryCache,
             ]
         );
     }
@@ -483,6 +563,99 @@ mod tests {
         apply(&mut state, Action::AuthVerified(Ok(())));
         let effects = apply(&mut state, Action::NavigatedTo(Page::Library));
         assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn cache_data_fills_a_loading_slot() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        let playlist = Playlist {
+            id: PlaylistId("p1".into()),
+            title: "Chill".into(),
+            track_count: Some(3),
+            thumbnail_url: None,
+        };
+        apply(
+            &mut state,
+            Action::LibraryCacheLoaded {
+                playlists: Some(vec![playlist.clone()]),
+                liked: Some(vec![track("a")]),
+            },
+        );
+        assert_eq!(
+            state.library.playlists,
+            Loadable::Refreshing(vec![playlist])
+        );
+        assert_eq!(state.library.liked, Loadable::Refreshing(vec![track("a")]));
+    }
+
+    #[test]
+    fn fresh_network_data_is_never_overwritten_by_a_late_cache_hit() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(&mut state, Action::LikedLoaded(Ok(vec![track("fresh")])));
+
+        apply(
+            &mut state,
+            Action::LibraryCacheLoaded {
+                playlists: None,
+                liked: Some(vec![track("stale")]),
+            },
+        );
+
+        assert_eq!(state.library.liked, Loadable::Loaded(vec![track("fresh")]));
+    }
+
+    #[test]
+    fn fresh_liked_songs_are_saved_to_the_cache() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        let effects = apply(&mut state, Action::LikedLoaded(Ok(vec![track("a")])));
+        assert_eq!(
+            effects,
+            vec![Effect::SaveLibraryCache(LibraryCacheWrite::Liked(vec![
+                track("a")
+            ]))]
+        );
+    }
+
+    #[test]
+    fn opening_a_playlist_reads_the_cache_and_the_network() {
+        let mut state = State::default();
+        let effects = apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Api(ApiRequest::FetchPlaylistTracks(PlaylistId("p1".into()))),
+                Effect::LoadPlaylistTracksCache(PlaylistId("p1".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_playlist_cache_hit_fills_the_loading_page() {
+        let mut state = State::default();
+        apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
+        apply(
+            &mut state,
+            Action::PlaylistTracksCacheLoaded(PlaylistId("p1".into()), vec![track("cached")]),
+        );
+        assert_eq!(
+            state.library.open_playlist,
+            Loadable::Refreshing(vec![track("cached")])
+        );
+    }
+
+    #[test]
+    fn a_stale_playlist_cache_hit_is_ignored_after_leaving_the_page() {
+        let mut state = State::default();
+        apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
+        apply(&mut state, Action::NavigatedTo(Page::Search));
+        apply(
+            &mut state,
+            Action::PlaylistTracksCacheLoaded(PlaylistId("p1".into()), vec![track("cached")]),
+        );
+        assert_eq!(state.library.open_playlist, Loadable::Loading);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use super::model::{PlaylistId, SearchResults, Track};
+use super::model::{Playlist, PlaylistId, SearchResults, Track};
 use super::state::Page;
 
 #[derive(Clone, Debug)]
@@ -51,6 +51,14 @@ pub enum Action {
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),
     LikedLoaded(Result<Vec<Track>, String>),
     PlaylistTracksLoaded(PlaylistId, Result<Vec<Track>, String>),
+    /// The library cache read, delivered once whether or not either
+    /// file existed. A `None` field is a cache miss for that list.
+    LibraryCacheLoaded {
+        playlists: Option<Vec<Playlist>>,
+        liked: Option<Vec<Track>>,
+    },
+    /// A playlist's cached track list, delivered only on a cache hit.
+    PlaylistTracksCacheLoaded(PlaylistId, Vec<Track>),
 
     // From the player engine.
     Player(PlayerEvent),
