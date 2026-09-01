@@ -42,6 +42,9 @@ pub enum MetricRole {
     RowArtSize,
     PlayerArtSize,
     CornerRadius,
+    /// Seconds the pointer must rest on a track row before the row
+    /// starts a hover prefetch.
+    HoverPrefetchDelay,
 }
 
 pub trait Theme {

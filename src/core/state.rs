@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use super::model::{Playlist, PlaylistId, SearchResults, Track};
+use super::model::{Playlist, PlaylistId, SearchResults, Track, TrackId};
 use super::queue::Queue;
 
 /// A value that arrives over the network.
@@ -107,6 +107,10 @@ pub struct PlaybackState {
     /// Where the next started track seeks to: set when a restored
     /// session resumes mid-track.
     pub resume_position: Option<Duration>,
+    /// The track id of the last hover prefetch. Guards against a
+    /// second prefetch request for a row the pointer left and then
+    /// entered again.
+    pub last_hover_prefetch: Option<TrackId>,
 }
 
 impl Default for PlaybackState {
@@ -118,6 +122,7 @@ impl Default for PlaybackState {
             track_duration: None,
             volume: 1.0,
             resume_position: None,
+            last_hover_prefetch: None,
         }
     }
 }

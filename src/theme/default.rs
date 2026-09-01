@@ -41,6 +41,7 @@ impl Theme for DefaultTheme {
             MetricRole::RowArtSize => 24.0,
             MetricRole::PlayerArtSize => 56.0,
             MetricRole::CornerRadius => 4.0,
+            MetricRole::HoverPrefetchDelay => 0.4,
         }
     }
 }

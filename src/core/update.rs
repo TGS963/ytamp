@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::action::{Action, PlayerEvent};
 use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
-use super::model::{Playlist, PlaylistId, Track};
+use super::model::{Playlist, PlaylistId, Track, TrackId};
 use super::queue::RandomBelow;
 use super::state::{AuthState, Loadable, Page, PlayStatus, State};
 
@@ -75,6 +75,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.playback.queue.queue_track(track);
             prefetch_next(state)
         }
+        Action::TrackHovered(track) => hover_prefetch(state, track),
         Action::PlayToggled => toggle_play(state),
         Action::NextPressed => load_or_stop(state, |state| state.playback.queue.next()),
         Action::PreviousPressed => go_previous(state),
@@ -555,6 +556,31 @@ fn prefetch_next(state: &State) -> Vec<Effect> {
         Some(track) => vec![Effect::Player(PlayerCommand::Prefetch(track))],
         None => vec![],
     }
+}
+
+/// Warms the cache for a track the pointer has rested on, unless
+/// `should_hover_prefetch` finds a reason to skip it. Remembers the
+/// id, so a pointer that leaves and returns to the same row does not
+/// start a second download.
+fn hover_prefetch(state: &mut State, track: Track) -> Vec<Effect> {
+    let current = state.playback.queue.current().map(|track| &track.id);
+    let last = state.playback.last_hover_prefetch.as_ref();
+    if !should_hover_prefetch(current, last, &track.id) {
+        return vec![];
+    }
+    state.playback.last_hover_prefetch = Some(track.id.clone());
+    vec![Effect::Player(PlayerCommand::Prefetch(track))]
+}
+
+/// Whether a hover on `hovered` should start a prefetch: not the
+/// track already playing, and not a repeat of the last hover
+/// prefetch.
+fn should_hover_prefetch(
+    current: Option<&TrackId>,
+    last_hover_prefetch: Option<&TrackId>,
+    hovered: &TrackId,
+) -> bool {
+    current != Some(hovered) && last_hover_prefetch != Some(hovered)
 }
 
 fn set_loadable<T>(slot: &mut Loadable<T>, result: Result<T, String>) {
@@ -1139,6 +1165,56 @@ mod tests {
         );
         assert_eq!(state.library.open_playlist, Loadable::Loading);
         assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn hovering_a_track_prefetches_it() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::TrackHovered(track("b")));
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Prefetch(track("b")))]
+        );
+    }
+
+    #[test]
+    fn hovering_the_current_track_prefetches_nothing() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::TrackHovered(track("a")));
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn hovering_the_same_track_twice_prefetches_only_once() {
+        let mut state = State::default();
+        apply(&mut state, Action::TrackHovered(track("b")));
+        let effects = apply(&mut state, Action::TrackHovered(track("b")));
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn the_dwell_decision_is_pure() {
+        let a = TrackId("a".into());
+        let b = TrackId("b".into());
+        let c = TrackId("c".into());
+        assert!(should_hover_prefetch(None, None, &b));
+        assert!(!should_hover_prefetch(Some(&a), None, &a));
+        assert!(!should_hover_prefetch(None, Some(&b), &b));
+        assert!(should_hover_prefetch(Some(&a), Some(&b), &c));
     }
 
     #[test]

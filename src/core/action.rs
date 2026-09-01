@@ -30,6 +30,9 @@ pub enum Action {
         start: usize,
     },
     TrackQueued(Track),
+    /// The pointer rested on a track row long enough to warm its
+    /// cache. The view emits this once per dwell.
+    TrackHovered(Track),
     PlayToggled,
     NextPressed,
     PreviousPressed,

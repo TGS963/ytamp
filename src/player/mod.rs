@@ -9,11 +9,15 @@
 //! track a no-op on arrival, so a fast skip never lets a stale track
 //! start playing.
 //!
-//! A small cache holds `AudioBuffer` handles for up to two tracks,
-//! complete or still filling. A Prefetch command warms it for the
-//! track that plays next, at lower priority than the active track. A
-//! later Load for the same track then finds its buffer already in
-//! the cache and streams from it at once.
+//! A small cache holds `AudioBuffer` handles for up to four tracks,
+//! complete or still filling: the playing track, the queue's next
+//! track, and headroom for a hover prefetch, at about 4 MB a buffer.
+//! A Prefetch command warms it for a track that may play soon, at
+//! lower priority than the active track. A later Load for the same
+//! track then finds its buffer already in the cache and streams from
+//! it at once. At most two prefetch downloads run at a time, so a
+//! pointer sweep across many rows never starts a flood of yt-dlp
+//! processes.
 
 pub mod source;
 
@@ -28,6 +32,11 @@ use crate::stream::{AudioBuffer, BufferStatus, ResolverChain, disk_cache};
 use source::{DecoderHandle, PositionHandle, ReadyInfo};
 
 const TICK: Duration = Duration::from_millis(250);
+
+/// The most prefetch downloads that may run at once. Caps the yt-dlp
+/// processes a pointer sweep across many rows can start; the
+/// queue-next prefetch and the hover prefetch share this budget.
+const MAX_PREFETCH_IN_FLIGHT: usize = 2;
 
 pub struct PlayerHandle {
     sender: Sender<PlayerMsg>,
@@ -94,7 +103,7 @@ struct PrefetchCache {
 }
 
 impl PrefetchCache {
-    const CAPACITY: usize = 2;
+    const CAPACITY: usize = 4;
 
     fn new() -> Self {
         Self { entries: Vec::new() }
@@ -156,6 +165,10 @@ struct Engine {
     /// A prefetch request that arrived while the active track was
     /// still loading. Starts once that load settles.
     pending_prefetch: Option<Track>,
+    /// How many prefetch downloads have started but not yet delivered
+    /// `PrefetchBufferReady`. A new prefetch request drops when this
+    /// reaches `MAX_PREFETCH_IN_FLIGHT`.
+    prefetch_in_flight: usize,
     /// The decoder handle for the active load, held between
     /// `spawn_decoder` and its `Ready` report.
     pending_source: Option<DecoderHandle>,
@@ -190,6 +203,7 @@ impl Engine {
             load_pending: false,
             prefetch_cache: PrefetchCache::new(),
             pending_prefetch: None,
+            prefetch_in_flight: 0,
             pending_source: None,
             position: None,
         }
@@ -205,6 +219,7 @@ impl Engine {
                     buffer,
                 }) => self.apply_buffer_ready(generation, video_id, buffer),
                 Ok(PlayerMsg::PrefetchBufferReady { video_id, buffer }) => {
+                    self.prefetch_in_flight = self.prefetch_in_flight.saturating_sub(1);
                     self.prefetch_cache.insert(video_id, buffer);
                 }
                 Ok(PlayerMsg::SourceReady {
@@ -353,9 +368,10 @@ impl Engine {
     }
 
     /// Warms the cache for `track` in the background. A no-op when
-    /// the track is already cached or is the active track. Waits for
-    /// the active load to settle first, so the active track never
-    /// competes for bandwidth.
+    /// the track is already cached, is the active track, or would
+    /// push the in-flight prefetch count past `MAX_PREFETCH_IN_FLIGHT`.
+    /// Waits for the active load to settle first, so the active track
+    /// never competes for bandwidth.
     fn prefetch(&mut self, track: Track) {
         let video_id = track.id.0.clone();
         if self.prefetch_cache.contains(&video_id) {
@@ -368,10 +384,15 @@ impl Engine {
             self.pending_prefetch = Some(track);
             return;
         }
+        if self.prefetch_in_flight >= MAX_PREFETCH_IN_FLIGHT {
+            log::debug!("dropping prefetch for {video_id}: {MAX_PREFETCH_IN_FLIGHT} already in flight");
+            return;
+        }
         self.start_prefetch(video_id);
     }
 
     fn start_prefetch(&mut self, video_id: String) {
+        self.prefetch_in_flight += 1;
         let resolvers = self.resolvers.clone();
         let http = self.http.clone();
         let results = self.self_sender.clone();

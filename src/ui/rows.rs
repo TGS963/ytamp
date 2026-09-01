@@ -130,18 +130,83 @@ fn track_row(
     index: usize,
     all: &[Track],
     theme: &dyn Theme,
-) -> Option<Action> {
-    let mut action = None;
+) -> Vec<Action> {
+    let mut actions = Vec::new();
     let response = row_frame(ui, theme, |ui| {
-        action = row_content(ui, track, theme);
+        actions.extend(row_content(ui, track, theme));
     });
-    if action.is_none() && response.clicked() {
-        action = Some(Action::ContextPlayed {
+    actions.extend(hover_prefetch_action(ui, &response, track, theme));
+    if actions.is_empty() && response.clicked() {
+        actions.push(Action::ContextPlayed {
             tracks: all.to_vec(),
             start: index,
         });
     }
-    action
+    actions
+}
+
+/// The dwell timer for one track row, in egui's own frame memory
+/// instead of app state. The timer is UI-local scratch: it resets on
+/// every pointer move, and the reducer must see only the finished
+/// decision, not the raw pointer motion, so it stays out of `State`.
+///
+/// egui repaints only in answer to input, and a resting pointer sends
+/// none, so a pending dwell asks for a repaint at the moment its
+/// delay ends.
+fn hover_prefetch_action(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    track: &Track,
+    theme: &dyn Theme,
+) -> Option<Action> {
+    let id = egui::Id::new(("hover_prefetch_dwell", &track.id.0));
+    let now = ui.input(|input| input.time);
+    let delay = f64::from(theme.metric(MetricRole::HoverPrefetchDelay));
+    let start = ui.ctx().data(|data| data.get_temp::<f64>(id));
+    match dwell_decision(response.hovered(), start, now, delay) {
+        DwellDecision::Start => {
+            ui.ctx().data_mut(|data| data.insert_temp(id, now));
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(delay));
+            None
+        }
+        DwellDecision::Wait { remaining } => {
+            ui.ctx().request_repaint_after(remaining);
+            None
+        }
+        DwellDecision::Emit => {
+            ui.ctx().data_mut(|data| data.remove::<f64>(id));
+            Some(Action::TrackHovered(track.clone()))
+        }
+        DwellDecision::Reset => {
+            ui.ctx().data_mut(|data| data.remove::<f64>(id));
+            None
+        }
+    }
+}
+
+/// One row's dwell state: whether to start timing, keep waiting, emit
+/// the hover action, or clear a stale timer. Pure so the timing rule
+/// is testable without egui.
+#[derive(Debug, PartialEq)]
+enum DwellDecision {
+    Start,
+    Wait { remaining: Duration },
+    Emit,
+    Reset,
+}
+
+/// Decides `DwellDecision` from a row's hover state and clock. `start`
+/// is the dwell's own recorded start time, `now` and `delay` come
+/// from the caller's clock and theme, in seconds.
+fn dwell_decision(hovered: bool, start: Option<f64>, now: f64, delay: f64) -> DwellDecision {
+    match (hovered, start) {
+        (false, _) => DwellDecision::Reset,
+        (true, None) => DwellDecision::Start,
+        (true, Some(start)) if now - start >= delay => DwellDecision::Emit,
+        (true, Some(start)) => DwellDecision::Wait {
+            remaining: Duration::from_secs_f64((delay - (now - start)).max(0.0)),
+        },
+    }
 }
 
 fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Action> {
@@ -175,5 +240,43 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(65)), "1:05");
         assert_eq!(format_duration(Duration::from_secs(0)), "0:00");
         assert_eq!(format_duration(Duration::from_secs(600)), "10:00");
+    }
+
+    #[test]
+    fn an_unhovered_row_resets_even_with_no_timer_running() {
+        assert_eq!(dwell_decision(false, None, 10.0, 0.4), DwellDecision::Reset);
+    }
+
+    #[test]
+    fn a_hover_with_no_timer_starts_one() {
+        assert_eq!(dwell_decision(true, None, 10.0, 0.4), DwellDecision::Start);
+    }
+
+    #[test]
+    fn a_hover_short_of_the_delay_waits_for_the_remainder() {
+        assert_eq!(
+            dwell_decision(true, Some(10.0), 10.1, 0.4),
+            DwellDecision::Wait {
+                remaining: Duration::from_secs_f64(0.3)
+            }
+        );
+    }
+
+    #[test]
+    fn a_hover_at_the_delay_emits() {
+        assert_eq!(dwell_decision(true, Some(10.0), 10.4, 0.4), DwellDecision::Emit);
+    }
+
+    #[test]
+    fn a_hover_past_the_delay_still_emits() {
+        assert_eq!(dwell_decision(true, Some(10.0), 20.0, 0.4), DwellDecision::Emit);
+    }
+
+    #[test]
+    fn the_pointer_leaving_a_timed_row_resets_it() {
+        assert_eq!(
+            dwell_decision(false, Some(10.0), 10.2, 0.4),
+            DwellDecision::Reset
+        );
     }
 }
