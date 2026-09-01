@@ -69,6 +69,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.playback.queue.repeat = state.playback.queue.repeat.cycled();
             vec![]
         }
+        Action::QueuePanelToggled => {
+            state.queue_open = !state.queue_open;
+            vec![]
+        }
         Action::NoticeDismissed(index) => {
             if index < state.notices.len() {
                 state.notices.remove(index);

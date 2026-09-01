@@ -4,6 +4,7 @@
 mod library;
 mod player_bar;
 mod playlist;
+mod queue;
 mod rows;
 mod search;
 mod sign_in;
@@ -21,11 +22,35 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) -> Vec<Action> {
         sign_in::view(ui, state, theme, &mut actions);
         return actions;
     }
+    keyboard_shortcuts(ui, &mut actions);
     player_bar::view(ui, state, theme, &mut actions);
     sidebar(ui, state, theme, &mut actions);
+    if state.queue_open {
+        queue::view(ui, state, theme);
+    }
     notices(ui, state, theme, &mut actions);
     page(ui, state, theme, &mut actions);
     actions
+}
+
+/// Global shortcuts. They stay quiet while a text field has the focus.
+fn keyboard_shortcuts(ui: &Ui, out: &mut Vec<Action>) {
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+    let shortcuts: [(egui::Key, fn() -> Action); 4] = [
+        (egui::Key::Space, || Action::PlayToggled),
+        (egui::Key::ArrowRight, || Action::NextPressed),
+        (egui::Key::ArrowLeft, || Action::PreviousPressed),
+        (egui::Key::Q, || Action::QueuePanelToggled),
+    ];
+    ui.input(|input| {
+        for (key, action) in shortcuts {
+            if input.key_pressed(key) {
+                out.push(action());
+            }
+        }
+    });
 }
 
 fn apply_page_style(ui: &mut Ui, theme: &dyn Theme) {

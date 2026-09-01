@@ -97,4 +97,8 @@ fn volume_slider(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     if ui.add_sized([100.0, 20.0], slider).changed() {
         out.push(Action::VolumeSet(volume));
     }
+    let queue_button = selectable_icon(ui, "☰", state.queue_open).on_hover_text("Queue (Q)");
+    if queue_button.clicked() {
+        out.push(Action::QueuePanelToggled);
+    }
 }

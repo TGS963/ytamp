@@ -26,6 +26,7 @@ pub enum Action {
     VolumeSet(f32),
     ShuffleToggled,
     RepeatCycled,
+    QueuePanelToggled,
     NoticeDismissed(usize),
 
     // From the shell at startup.

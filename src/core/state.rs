@@ -103,6 +103,7 @@ pub struct State {
     pub search: SearchState,
     pub library: LibraryState,
     pub playback: PlaybackState,
+    pub queue_open: bool,
     /// User-visible problem reports, newest last.
     pub notices: Vec<String>,
 }
