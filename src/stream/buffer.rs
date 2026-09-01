@@ -24,7 +24,7 @@ pub enum BufferStatus {
 }
 
 struct Inner {
-    bytes: Vec<u8>,
+    bytes: Storage,
     expected_len: Option<u64>,
     status: BufferStatus,
     /// True once a source has pushed at least one non-empty chunk.
@@ -34,6 +34,46 @@ struct Inner {
     /// True once a caller has taken the one writer. Guards the
     /// single-writer rule at run time.
     writer_taken: bool,
+}
+
+/// The bytes grow in a `Vec` while the download runs. On completion
+/// they freeze into `Bytes` once, so every later handout is a
+/// reference-count bump and never a copy of a whole song.
+enum Storage {
+    Growing(Vec<u8>),
+    Frozen(Bytes),
+}
+
+impl Storage {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Storage::Growing(bytes) => bytes,
+            Storage::Frozen(bytes) => bytes,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    fn append(&mut self, chunk: &[u8]) {
+        if let Storage::Growing(bytes) = self {
+            bytes.extend_from_slice(chunk);
+        }
+    }
+
+    fn freeze(&mut self) {
+        if let Storage::Growing(bytes) = self {
+            *self = Storage::Frozen(Bytes::from(std::mem::take(bytes)));
+        }
+    }
+
+    fn to_bytes(&self) -> Bytes {
+        match self {
+            Storage::Growing(bytes) => Bytes::from(bytes.clone()),
+            Storage::Frozen(bytes) => bytes.clone(),
+        }
+    }
 }
 
 type Shared = Arc<(Mutex<Inner>, Condvar)>;
@@ -52,7 +92,7 @@ impl AudioBuffer {
         Self {
             shared: Arc::new((
                 Mutex::new(Inner {
-                    bytes: Vec::new(),
+                    bytes: Storage::Growing(Vec::new()),
                     expected_len,
                     status: BufferStatus::Filling,
                     delivered_any: false,
@@ -68,7 +108,7 @@ impl AudioBuffer {
     pub fn from_complete(bytes: Bytes) -> Self {
         let len = bytes.len() as u64;
         let inner = Inner {
-            bytes: bytes.to_vec(),
+            bytes: Storage::Frozen(bytes),
             expected_len: Some(len),
             status: BufferStatus::Complete,
             delivered_any: true,
@@ -108,7 +148,7 @@ impl AudioBuffer {
     pub fn complete_bytes(&self) -> Option<Bytes> {
         let (mutex, _) = &*self.shared;
         let inner = mutex.lock().expect("buffer mutex poisoned");
-        matches!(inner.status, BufferStatus::Complete).then(|| Bytes::from(inner.bytes.clone()))
+        matches!(inner.status, BufferStatus::Complete).then(|| inner.bytes.to_bytes())
     }
 
     /// The buffer's current status.
@@ -142,7 +182,7 @@ fn block_until_end(shared: &Shared) -> Result<Bytes, String> {
     let mut inner = mutex.lock().expect("buffer mutex poisoned");
     loop {
         match &inner.status {
-            BufferStatus::Complete => return Ok(Bytes::from(inner.bytes.clone())),
+            BufferStatus::Complete => return Ok(inner.bytes.to_bytes()),
             BufferStatus::Failed(message) => return Err(message.clone()),
             BufferStatus::Filling => {
                 inner = condvar.wait(inner).expect("buffer mutex poisoned");
@@ -183,7 +223,7 @@ impl BufferWriter {
         }
         let (mutex, condvar) = &*self.shared;
         let mut inner = mutex.lock().expect("buffer mutex poisoned");
-        inner.bytes.extend_from_slice(chunk);
+        inner.bytes.append(chunk);
         inner.delivered_any = true;
         condvar.notify_all();
     }
@@ -217,7 +257,11 @@ impl BufferWriter {
 
     fn set_status(&self, status: BufferStatus) {
         let (mutex, condvar) = &*self.shared;
-        mutex.lock().expect("buffer mutex poisoned").status = status;
+        let mut inner = mutex.lock().expect("buffer mutex poisoned");
+        if status == BufferStatus::Complete {
+            inner.bytes.freeze();
+        }
+        inner.status = status;
         condvar.notify_all();
     }
 }
@@ -259,7 +303,7 @@ impl Read for BufferReader {
             match decide_read(inner.bytes.len() as u64, self.position, &inner.status) {
                 ReadDecision::Ready => {
                     let start = self.position as usize;
-                    let read = copy_available(&inner.bytes[start..], buf);
+                    let read = copy_available(&inner.bytes.as_slice()[start..], buf);
                     self.position += read as u64;
                     return Ok(read);
                 }

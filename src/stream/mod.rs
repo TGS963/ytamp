@@ -98,7 +98,7 @@ enum Attempt {
     EndedTheChain(String),
     /// The source failed before it delivered any bytes. The chain
     /// tries the next source.
-    Continue,
+    Continue(String),
 }
 
 impl ResolverChain {
@@ -143,15 +143,22 @@ impl ResolverChain {
         writer: BufferWriter,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
+        let mut skipped: Vec<&TrackedSource> = Vec::new();
         for tracked in self.sources.iter().filter(|tracked| !tracked.breaker.is_open()) {
             let outcome = tracked
                 .source
                 .fetch_audio(http, video_id, writer.share())
                 .await;
-            match self.classify(tracked, outcome, &writer, &mut failures) {
-                Attempt::Succeeded => return Ok(()),
+            match classify(outcome, &writer) {
+                Attempt::Succeeded => {
+                    record_bypassed_failures(&skipped);
+                    return Ok(());
+                }
                 Attempt::EndedTheChain(message) => return Err(message),
-                Attempt::Continue => {}
+                Attempt::Continue(message) => {
+                    failures.push(format!("{}: {message}", tracked.source.name()));
+                    skipped.push(tracked);
+                }
             }
         }
         let joined = join_failures(&failures);
@@ -159,38 +166,28 @@ impl ResolverChain {
         Err(joined)
     }
 
-    /// Turns one source's `Result` into a chain decision, and records
-    /// a no-chunk-delivered failure against its breaker.
-    fn classify(
-        &self,
-        tracked: &TrackedSource,
-        outcome: Result<(), String>,
-        writer: &BufferWriter,
-        failures: &mut Vec<String>,
-    ) -> Attempt {
-        match outcome {
-            Ok(()) => Attempt::Succeeded,
-            Err(message) if writer.delivered_any() => Attempt::EndedTheChain(message),
-            Err(message) => {
-                self.record_source_failure(tracked, &message, failures);
-                Attempt::Continue
-            }
-        }
-    }
+}
 
-    fn record_source_failure(
-        &self,
-        tracked: &TrackedSource,
-        message: &str,
-        failures: &mut Vec<String>,
-    ) {
-        failures.push(format!("{}: {message}", tracked.source.name()));
+/// A source failure counts toward its breaker only when a later source
+/// delivers the same video. A video no source can deliver is a bad
+/// video, not a broken source, and must never disable the last source
+/// for the session.
+fn record_bypassed_failures(skipped: &[&TrackedSource]) {
+    for tracked in skipped {
         if tracked.breaker.record_failure() {
             log::warn!(
-                "{} tripped the circuit breaker after repeated failures",
+                "{} tripped the circuit breaker: later sources kept delivering",
                 tracked.source.name()
             );
         }
+    }
+}
+
+fn classify(outcome: Result<(), String>, writer: &BufferWriter) -> Attempt {
+    match outcome {
+        Ok(()) => Attempt::Succeeded,
+        Err(message) if writer.delivered_any() => Attempt::EndedTheChain(message),
+        Err(message) => Attempt::Continue(message),
     }
 }
 
@@ -299,6 +296,55 @@ mod tests {
             buffer.status(),
             BufferStatus::Failed("first failed".to_string())
         );
+    }
+
+    fn failing_source(label: &'static str) -> Box<FakeSource> {
+        Box::new(FakeSource {
+            label,
+            push_first: false,
+            succeeds: false,
+        })
+    }
+
+    fn working_source(label: &'static str) -> Box<FakeSource> {
+        Box::new(FakeSource {
+            label,
+            push_first: true,
+            succeeds: true,
+        })
+    }
+
+    async fn run_chain(chain: &ResolverChain) {
+        let buffer = AudioBuffer::new(None);
+        let _ = chain
+            .fetch_audio(&http_client(), "video", buffer.writer())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_source_trips_only_when_a_later_source_delivers() {
+        let chain = ResolverChain::with_sources(vec![
+            failing_source("broken"),
+            working_source("working"),
+        ]);
+        for _ in 0..3 {
+            run_chain(&chain).await;
+        }
+        assert!(chain.sources[0].breaker.is_open());
+        assert!(!chain.sources[1].breaker.is_open());
+    }
+
+    #[tokio::test]
+    async fn a_video_no_source_delivers_never_trips_a_breaker() {
+        let chain = ResolverChain::with_sources(vec![
+            failing_source("first"),
+            failing_source("last"),
+        ]);
+        for _ in 0..5 {
+            run_chain(&chain).await;
+        }
+        assert!(!chain.sources[0].breaker.is_open());
+        assert!(!chain.sources[1].breaker.is_open());
     }
 
     #[test]
