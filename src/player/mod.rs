@@ -25,7 +25,7 @@ use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
 use crate::core::model::Track;
 use crate::stream::{AudioBuffer, BufferStatus, ResolverChain, disk_cache};
-use source::{DecoderHandle, ReadyInfo};
+use source::{DecoderHandle, PositionHandle, ReadyInfo};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -109,9 +109,18 @@ impl PrefetchCache {
     fn get(&mut self, video_id: &str) -> Option<AudioBuffer> {
         let index = self.entries.iter().position(|(id, _)| id == video_id)?;
         let entry = self.entries.remove(index);
+        if matches!(entry.1.status(), BufferStatus::Failed(_)) {
+            return None;
+        }
         let buffer = entry.1.clone();
         self.entries.insert(0, entry);
         Some(buffer)
+    }
+
+    /// Drops the entry for `video_id`, so a buffer that failed to
+    /// decode never serves a retry.
+    fn remove(&mut self, video_id: &str) {
+        self.entries.retain(|(id, _)| id != video_id);
     }
 
     /// Stores `buffer` under `video_id` as the most recently used
@@ -150,6 +159,8 @@ struct Engine {
     /// The decoder handle for the active load, held between
     /// `spawn_decoder` and its `Ready` report.
     pending_source: Option<DecoderHandle>,
+    /// The position of the playing track, from real decoded samples.
+    position: Option<PositionHandle>,
 }
 
 struct AudioOutput {
@@ -180,6 +191,7 @@ impl Engine {
             prefetch_cache: PrefetchCache::new(),
             pending_prefetch: None,
             pending_source: None,
+            position: None,
         }
     }
 
@@ -306,6 +318,7 @@ impl Engine {
                 if was_complete {
                     disk_cache::remove(&video_id);
                 }
+                self.prefetch_cache.remove(&video_id);
                 (self.deliver)(Action::Player(PlayerEvent::Failed(message)));
             }
         }
@@ -319,7 +332,8 @@ impl Engine {
         handle: DecoderHandle,
         ready: ReadyInfo,
     ) -> Result<Option<Duration>, String> {
-        let source = handle.into_source(ready);
+        let (source, position) = handle.into_source(ready);
+        self.position = Some(position);
         let volume = self.volume;
         let output = self.output()?;
         output.player.stop();
@@ -410,6 +424,7 @@ impl Engine {
         self.load_pending = false;
         self.pending_prefetch = None;
         self.pending_source = None;
+        self.position = None;
         self.with_player(|player| player.stop());
     }
 
@@ -427,9 +442,10 @@ impl Engine {
             (self.deliver)(Action::Player(PlayerEvent::TrackEnded));
             return;
         }
-        if !output.player.is_paused() {
-            let position = output.player.get_pos();
-            (self.deliver)(Action::Player(PlayerEvent::PositionChanged(position)));
+        if !output.player.is_paused()
+            && let Some(position) = &self.position
+        {
+            (self.deliver)(Action::Player(PlayerEvent::PositionChanged(position.position())));
         }
     }
 }

@@ -158,6 +158,14 @@ impl AudioBuffer {
     }
 
     /// The byte count downloaded so far.
+    /// The full length in bytes, when known: the complete length, or
+    /// the length a source announced ahead of time.
+    pub fn known_len(&self) -> Option<u64> {
+        let (mutex, _) = &*self.shared;
+        let inner = mutex.lock().expect("buffer mutex poisoned");
+        end_from_state(inner.bytes.len() as u64, inner.expected_len, &inner.status)
+    }
+
     pub fn downloaded_len(&self) -> u64 {
         let (mutex, _) = &*self.shared;
         mutex.lock().expect("buffer mutex poisoned").bytes.len() as u64

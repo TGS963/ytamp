@@ -6,6 +6,8 @@
 //! flow one way, seek and stop commands flow the other way. The
 //! `Source` side never blocks.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -49,15 +51,56 @@ pub struct DecoderHandle {
 impl DecoderHandle {
     /// Builds the playable source from this handle and the stream's
     /// shape. Call once, after the caller's `Ready` report arrives.
-    pub fn into_source(self, ready: ReadyInfo) -> StreamingSource {
-        StreamingSource {
+    /// The position handle reports from real decoded samples, so a
+    /// stall filled with silence does not move the position.
+    pub fn into_source(self, ready: ReadyInfo) -> (StreamingSource, PositionHandle) {
+        let progress = Arc::new(Progress::default());
+        let position = PositionHandle {
+            progress: progress.clone(),
+            samples_per_second: u64::from(ready.channels.get())
+                * u64::from(ready.sample_rate.get()),
+        };
+        let source = StreamingSource {
             samples: self.samples,
             commands: self.commands,
             channels: ready.channels,
             sample_rate: ready.sample_rate,
             total_duration: ready.total_duration,
-        }
+            progress,
+        };
+        (source, position)
     }
+}
+
+/// Real samples played since the last seek, and where that seek
+/// landed. Silence samples never count.
+#[derive(Default)]
+struct Progress {
+    real_samples: AtomicU64,
+    base_nanos: AtomicU64,
+}
+
+pub struct PositionHandle {
+    progress: Arc<Progress>,
+    samples_per_second: u64,
+}
+
+impl PositionHandle {
+    pub fn position(&self) -> Duration {
+        let base = Duration::from_nanos(self.progress.base_nanos.load(Ordering::Relaxed));
+        let samples = self.progress.real_samples.load(Ordering::Relaxed);
+        base + played_duration(samples, self.samples_per_second)
+    }
+}
+
+fn played_duration(samples: u64, samples_per_second: u64) -> Duration {
+    if samples_per_second == 0 {
+        return Duration::ZERO;
+    }
+    let seconds = samples / samples_per_second;
+    let remainder = samples % samples_per_second;
+    Duration::from_secs(seconds)
+        + Duration::from_nanos(remainder * 1_000_000_000 / samples_per_second)
 }
 
 /// Starts a decoder thread over `buffer` and returns at once, before
@@ -93,7 +136,7 @@ fn run_decoder(
     samples: SyncSender<f32>,
     commands: Receiver<DecoderCommand>,
 ) {
-    let mut decoder = match rodio::Decoder::new(buffer.reader()) {
+    let mut decoder = match build_decoder(&buffer) {
         Ok(decoder) => decoder,
         Err(error) => {
             report(Err(format!("The audio did not decode: {error}")));
@@ -111,6 +154,22 @@ fn run_decoder(
 /// Applies a pending seek, decodes one sample, and sends it, in a
 /// loop. Ends on a `Stop` command, on the sample channel losing its
 /// receiver, or when the decoder itself runs out of samples.
+/// The decoder reports as seekable, so a seek works during the
+/// download. The byte length reaches the decoder when a source
+/// announced it or the download is complete; symphonia needs it for
+/// the duration and for accurate seeks.
+fn build_decoder(
+    buffer: &AudioBuffer,
+) -> Result<rodio::Decoder<crate::stream::BufferReader>, rodio::decoder::DecoderError> {
+    let mut builder = rodio::Decoder::builder()
+        .with_data(buffer.reader())
+        .with_seekable(true);
+    if let Some(len) = buffer.known_len() {
+        builder = builder.with_byte_len(len);
+    }
+    builder.build()
+}
+
 fn decode_until_done(
     decoder: &mut rodio::Decoder<crate::stream::BufferReader>,
     samples: &SyncSender<f32>,
@@ -144,13 +203,18 @@ pub struct StreamingSource {
     channels: ChannelCount,
     sample_rate: SampleRate,
     total_duration: Option<Duration>,
+    progress: Arc<Progress>,
 }
 
 impl Iterator for StreamingSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        decide_next_sample(self.samples.try_recv())
+        let received = self.samples.try_recv();
+        if received.is_ok() {
+            self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
+        }
+        decide_next_sample(received)
     }
 }
 
@@ -192,6 +256,10 @@ impl Source for StreamingSource {
     fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
         let _ = self.commands.send(DecoderCommand::Seek(position));
         drain(&self.samples);
+        self.progress
+            .base_nanos
+            .store(position.as_nanos() as u64, Ordering::Relaxed);
+        self.progress.real_samples.store(0, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -216,6 +284,13 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn played_duration_counts_samples_of_every_channel() {
+        assert_eq!(played_duration(96_000, 96_000), Duration::from_secs(1));
+        assert_eq!(played_duration(48_000, 96_000), Duration::from_millis(500));
+        assert_eq!(played_duration(5, 0), Duration::ZERO);
+    }
 
     #[test]
     fn decide_next_sample_passes_through_a_ready_sample() {
@@ -281,7 +356,7 @@ mod tests {
         assert_eq!(info.channels.get(), 1);
         assert_eq!(info.sample_rate.get(), 8_000);
 
-        let source = handle.into_source(info);
+        let (source, _position) = handle.into_source(info);
         let mut decoded = 0;
         loop {
             match source.samples.recv_timeout(Duration::from_secs(5)) {
@@ -311,7 +386,7 @@ mod tests {
 
         let (ready, handle) = wait_for_ready(buffer);
         let info = ready.expect("one full packet is enough to decode");
-        let mut source = handle.into_source(info);
+        let (mut source, _position) = handle.into_source(info);
 
         // The decoder already buffered the first packet inside
         // `Decoder::new`. `next()` may still report silence a few

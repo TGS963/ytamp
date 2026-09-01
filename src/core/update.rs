@@ -506,7 +506,7 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
     match event {
         PlayerEvent::TrackStarted { duration } => {
             state.playback.status = PlayStatus::Playing;
-            state.playback.track_duration = duration;
+            state.playback.track_duration = duration.or(state.playback.track_duration);
             let mut effects = prefetch_next(state);
             if let Some(position) = state.playback.resume_position.take() {
                 state.playback.position = position;
