@@ -1,0 +1,14 @@
+[package]
+name = "ytamp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "YouTube Music, native and fast. A client with no browser engine."
+repository = "https://github.com/suvojit-0x55aa/ytamp"
+
+[dependencies]
+
+[profile.release]
+lto = "thin"
+strip = true
