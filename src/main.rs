@@ -4,7 +4,14 @@ use ytamp::core::action::Action;
 use ytamp::{app, auth, media_keys, runtime};
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    // rustypipe logs an ERROR for every client the chain falls back
+    // from, which reads as a failure while the song plays fine. The
+    // chain already reports real failures, so rustypipe stays quiet
+    // unless RUST_LOG says otherwise.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,rustypipe=off"),
+    )
+    .init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
