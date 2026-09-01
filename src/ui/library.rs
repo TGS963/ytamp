@@ -26,6 +26,9 @@ fn playlists_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &
         Loadable::Failed(message) => {
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
+        Loadable::Loaded(playlists) if playlists.is_empty() => {
+            ui.label(theme.secondary_label(TextRole::Body, "No playlists in your library yet."));
+        }
         Loadable::Loaded(playlists) => {
             for playlist in playlists {
                 playlist_row(ui, playlist, theme, out);
@@ -53,6 +56,9 @@ fn liked_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut 
         }
         Loadable::Failed(message) => {
             ui.colored_label(theme.color(ColorRole::Danger), message);
+        }
+        Loadable::Loaded(tracks) if tracks.is_empty() => {
+            ui.label(theme.secondary_label(TextRole::Body, "No liked songs yet."));
         }
         Loadable::Loaded(tracks) => rows::track_list(ui, tracks, theme, out),
     }
