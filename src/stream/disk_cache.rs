@@ -39,7 +39,7 @@ pub async fn fetch_audio(
         return Ok(bytes);
     }
     let bytes = Bytes::from(resolvers.fetch_audio(http, video_id).await?);
-    write_off_thread(video_id.to_string(), bytes.clone());
+    write_off_thread(video_id.to_string(), bytes.clone()).await;
     Ok(bytes)
 }
 
@@ -62,10 +62,11 @@ async fn read_off_thread(video_id: String) -> Option<Bytes> {
         .flatten()
 }
 
-/// Queues the blocking write and the cap enforcement on tokio's
-/// blocking pool. The caller does not wait for the write.
-fn write_off_thread(video_id: String, bytes: Bytes) {
-    tokio::task::spawn_blocking(move || write(&video_id, &bytes));
+/// Runs the blocking write and the cap enforcement on tokio's
+/// blocking pool. The caller waits for the write, so a later
+/// `remove` for the same id always runs after the file exists.
+async fn write_off_thread(video_id: String, bytes: Bytes) {
+    let _ = tokio::task::spawn_blocking(move || write(&video_id, &bytes)).await;
 }
 
 /// The cached bytes for `video_id`, if a readable file exists. Touches
