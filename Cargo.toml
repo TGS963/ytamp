@@ -10,7 +10,7 @@ repository = "https://github.com/suvojit-0x55aa/ytamp"
 [dependencies]
 bytes = "1.12.1"
 directories = "6.0.0"
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "persistence"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "persistence", "links"] }
 egui = "0.36"
 env_logger = "0.11.11"
 fastrand = "2.5.0"
