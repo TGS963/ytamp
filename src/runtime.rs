@@ -11,6 +11,8 @@ use crate::api::Api;
 use crate::auth;
 use crate::core::action::Action;
 use crate::core::effect::{ApiRequest, Effect};
+use crate::player::PlayerHandle;
+use crate::stream::ResolverChain;
 
 type ApiSlot = Arc<RwLock<Option<Api>>>;
 
@@ -19,6 +21,7 @@ pub struct EffectRuntime {
     api: ApiSlot,
     actions: Sender<Action>,
     request_repaint: Arc<dyn Fn() + Send + Sync>,
+    player: PlayerHandle,
 }
 
 impl EffectRuntime {
@@ -31,11 +34,18 @@ impl EffectRuntime {
             .enable_all()
             .build()
             .expect("the tokio runtime failed to start");
+        let request_repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(request_repaint);
+        let player = crate::player::spawn(
+            delivery(actions.clone(), request_repaint.clone()),
+            tokio.handle().clone(),
+            Arc::new(ResolverChain::with_default_resolvers()),
+        );
         Self {
             tokio,
             api: Arc::new(RwLock::new(None)),
             actions,
-            request_repaint: Arc::new(request_repaint),
+            request_repaint,
+            player,
         }
     }
 
@@ -43,9 +53,7 @@ impl EffectRuntime {
         match effect {
             Effect::Api(request) => self.run_api_request(request),
             Effect::SaveCookies(cookies) => self.save_cookies(cookies),
-            Effect::Player(command) => {
-                log::info!("player command (engine not built yet): {command:?}");
-            }
+            Effect::Player(command) => self.player.send(command),
         }
     }
 
@@ -70,12 +78,17 @@ impl EffectRuntime {
 
     /// One closure that sends an action to the app and wakes the UI.
     fn delivery(&self) -> impl Fn(Action) + Send + 'static {
-        let actions = self.actions.clone();
-        let request_repaint = self.request_repaint.clone();
-        move |action| {
-            if actions.send(action).is_ok() {
-                request_repaint();
-            }
+        delivery(self.actions.clone(), self.request_repaint.clone())
+    }
+}
+
+fn delivery(
+    actions: Sender<Action>,
+    request_repaint: Arc<dyn Fn() + Send + Sync>,
+) -> impl Fn(Action) + Send + 'static {
+    move |action| {
+        if actions.send(action).is_ok() {
+            request_repaint();
         }
     }
 }

@@ -2,7 +2,9 @@ mod api;
 mod app;
 mod auth;
 mod core;
+mod player;
 mod runtime;
+mod stream;
 mod theme;
 mod ui;
 
