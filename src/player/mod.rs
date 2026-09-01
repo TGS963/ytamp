@@ -1,28 +1,31 @@
 //! The player engine: one thread that owns the audio device.
 //!
-//! Commands come in over a channel. Track data downloads on the tokio
-//! runtime and comes back as bytes with a generation number, so a
-//! stale download can never interrupt the track the user chose later.
-//! The engine polls its own state a few times per second to report
-//! the position and the end of a track.
+//! Commands come in over a channel. A track's audio arrives as a
+//! growing `AudioBuffer`: the download runs on the tokio runtime and
+//! keeps filling the buffer after playback starts, so a track plays
+//! as soon as its header and a few seconds of audio exist. A decoder
+//! thread, one per playing track, turns the buffer into samples; see
+//! `source.rs`. A generation number makes every message from an old
+//! track a no-op on arrival, so a fast skip never lets a stale track
+//! start playing.
 //!
-//! A small cache holds fully downloaded bytes for up to two tracks.
-//! A Prefetch command warms it for the track that plays next, at
-//! lower priority than the active download. A later Load for the
-//! same track then skips the download and plays at once.
+//! A small cache holds `AudioBuffer` handles for up to two tracks,
+//! complete or still filling. A Prefetch command warms it for the
+//! track that plays next, at lower priority than the active track. A
+//! later Load for the same track then finds its buffer already in
+//! the cache and streams from it at once.
 
-use std::io::Cursor;
+mod source;
+
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use bytes::Bytes;
-use rodio::source::Source;
-
 use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
 use crate::core::model::Track;
-use crate::stream::{ResolverChain, disk_cache};
+use crate::stream::{AudioBuffer, BufferStatus, ResolverChain, disk_cache};
+use source::{DecoderHandle, ReadyInfo};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -38,15 +41,30 @@ impl PlayerHandle {
 
 enum PlayerMsg {
     Command(PlayerCommand),
-    Loaded {
+    /// The buffer for an active load, from the cache or a fresh
+    /// fetch. Carries the load's generation, so a buffer for a track
+    /// the user has since left plays nothing.
+    BufferReady {
         generation: u64,
         video_id: String,
-        result: Result<Bytes, String>,
+        buffer: AudioBuffer,
     },
-    Prefetched {
+    /// The buffer for a background prefetch. Always applied: a
+    /// prefetch only ever adds a cache entry, so it is harmless even
+    /// for a track the user has since left.
+    PrefetchBufferReady {
+        video_id: String,
+        buffer: AudioBuffer,
+    },
+    /// The decoder thread's one report for an active load: the
+    /// stream's shape, or the reason it never opened. Carries the
+    /// load's generation, and whether its buffer was already
+    /// complete, so a decode failure on cached bytes can evict them.
+    SourceReady {
         generation: u64,
         video_id: String,
-        result: Result<Bytes, String>,
+        was_complete: bool,
+        result: Result<ReadyInfo, String>,
     },
 }
 
@@ -67,13 +85,12 @@ pub fn spawn(
     PlayerHandle { sender }
 }
 
-/// Fully downloaded track bytes, keyed by video id. Holds at most
-/// `CAPACITY` entries and drops the least recently used one first.
-/// `Bytes` makes every get a cheap reference-count bump, never a
-/// copy of a whole song.
+/// Audio buffers for up to two tracks, complete or still filling.
+/// Cheap to hold and to clone: an `AudioBuffer` is a handle onto
+/// shared bytes, never a copy of a whole song.
 struct PrefetchCache {
     /// Most recently used entry first.
-    entries: Vec<(String, Bytes)>,
+    entries: Vec<(String, AudioBuffer)>,
 }
 
 impl PrefetchCache {
@@ -87,21 +104,22 @@ impl PrefetchCache {
         self.entries.iter().any(|(id, _)| id == video_id)
     }
 
-    /// The cached bytes for `video_id`, if present. Marks the entry as
-    /// most recently used.
-    fn get(&mut self, video_id: &str) -> Option<Bytes> {
+    /// The cached buffer for `video_id`, if present. Marks the entry
+    /// as most recently used.
+    fn get(&mut self, video_id: &str) -> Option<AudioBuffer> {
         let index = self.entries.iter().position(|(id, _)| id == video_id)?;
         let entry = self.entries.remove(index);
-        let bytes = entry.1.clone();
+        let buffer = entry.1.clone();
         self.entries.insert(0, entry);
-        Some(bytes)
+        Some(buffer)
     }
 
-    /// Stores `bytes` under `video_id` as the most recently used entry.
-    /// Evicts the least recently used entry when the cache is full.
-    fn insert(&mut self, video_id: String, bytes: Bytes) {
+    /// Stores `buffer` under `video_id` as the most recently used
+    /// entry. Evicts the least recently used entry when the cache is
+    /// full.
+    fn insert(&mut self, video_id: String, buffer: AudioBuffer) {
         self.entries.retain(|(id, _)| id != &video_id);
-        self.entries.insert(0, (video_id, bytes));
+        self.entries.insert(0, (video_id, buffer));
         self.entries.truncate(Self::CAPACITY);
     }
 }
@@ -116,22 +134,22 @@ struct Engine {
     generation: u64,
     volume: f32,
     track_loaded: bool,
-    /// True between the start of an active download and its result.
-    /// A prefetch waits for this to clear before it starts, so it
-    /// never competes with the active download for bandwidth.
-    active_loading: bool,
+    /// The video id this engine is loading or playing. Cleared on
+    /// `stop`. Lets a `Prefetch` request recognize the active track
+    /// and skip it.
+    current_track_id: Option<String>,
+    /// True from `load` until the active track's decoder reports
+    /// `Ready` or fails. A `Prefetch` request that arrives during
+    /// this window waits in `pending_prefetch`, so it never competes
+    /// with the active track for bandwidth.
+    load_pending: bool,
     prefetch_cache: PrefetchCache,
-    /// Discards a prefetch result superseded by a newer prefetch
-    /// request, the same way `generation` discards a stale active
-    /// download.
-    prefetch_generation: u64,
-    prefetch_inflight_id: Option<String>,
-    /// A prefetch request that arrived while the active download was
-    /// still in flight. Starts once that download finishes.
+    /// A prefetch request that arrived while the active track was
+    /// still loading. Starts once that load settles.
     pending_prefetch: Option<Track>,
-    /// An in-flight prefetch the user skipped onto. Its result plays
-    /// as the active track, so the track never downloads twice.
-    promoted_load: Option<String>,
+    /// The decoder handle for the active load, held between
+    /// `spawn_decoder` and its `Ready` report.
+    pending_source: Option<DecoderHandle>,
 }
 
 struct AudioOutput {
@@ -157,12 +175,11 @@ impl Engine {
             generation: 0,
             volume: 1.0,
             track_loaded: false,
-            active_loading: false,
+            current_track_id: None,
+            load_pending: false,
             prefetch_cache: PrefetchCache::new(),
-            prefetch_generation: 0,
-            prefetch_inflight_id: None,
             pending_prefetch: None,
-            promoted_load: None,
+            pending_source: None,
         }
     }
 
@@ -170,16 +187,20 @@ impl Engine {
         loop {
             match receiver.recv_timeout(TICK) {
                 Ok(PlayerMsg::Command(command)) => self.apply_command(command),
-                Ok(PlayerMsg::Loaded {
+                Ok(PlayerMsg::BufferReady {
                     generation,
                     video_id,
-                    result,
-                }) => self.apply_load(generation, video_id, result),
-                Ok(PlayerMsg::Prefetched {
+                    buffer,
+                }) => self.apply_buffer_ready(generation, video_id, buffer),
+                Ok(PlayerMsg::PrefetchBufferReady { video_id, buffer }) => {
+                    self.prefetch_cache.insert(video_id, buffer);
+                }
+                Ok(PlayerMsg::SourceReady {
                     generation,
                     video_id,
+                    was_complete,
                     result,
-                }) => self.apply_prefetched(generation, video_id, result),
+                }) => self.apply_source_ready(generation, video_id, was_complete, result),
                 Err(RecvTimeoutError::Timeout) => self.tick(),
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -198,113 +219,138 @@ impl Engine {
         }
     }
 
-    /// Loads `track` for active playback. Cached bytes from an earlier
-    /// prefetch play at once. An in-flight prefetch of the same track
-    /// becomes the active load. Otherwise the track downloads now.
+    /// Loads `track` for active playback. A buffer already in the
+    /// cache, complete or still filling, streams at once: an earlier
+    /// prefetch of the same track is adopted for free.
     fn load(&mut self, track: Track) {
-        if let Some(bytes) = self.prefetch_cache.get(&track.id.0) {
-            self.stop();
-            self.finish_load(track.id.0, Ok(bytes));
-            return;
+        self.stop();
+        let video_id = track.id.0;
+        self.current_track_id = Some(video_id.clone());
+        self.load_pending = true;
+        match self.prefetch_cache.get(&video_id) {
+            Some(buffer) => self.start_decoder(video_id, buffer),
+            None => self.fetch_for_load(video_id),
         }
-        if self.prefetch_inflight_id.as_deref() == Some(track.id.0.as_str()) {
-            self.adopt_prefetch(track.id.0);
-            return;
-        }
-        self.start_download(track.id.0);
     }
 
-    /// Marks the in-flight prefetch for `video_id` as the active load.
-    /// Its result then plays at once, and the same bytes never
-    /// download a second time.
-    fn adopt_prefetch(&mut self, video_id: String) {
-        self.stop();
-        self.active_loading = true;
-        self.promoted_load = Some(video_id);
-    }
-
-    /// Downloads happen off this thread. The generation number makes
-    /// every download older than the newest Load a no-op on arrival.
-    fn start_download(&mut self, video_id: String) {
-        self.stop();
-        self.active_loading = true;
+    /// Fetches `video_id`'s buffer off the engine thread, since
+    /// `disk_cache::fetch_audio` is async, then reports it back as a
+    /// message so `apply_buffer_ready` can act on it on this thread.
+    fn fetch_for_load(&mut self, video_id: String) {
         let generation = self.generation;
         let resolvers = self.resolvers.clone();
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = disk_cache::fetch_complete(&resolvers, &http, &video_id).await;
-            let _ = results.send(PlayerMsg::Loaded {
+            let buffer = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
+            let _ = results.send(PlayerMsg::BufferReady {
                 generation,
                 video_id,
-                result,
+                buffer,
             });
         });
     }
 
-    fn apply_load(&mut self, generation: u64, video_id: String, result: Result<Bytes, String>) {
+    /// Caches the buffer a load fetched, then starts its decoder when
+    /// the load is still current. A stale load's buffer still enters
+    /// the cache: a later Load or Prefetch for the same track can use
+    /// it.
+    fn apply_buffer_ready(&mut self, generation: u64, video_id: String, buffer: AudioBuffer) {
+        self.prefetch_cache.insert(video_id.clone(), buffer.clone());
+        if generation == self.generation {
+            self.start_decoder(video_id, buffer);
+        }
+    }
+
+    /// Starts a decoder thread over `buffer` and remembers its handle
+    /// until the thread's `Ready` report arrives.
+    fn start_decoder(&mut self, video_id: String, buffer: AudioBuffer) {
+        let generation = self.generation;
+        let was_complete = matches!(buffer.status(), BufferStatus::Complete);
+        let results = self.self_sender.clone();
+        let report_id = video_id.clone();
+        let handle = source::spawn_decoder(buffer, move |result| {
+            let _ = results.send(PlayerMsg::SourceReady {
+                generation,
+                video_id: report_id,
+                was_complete,
+                result,
+            });
+        });
+        self.pending_source = Some(handle);
+    }
+
+    /// Applies a decoder thread's report for the active load. A
+    /// report from an old generation is dropped without touching
+    /// state that may already belong to a newer load: `stop` already
+    /// bumped the generation for every message still in flight.
+    fn apply_source_ready(
+        &mut self,
+        generation: u64,
+        video_id: String,
+        was_complete: bool,
+        result: Result<ReadyInfo, String>,
+    ) {
         if generation != self.generation {
             return;
         }
-        self.finish_load(video_id, result);
-    }
-
-    /// Applies a decoded result for `video_id`: plays it on success, or
-    /// reports the failure. A success also enters the cache, so a
-    /// repeat-one replay of the same track skips its own download.
-    /// Either way, a prefetch that waited for this download now starts.
-    fn finish_load(&mut self, video_id: String, result: Result<Bytes, String>) {
-        self.active_loading = false;
-        match result.and_then(|bytes| self.play_and_cache(video_id, bytes)) {
+        let Some(handle) = self.pending_source.take() else {
+            return;
+        };
+        match result.and_then(|ready| self.start_playback(handle, ready)) {
             Ok(duration) => {
                 self.track_loaded = true;
                 (self.deliver)(Action::Player(PlayerEvent::TrackStarted { duration }));
             }
-            Err(message) => (self.deliver)(Action::Player(PlayerEvent::Failed(message))),
+            Err(message) => {
+                if was_complete {
+                    disk_cache::remove(&video_id);
+                }
+                (self.deliver)(Action::Player(PlayerEvent::Failed(message)));
+            }
         }
-        self.start_pending_prefetch();
+        self.resolve_load_pending();
     }
 
-    /// Bytes that do not decode also leave the disk cache, so a
-    /// poisoned entry cannot fail on every later play.
-    fn play_and_cache(
+    /// Appends the decoded source to the audio device and starts
+    /// playback.
+    fn start_playback(
         &mut self,
-        video_id: String,
-        bytes: Bytes,
+        handle: DecoderHandle,
+        ready: ReadyInfo,
     ) -> Result<Option<Duration>, String> {
-        let source = decode(bytes.clone()).inspect_err(|_| disk_cache::remove(&video_id))?;
-        let duration = self.play_source(source)?;
-        self.prefetch_cache.insert(video_id, bytes);
-        Ok(duration)
-    }
-
-    fn play_source(
-        &mut self,
-        source: rodio::Decoder<Cursor<Bytes>>,
-    ) -> Result<Option<Duration>, String> {
-        let duration = source.total_duration();
+        let source = handle.into_source(ready);
         let volume = self.volume;
         let output = self.output()?;
         output.player.stop();
         output.player.set_volume(volume);
         output.player.append(source);
         output.player.play();
-        Ok(duration)
+        Ok(ready.total_duration)
     }
 
-    /// Warms the cache for `track` in the background. A no-op when the
-    /// track is already cached or an identical prefetch is already in
-    /// flight. Waits for the active download to finish first, so the
-    /// active track never competes for bandwidth.
+    /// Marks the active load settled, then starts a prefetch request
+    /// that arrived while it was still loading.
+    fn resolve_load_pending(&mut self) {
+        self.load_pending = false;
+        if let Some(track) = self.pending_prefetch.take() {
+            self.prefetch(track);
+        }
+    }
+
+    /// Warms the cache for `track` in the background. A no-op when
+    /// the track is already cached or is the active track. Waits for
+    /// the active load to settle first, so the active track never
+    /// competes for bandwidth.
     fn prefetch(&mut self, track: Track) {
         let video_id = track.id.0.clone();
         if self.prefetch_cache.contains(&video_id) {
             return;
         }
-        if self.prefetch_inflight_id.as_deref() == Some(video_id.as_str()) {
+        if self.current_track_id.as_deref() == Some(video_id.as_str()) {
             return;
         }
-        if self.active_loading {
+        if self.load_pending {
             self.pending_prefetch = Some(track);
             return;
         }
@@ -312,49 +358,13 @@ impl Engine {
     }
 
     fn start_prefetch(&mut self, video_id: String) {
-        self.prefetch_generation += 1;
-        let generation = self.prefetch_generation;
-        self.prefetch_inflight_id = Some(video_id.clone());
         let resolvers = self.resolvers.clone();
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = disk_cache::fetch_complete(&resolvers, &http, &video_id).await;
-            let _ = results.send(PlayerMsg::Prefetched {
-                generation,
-                video_id,
-                result,
-            });
+            let buffer = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
+            let _ = results.send(PlayerMsg::PrefetchBufferReady { video_id, buffer });
         });
-    }
-
-    fn start_pending_prefetch(&mut self) {
-        if let Some(track) = self.pending_prefetch.take() {
-            self.prefetch(track);
-        }
-    }
-
-    /// Applies a finished background prefetch. A stale result,
-    /// superseded by a newer prefetch, is discarded. A prefetch the
-    /// user skipped onto plays as the active track. Any other failure
-    /// stays silent: the track downloads normally when it plays later.
-    fn apply_prefetched(&mut self, generation: u64, video_id: String, result: Result<Bytes, String>) {
-        if generation != self.prefetch_generation {
-            return;
-        }
-        self.prefetch_inflight_id = None;
-        if self.promoted_load.as_deref() == Some(video_id.as_str()) {
-            self.promoted_load = None;
-            self.finish_load(video_id, result);
-            return;
-        }
-        match result {
-            Ok(bytes) => {
-                log::debug!("prefetch ready for {video_id}");
-                self.prefetch_cache.insert(video_id, bytes);
-            }
-            Err(error) => log::debug!("prefetch failed for {video_id}: {error}"),
-        }
     }
 
     fn output(&mut self) -> Result<&AudioOutput, String> {
@@ -390,14 +400,16 @@ impl Engine {
     }
 
     /// Stops playback and invalidates every in-flight load. A pending
-    /// or promoted prefetch belongs to the old queue position, so both
-    /// clear here. The reducer prefetches again after the next start.
+    /// prefetch and the active load's decoder handle both belong to
+    /// the old queue position, so both clear here. The reducer
+    /// prefetches again after the next start.
     fn stop(&mut self) {
         self.generation += 1;
         self.track_loaded = false;
-        self.active_loading = false;
+        self.current_track_id = None;
+        self.load_pending = false;
         self.pending_prefetch = None;
-        self.promoted_load = None;
+        self.pending_source = None;
         self.with_player(|player| player.stop());
     }
 
@@ -420,9 +432,4 @@ impl Engine {
             (self.deliver)(Action::Player(PlayerEvent::PositionChanged(position)));
         }
     }
-}
-
-fn decode(bytes: Bytes) -> Result<rodio::Decoder<Cursor<Bytes>>, String> {
-    rodio::Decoder::new(Cursor::new(bytes))
-        .map_err(|error| format!("The audio did not decode: {error}"))
 }

@@ -47,21 +47,6 @@ pub async fn fetch_audio(
     spawn_download(resolvers.clone(), http.clone(), video_id.to_string())
 }
 
-/// Fetches audio for `video_id` and waits for the whole download to
-/// finish, the way the player did before it read from a buffer
-/// mid-download. A thin adapter for callers not yet updated to stream
-/// from the buffer as it fills.
-pub async fn fetch_complete(
-    resolvers: &Arc<ResolverChain>,
-    http: &reqwest::Client,
-    video_id: &str,
-) -> Result<Bytes, String> {
-    fetch_audio(resolvers, http, video_id)
-        .await
-        .wait_complete()
-        .await
-}
-
 /// Starts a buffer, runs the resolver chain into it on a background
 /// task, and returns the buffer right away. Once the chain ends, a
 /// completed buffer's bytes are written to disk.
