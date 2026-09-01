@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod auth;
 mod core;
+mod media_keys;
 mod player;
 mod runtime;
 mod stream;
@@ -26,10 +27,17 @@ fn main() -> eframe::Result {
         options,
         Box::new(|creation| {
             let (action_sender, action_receiver) = mpsc::channel();
-            let egui_ctx = creation.egui_ctx.clone();
-            let effect_runtime =
-                runtime::EffectRuntime::new(action_sender, move || egui_ctx.request_repaint());
-            let mut app = app::App::new(effect_runtime, action_receiver);
+            let repaint_ctx = creation.egui_ctx.clone();
+            let effect_runtime = runtime::EffectRuntime::new(action_sender.clone(), move || {
+                repaint_ctx.request_repaint()
+            });
+            let key_ctx = creation.egui_ctx.clone();
+            let media_keys = media_keys::MediaKeys::attach(move |action| {
+                if action_sender.send(action).is_ok() {
+                    key_ctx.request_repaint();
+                }
+            });
+            let mut app = app::App::new(effect_runtime, action_receiver, media_keys);
             app.restore_session(creation.storage);
             if let Some(cookies) = auth::load_cookies() {
                 app.queue_action(Action::StoredCookiesFound(cookies));

@@ -2,7 +2,6 @@
 
 use egui::Ui;
 
-use crate::core::action::Action;
 use crate::core::state::State;
 use crate::theme::{MetricRole, TextRole, Theme};
 

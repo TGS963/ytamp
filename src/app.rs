@@ -9,6 +9,7 @@ use std::sync::mpsc::Receiver;
 use crate::core::action::Action;
 use crate::core::state::State;
 use crate::core::update::update;
+use crate::media_keys::MediaKeys;
 use crate::runtime::EffectRuntime;
 use crate::theme::{DefaultTheme, Theme};
 use crate::ui;
@@ -18,16 +19,18 @@ pub struct App {
     theme: Box<dyn Theme>,
     runtime: EffectRuntime,
     incoming: Receiver<Action>,
+    media_keys: MediaKeys,
     rng: fastrand::Rng,
 }
 
 impl App {
-    pub fn new(runtime: EffectRuntime, incoming: Receiver<Action>) -> Self {
+    pub fn new(runtime: EffectRuntime, incoming: Receiver<Action>, media_keys: MediaKeys) -> Self {
         Self {
             state: State::default(),
             theme: Box::new(DefaultTheme),
             runtime,
             incoming,
+            media_keys,
             rng: fastrand::Rng::new(),
         }
     }
@@ -66,6 +69,7 @@ impl eframe::App for App {
         let mut actions: Vec<Action> = self.incoming.try_iter().collect();
         actions.extend(ui::view(ui, &self.state, self.theme.as_ref()));
         self.reduce(actions);
+        self.media_keys.sync(&self.state);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
