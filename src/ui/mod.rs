@@ -81,6 +81,16 @@ fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>)
                 Page::Library,
                 out,
             );
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(theme.metric(MetricRole::PagePadding));
+                if ui
+                    .button("Sign out")
+                    .on_hover_text("Clear the saved sign-in")
+                    .clicked()
+                {
+                    out.push(Action::SignOutRequested);
+                }
+            });
         });
 }
 

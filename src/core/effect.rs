@@ -22,6 +22,7 @@ pub enum Effect {
     Api(ApiRequest),
     Player(PlayerCommand),
     SaveCredentials(Credentials),
+    ClearCredentials,
 }
 
 #[derive(Clone, Debug, PartialEq)]

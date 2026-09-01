@@ -53,6 +53,7 @@ impl EffectRuntime {
         match effect {
             Effect::Api(request) => self.run_api_request(request),
             Effect::SaveCredentials(credentials) => self.save_credentials(credentials),
+            Effect::ClearCredentials => self.clear_credentials(),
             Effect::Player(command) => self.player.send(command),
         }
     }
@@ -72,6 +73,16 @@ impl EffectRuntime {
                 deliver(Action::NoticePosted(format!(
                     "Saving the sign-in failed: {error}"
                 )));
+            }
+        });
+    }
+
+    fn clear_credentials(&self) {
+        *self.api.write().expect("api lock") = None;
+        let deliver = self.delivery();
+        self.tokio.spawn_blocking(move || {
+            if let Err(error) = auth::delete_credentials() {
+                deliver(Action::NoticePosted(format!("Signing out failed: {error}")));
             }
         });
     }

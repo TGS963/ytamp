@@ -46,6 +46,20 @@ pub fn save_credentials(credentials: &Credentials) -> io::Result<()> {
     fs::rename(&temp, &path)
 }
 
+/// Removes the stored credentials, the legacy cookie file included.
+pub fn delete_credentials() -> io::Result<()> {
+    let Some(dir) = config_dir() else {
+        return Ok(());
+    };
+    for name in ["auth.json", "cookies.txt"] {
+        let path = dir.join(name);
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 fn config_dir() -> Option<PathBuf> {
     let dirs = ProjectDirs::from("", "", "ytamp")?;
     Some(dirs.config_dir().to_path_buf())

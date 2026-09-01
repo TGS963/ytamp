@@ -15,6 +15,7 @@ pub enum Action {
     CookieDraftChanged(String),
     AuthUserDraftChanged(String),
     CookiesSubmitted,
+    SignOutRequested,
     SearchInputChanged(String),
     SearchSubmitted,
     PlaylistOpened(PlaylistId),

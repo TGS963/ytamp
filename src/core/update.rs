@@ -28,6 +28,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             vec![]
         }
         Action::CookiesSubmitted => submit_cookies(state),
+        Action::SignOutRequested => sign_out(state),
         Action::AuthVerified(result) => finish_sign_in(state, result),
         Action::SearchInputChanged(input) => {
             state.search.input = input;
@@ -167,6 +168,17 @@ fn normalized_authuser(draft: &str) -> String {
         return "0".to_string();
     }
     trimmed.to_string()
+}
+
+/// Back to the sign-in page with fresh library state. Playback keeps
+/// running: the loaded audio needs no session.
+fn sign_out(state: &mut State) -> Vec<Effect> {
+    state.auth = AuthState::SignedOut;
+    state.sign_in = Default::default();
+    state.library = Default::default();
+    state.search = Default::default();
+    state.page = Page::SignIn;
+    vec![Effect::ClearCredentials]
 }
 
 fn finish_sign_in(state: &mut State, result: Result<(), String>) -> Vec<Effect> {
