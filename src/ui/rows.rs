@@ -106,6 +106,14 @@ pub fn row_frame(
     response
 }
 
+/// A `RowHeight`-tall row with a centered spinner, drawn under a list
+/// that is still receiving pages from the network.
+pub fn loading_more_row(ui: &mut egui::Ui, theme: &dyn Theme) {
+    row_frame(ui, theme, |ui| {
+        ui.spinner();
+    });
+}
+
 fn track_row(
     ui: &mut egui::Ui,
     track: &Track,

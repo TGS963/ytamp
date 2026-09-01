@@ -78,17 +78,34 @@ impl Api {
         }
     }
 
-    pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
+    /// Streams the liked-songs list to `on_page`. The OAuth session
+    /// hands out one page at a time as the network answers; the
+    /// browser session has no paged endpoint, so it fetches the whole
+    /// list first and delivers it as one finished page.
+    pub async fn liked_songs(
+        &self,
+        on_page: impl FnMut(Vec<Track>, bool),
+    ) -> Result<(), String> {
         match &*self.session {
-            Session::Browser(_) => self.browser_liked_songs().await,
-            Session::OAuth { data, .. } => data.liked_songs().await,
+            Session::Browser(_) => {
+                deliver_whole_list(self.browser_liked_songs().await, on_page)
+            }
+            Session::OAuth { data, .. } => data.liked_songs(on_page).await,
         }
     }
 
-    pub async fn playlist_tracks(&self, id: &PlaylistId) -> Result<Vec<Track>, String> {
+    /// Streams one playlist's tracks to `on_page`, the same way as
+    /// [`Self::liked_songs`].
+    pub async fn playlist_tracks(
+        &self,
+        id: &PlaylistId,
+        on_page: impl FnMut(Vec<Track>, bool),
+    ) -> Result<(), String> {
         match &*self.session {
-            Session::Browser(_) => self.browser_playlist_tracks(&id.0).await,
-            Session::OAuth { data, .. } => data.playlist_tracks(id).await,
+            Session::Browser(_) => {
+                deliver_whole_list(self.browser_playlist_tracks(&id.0).await, on_page)
+            }
+            Session::OAuth { data, .. } => data.playlist_tracks(id, on_page).await,
         }
     }
 
@@ -121,6 +138,18 @@ impl Api {
             .filter_map(convert::playlist_item_to_track)
             .collect())
     }
+}
+
+/// Adapts a single-shot list result to the paged `on_page` shape, so
+/// the browser session's one-call fetch fits the same streaming
+/// interface as the OAuth session's paged one.
+fn deliver_whole_list(
+    result: Result<Vec<Track>, String>,
+    mut on_page: impl FnMut(Vec<Track>, bool),
+) -> Result<(), String> {
+    let tracks = result?;
+    on_page(tracks, true);
+    Ok(())
 }
 
 /// Three filtered queries, the way youtui searches. Basic search adds

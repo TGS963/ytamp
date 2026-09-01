@@ -21,8 +21,20 @@ async fn main() {
         Ok(results) => println!("search: {} songs", results.songs.len()),
         Err(error) => println!("search failed: {error}"),
     }
-    match api.liked_songs().await {
-        Ok(tracks) => println!("liked: {} tracks", tracks.len()),
-        Err(error) => println!("liked failed: {error}"),
+    let mut page_count = 0;
+    let mut total = 0;
+    let result = api
+        .liked_songs(|tracks, finished| {
+            page_count += 1;
+            total += tracks.len();
+            println!(
+                "liked page {page_count}: {} tracks (total {total}, finished {finished})",
+                tracks.len()
+            );
+        })
+        .await;
+    match result {
+        Ok(()) => println!("liked: {total} tracks across {page_count} pages"),
+        Err(error) => println!("liked failed after {page_count} pages: {error}"),
     }
 }

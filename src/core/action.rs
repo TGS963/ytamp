@@ -51,6 +51,19 @@ pub enum Action {
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),
     LikedLoaded(Result<Vec<Track>, String>),
     PlaylistTracksLoaded(PlaylistId, Result<Vec<Track>, String>),
+    /// One page of the liked-songs list. `finished` marks the last
+    /// page of the stream.
+    LikedPageLoaded {
+        tracks: Vec<Track>,
+        finished: bool,
+    },
+    /// One page of an open playlist's tracks, the same way as
+    /// `LikedPageLoaded`.
+    PlaylistTracksPageLoaded {
+        id: PlaylistId,
+        tracks: Vec<Track>,
+        finished: bool,
+    },
     /// The library cache read, delivered once whether or not either
     /// file existed. A `None` field is a cache miss for that list.
     LibraryCacheLoaded {

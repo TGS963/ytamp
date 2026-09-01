@@ -73,8 +73,19 @@ pub struct SearchState {
 pub struct LibraryState {
     pub playlists: Loadable<Vec<Playlist>>,
     pub liked: Loadable<Vec<Track>>,
+    /// True while more pages of the liked list are still arriving,
+    /// so the UI can show a spinner row under the visible tracks.
+    pub liked_loading_more: bool,
+    /// Pages that have arrived while `liked` still shows cached data,
+    /// held here until the stream finishes and they swap in together.
+    pub incoming_liked: Vec<Track>,
     /// The tracks of the playlist page the user has open.
     pub open_playlist: Loadable<Vec<Track>>,
+    /// True while more pages of the open playlist are still arriving.
+    pub open_playlist_loading_more: bool,
+    /// Pages that have arrived while `open_playlist` still shows
+    /// cached data, held here until the stream finishes.
+    pub incoming_playlist: Vec<Track>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

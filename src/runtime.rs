@@ -165,11 +165,10 @@ async fn execute_api_request(
         }
         other => {
             let signed_in = slot.read().expect("api lock").clone();
-            let action = match signed_in {
-                Some(api) => execute_signed_in(&api, other).await,
-                None => request_failure(other, "not signed in".to_string()),
-            };
-            deliver(action);
+            match signed_in {
+                Some(api) => execute_signed_in(&api, other, deliver).await,
+                None => deliver(request_failure(other, "not signed in".to_string())),
+            }
         }
     }
 }
@@ -244,18 +243,51 @@ async fn oauth_token_from_device_flow(
     Err(format!("The sign-in did not finish in time: {last_error}"))
 }
 
-async fn execute_signed_in(api: &Api, request: ApiRequest) -> Action {
+/// Runs one request against a signed-in session. `Search` and
+/// `FetchPlaylists` deliver a single result action. `FetchLiked` and
+/// `FetchPlaylistTracks` stream: one page action per page, the last
+/// one carrying `finished: true`, or a failure action on a mid-stream
+/// error.
+async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Action) + Send)) {
     match request {
         ApiRequest::VerifyAuth(_) | ApiRequest::StartOAuth { .. } => {
             unreachable!("handled before the sign-in check")
         }
-        ApiRequest::Search { query } => Action::SearchLoaded(api.search(&query).await),
-        ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(api.library_playlists().await),
-        ApiRequest::FetchLiked => Action::LikedLoaded(api.liked_songs().await),
-        ApiRequest::FetchPlaylistTracks(id) => {
-            let tracks = api.playlist_tracks(&id).await;
-            Action::PlaylistTracksLoaded(id, tracks)
+        ApiRequest::Search { query } => deliver(Action::SearchLoaded(api.search(&query).await)),
+        ApiRequest::FetchPlaylists => {
+            deliver(Action::PlaylistsLoaded(api.library_playlists().await))
         }
+        ApiRequest::FetchLiked => stream_liked(api, deliver).await,
+        ApiRequest::FetchPlaylistTracks(id) => stream_playlist_tracks(api, id, deliver).await,
+    }
+}
+
+/// Streams the liked-songs list, delivering one `LikedPageLoaded` per
+/// page. A mid-stream error becomes a `LikedLoaded` failure, after the
+/// pages already delivered.
+async fn stream_liked(api: &Api, deliver: &(impl Fn(Action) + Send)) {
+    let result = api
+        .liked_songs(|tracks, finished| deliver(Action::LikedPageLoaded { tracks, finished }))
+        .await;
+    if let Err(message) = result {
+        deliver(Action::LikedLoaded(Err(message)));
+    }
+}
+
+/// Streams one playlist's tracks, the same way as `stream_liked`.
+async fn stream_playlist_tracks(api: &Api, id: PlaylistId, deliver: &(impl Fn(Action) + Send)) {
+    let page_id = id.clone();
+    let result = api
+        .playlist_tracks(&id, |tracks, finished| {
+            deliver(Action::PlaylistTracksPageLoaded {
+                id: page_id.clone(),
+                tracks,
+                finished,
+            })
+        })
+        .await;
+    if let Err(message) = result {
+        deliver(Action::PlaylistTracksLoaded(id, Err(message)));
     }
 }
 

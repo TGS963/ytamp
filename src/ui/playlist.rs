@@ -19,6 +19,9 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
         }
         Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) => {
             rows::track_list(ui, "playlist_tracks", tracks, theme, out);
+            if state.library.open_playlist_loading_more {
+                rows::loading_more_row(ui, theme);
+            }
         }
     }
 }

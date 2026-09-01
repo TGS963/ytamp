@@ -56,6 +56,14 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
         Action::LikedLoaded(result) => finish_liked_load(state, result),
         Action::PlaylistTracksLoaded(id, result) => finish_playlist_load(state, id, result),
+        Action::LikedPageLoaded { tracks, finished } => {
+            finish_liked_page(state, tracks, finished)
+        }
+        Action::PlaylistTracksPageLoaded {
+            id,
+            tracks,
+            finished,
+        } => finish_playlist_tracks_page(state, id, tracks, finished),
         Action::LibraryCacheLoaded { playlists, liked } => {
             apply_library_cache(state, playlists, liked)
         }
@@ -130,6 +138,8 @@ fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
     }
     if state.library.liked == Loadable::NotAsked {
         state.library.liked = Loadable::Loading;
+        state.library.liked_loading_more = false;
+        state.library.incoming_liked.clear();
         effects.push(Effect::Api(ApiRequest::FetchLiked));
         needs_cache = true;
     }
@@ -226,8 +236,13 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
     vec![Effect::Api(ApiRequest::Search { query })]
 }
 
+/// Opens a playlist page and starts its two loads. Resets the paging
+/// state, so a page still in flight for a playlist the user just left
+/// can never leak into the one just opened.
 fn open_playlist(state: &mut State, id: PlaylistId) -> Vec<Effect> {
     state.library.open_playlist = Loadable::Loading;
+    state.library.open_playlist_loading_more = false;
+    state.library.incoming_playlist.clear();
     state.page = Page::Playlist(id.clone());
     vec![
         Effect::Api(ApiRequest::FetchPlaylistTracks(id.clone())),
@@ -245,6 +260,7 @@ fn finish_playlist_load(
     if state.page != Page::Playlist(id.clone()) {
         return vec![];
     }
+    state.library.open_playlist_loading_more = false;
     let Ok(tracks) = result else {
         apply_load_failure(
             &mut state.library.open_playlist,
@@ -257,6 +273,28 @@ fn finish_playlist_load(
     vec![Effect::SaveLibraryCache(LibraryCacheWrite::PlaylistTracks(
         id, tracks,
     ))]
+}
+
+/// Applies one page of the open playlist's track list. Ignores a page
+/// for a playlist the user has already left, the same way as
+/// `finish_playlist_load`.
+fn finish_playlist_tracks_page(
+    state: &mut State,
+    id: PlaylistId,
+    tracks: Vec<Track>,
+    finished: bool,
+) -> Vec<Effect> {
+    if state.page != Page::Playlist(id.clone()) {
+        return vec![];
+    }
+    let full = apply_list_page(
+        &mut state.library.open_playlist,
+        &mut state.library.open_playlist_loading_more,
+        &mut state.library.incoming_playlist,
+        tracks,
+        finished,
+    );
+    save_full_list(full, |all| LibraryCacheWrite::PlaylistTracks(id, all))
 }
 
 /// Applies a fresh playlist list and schedules it for the cache.
@@ -277,6 +315,7 @@ fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String
 
 /// Applies a fresh liked-songs list and schedules it for the cache.
 fn finish_liked_load(state: &mut State, result: Result<Vec<Track>, String>) -> Vec<Effect> {
+    state.library.liked_loading_more = false;
     let Ok(tracks) = result else {
         apply_load_failure(
             &mut state.library.liked,
@@ -289,13 +328,72 @@ fn finish_liked_load(state: &mut State, result: Result<Vec<Track>, String>) -> V
     vec![Effect::SaveLibraryCache(LibraryCacheWrite::Liked(tracks))]
 }
 
-/// Applies a network failure to a library slot. A slot that shows
-/// cached data keeps it on screen: the failure becomes a notice
-/// instead of an error page. An empty slot shows the failure itself.
+/// Applies one page of the liked-songs list.
+fn finish_liked_page(state: &mut State, tracks: Vec<Track>, finished: bool) -> Vec<Effect> {
+    let full = apply_list_page(
+        &mut state.library.liked,
+        &mut state.library.liked_loading_more,
+        &mut state.library.incoming_liked,
+        tracks,
+        finished,
+    );
+    save_full_list(full, LibraryCacheWrite::Liked)
+}
+
+/// Applies one page of a streaming track list to `slot`. A page while
+/// `slot` shows no cached value starts or grows the visible list at
+/// once, with `loading_more` as the spinner flag. A page while `slot`
+/// shows a cached refresh buffers into `incoming` instead, so the
+/// cached list stays on screen until the stream finishes. Returns the
+/// full list once `finished` is true, so the caller can cache it; a
+/// partial list is never returned, and so never reaches the cache.
+fn apply_list_page(
+    slot: &mut Loadable<Vec<Track>>,
+    loading_more: &mut bool,
+    incoming: &mut Vec<Track>,
+    tracks: Vec<Track>,
+    finished: bool,
+) -> Option<Vec<Track>> {
+    if matches!(slot, Loadable::Refreshing(_)) {
+        incoming.extend(tracks);
+        if !finished {
+            return None;
+        }
+        let all = std::mem::take(incoming);
+        *slot = Loadable::Loaded(all.clone());
+        return Some(all);
+    }
+    if !matches!(slot, Loadable::Loaded(_)) {
+        *slot = Loadable::Loaded(Vec::new());
+    }
+    let Loadable::Loaded(existing) = slot else {
+        unreachable!("the branch above just normalized the slot to Loaded")
+    };
+    existing.extend(tracks);
+    *loading_more = !finished;
+    finished.then(|| existing.clone())
+}
+
+/// The cache-write effect for a finished stream's full list, or no
+/// effect while the list is still partial.
+fn save_full_list(
+    full: Option<Vec<Track>>,
+    write: impl FnOnce(Vec<Track>) -> LibraryCacheWrite,
+) -> Vec<Effect> {
+    match full {
+        Some(tracks) => vec![Effect::SaveLibraryCache(write(tracks))],
+        None => vec![],
+    }
+}
+
+/// Applies a network failure to a library slot. A slot that already
+/// shows data, cached or from pages the stream already delivered,
+/// keeps it on screen: the failure becomes a notice instead of an
+/// error page. An empty slot shows the failure itself.
 fn apply_load_failure<T>(slot: &mut Loadable<T>, message: String, notices: &mut Vec<String>) {
     match std::mem::take(slot) {
-        Loadable::Refreshing(cached) => {
-            *slot = Loadable::Loaded(cached);
+        Loadable::Refreshing(shown) | Loadable::Loaded(shown) => {
+            *slot = Loadable::Loaded(shown);
             notices.push(message);
         }
         _ => *slot = Loadable::Failed(message),
@@ -903,6 +1001,161 @@ mod tests {
             &mut state,
             Action::Player(PlayerEvent::TrackStarted { duration: None }),
         );
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_liked_page_on_a_loading_slot_shows_at_once_and_marks_loading_more() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        assert_eq!(state.library.liked, Loadable::Loaded(vec![track("a")]));
+        assert!(state.library.liked_loading_more);
+    }
+
+    #[test]
+    fn a_later_liked_page_appends_to_the_visible_list() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("b")],
+                finished: true,
+            },
+        );
+        assert_eq!(
+            state.library.liked,
+            Loadable::Loaded(vec![track("a"), track("b")])
+        );
+        assert!(!state.library.liked_loading_more);
+    }
+
+    #[test]
+    fn liked_pages_on_a_refreshing_slot_buffer_and_swap_in_together() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LibraryCacheLoaded {
+                playlists: None,
+                liked: Some(vec![track("cached")]),
+            },
+        );
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        // The cached list stays on screen while pages buffer off screen.
+        assert_eq!(
+            state.library.liked,
+            Loadable::Refreshing(vec![track("cached")])
+        );
+        assert_eq!(state.library.incoming_liked, vec![track("a")]);
+
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("b")],
+                finished: true,
+            },
+        );
+        assert_eq!(
+            state.library.liked,
+            Loadable::Loaded(vec![track("a"), track("b")])
+        );
+        assert_eq!(state.library.incoming_liked, Vec::<Track>::new());
+    }
+
+    #[test]
+    fn a_finished_liked_stream_writes_the_full_list_to_the_cache() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        let effects = apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("b")],
+                finished: true,
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::SaveLibraryCache(LibraryCacheWrite::Liked(vec![
+                track("a"),
+                track("b")
+            ]))]
+        );
+    }
+
+    #[test]
+    fn a_partial_liked_page_never_writes_the_cache() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        let effects = apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_stale_playlist_page_is_ignored_after_leaving_the_playlist() {
+        let mut state = State::default();
+        apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
+        apply(&mut state, Action::NavigatedTo(Page::Search));
+        let effects = apply(
+            &mut state,
+            Action::PlaylistTracksPageLoaded {
+                id: PlaylistId("p1".into()),
+                tracks: vec![track("a")],
+                finished: true,
+            },
+        );
+        assert_eq!(state.library.open_playlist, Loadable::Loading);
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_mid_stream_failure_keeps_the_pages_already_shown() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("a")],
+                finished: false,
+            },
+        );
+        let effects = apply(&mut state, Action::LikedLoaded(Err("offline".into())));
+        assert_eq!(state.library.liked, Loadable::Loaded(vec![track("a")]));
+        assert!(!state.library.liked_loading_more);
+        assert_eq!(state.notices, vec!["offline".to_string()]);
         assert_eq!(effects, vec![]);
     }
 }
