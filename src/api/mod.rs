@@ -24,7 +24,7 @@ impl Api {
     /// several Google accounts answers for account 0, and the library
     /// comes back from the wrong account.
     pub async fn sign_in(credentials: &Credentials) -> Result<Api, String> {
-        let client = authuser_client(&credentials.authuser)?;
+        let client = session_client(credentials)?;
         let yt = YtMusicBuilder::new_with_client(client)
             .with_browser_token_cookie(credentials.cookies.clone())
             .build()
@@ -90,18 +90,38 @@ impl Api {
     }
 }
 
-/// An HTTP client that sends the X-Goog-AuthUser account index with
-/// every request, the header ytmusicapi requires for browser auth.
-fn authuser_client(authuser: &str) -> Result<ytmapi_rs::Client, String> {
+/// An HTTP client that replays the browser's request headers on every
+/// call, the way ytmusicapi does. Account selection (X-Goog-AuthUser,
+/// and X-Goog-PageId for brand accounts) and consistency checks ride
+/// on these headers, and without them YouTube answers as signed out.
+fn session_client(credentials: &Credentials) -> Result<ytmapi_rs::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
-    let value = reqwest::header::HeaderValue::from_str(authuser)
-        .map_err(|_| format!("'{authuser}' does not work as an account index"))?;
-    headers.insert("X-Goog-AuthUser", value);
+    for (name, value) in &credentials.headers {
+        insert_header(&mut headers, name, value);
+    }
+    if !headers.contains_key("x-goog-authuser") {
+        insert_header(&mut headers, "x-goog-authuser", &credentials.authuser);
+    }
     let client = reqwest::Client::builder()
         .default_headers(headers)
         .build()
         .map_err(|error| format!("The HTTP client failed to build: {error}"))?;
     Ok(ytmapi_rs::Client::new_from_reqwest_client(client))
+}
+
+/// A header that does not parse gets logged and skipped, so one odd
+/// browser header cannot block the sign-in.
+fn insert_header(headers: &mut reqwest::header::HeaderMap, name: &str, value: &str) {
+    let name = match reqwest::header::HeaderName::try_from(name) {
+        Ok(name) => name,
+        Err(_) => return log::warn!("skipping header with an invalid name: {name}"),
+    };
+    match reqwest::header::HeaderValue::from_str(value) {
+        Ok(value) => {
+            headers.insert(name, value);
+        }
+        Err(_) => log::warn!("skipping header with an invalid value: {name}"),
+    }
 }
 
 /// A failed side section of a search becomes an empty list, so a

@@ -9,12 +9,19 @@ use serde::{Deserialize, Serialize};
 
 use super::model::{PlaylistId, Track};
 
-/// What a YouTube Music session needs: the Cookie header, and the
-/// X-Goog-AuthUser index that picks the account inside the session.
+/// What a YouTube Music session needs: the Cookie header, the
+/// X-Goog-AuthUser index that picks the account inside the session,
+/// and the other request headers the browser sent. ytmusicapi keeps
+/// and replays all copied headers, because account selection (brand
+/// accounts included) and consistency checks ride on them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Credentials {
     pub cookies: String,
+    #[serde(default)]
     pub authuser: String,
+    /// Lowercased header names with their values, from the cURL paste.
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

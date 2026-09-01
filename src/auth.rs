@@ -30,6 +30,7 @@ fn load_legacy_cookies(dir: &std::path::Path) -> Option<Credentials> {
     (!cookies.is_empty()).then(|| Credentials {
         cookies: cookies.to_string(),
         authuser: "0".to_string(),
+        headers: vec![],
     })
 }
 

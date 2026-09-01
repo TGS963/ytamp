@@ -124,15 +124,18 @@ fn submit_cookies(state: &mut State) -> Vec<Effect> {
     if state.sign_in.draft.trim().is_empty() {
         return vec![];
     }
-    let cookies = match super::cookie_paste::cookies_from_paste(&state.sign_in.draft) {
-        Ok(cookies) => cookies,
+    let parsed = match super::cookie_paste::credentials_from_paste(&state.sign_in.draft) {
+        Ok(parsed) => parsed,
         Err(problem) => {
             state.auth = AuthState::Failed(problem);
             return vec![];
         }
     };
-    let authuser = normalized_authuser(&state.sign_in.authuser_draft);
-    let credentials = crate::core::effect::Credentials { cookies, authuser };
+    let credentials = crate::core::effect::Credentials {
+        cookies: parsed.cookies,
+        authuser: normalized_authuser(&state.sign_in.authuser_draft),
+        headers: parsed.headers,
+    };
     state.auth = AuthState::Verifying;
     vec![
         Effect::SaveCredentials(credentials.clone()),
@@ -353,6 +356,7 @@ mod tests {
         let credentials = crate::core::effect::Credentials {
             cookies: FULL.into(),
             authuser: "2".into(),
+            headers: vec![],
         };
         assert_eq!(state.auth, AuthState::Verifying);
         assert_eq!(

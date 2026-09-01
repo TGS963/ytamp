@@ -1,24 +1,40 @@
 //! Reads the sign-in paste: a raw Cookie header value, or a whole
-//! "Copy as cURL" command whose cookie the parser extracts.
+//! "Copy as cURL" command from which the cookie and the other request
+//! headers get extracted.
 //!
 //! Pastes fail early and with a named reason here, because the
 //! failures they cause otherwise surface late and look like an empty
 //! library: YouTube treats a session with missing cookies as signed
 //! out while the SAPISID hash still passes.
+//!
+//! The extra headers matter as much as the cookie. ytmusicapi keeps
+//! every copied header (minus a small ignore set) and replays them on
+//! each request: account selection (X-Goog-AuthUser, and X-Goog-PageId
+//! for brand accounts) and consistency checks ride on them.
 
-/// The Cookie header value from the paste, validated.
-pub fn cookies_from_paste(paste: &str) -> Result<String, String> {
+/// The cookie and the replayable request headers from a paste.
+#[derive(Debug, PartialEq)]
+pub struct PasteCredentials {
+    pub cookies: String,
+    /// Lowercased header names with their values.
+    pub headers: Vec<(String, String)>,
+}
+
+pub fn credentials_from_paste(paste: &str) -> Result<PasteCredentials, String> {
     let text = paste.trim();
-    let cookies = if text.starts_with("curl ") {
-        curl_cookie_header(text).ok_or(
+    let credentials = if text.starts_with("curl ") {
+        curl_credentials(text).ok_or(
             "The cURL paste carries no Cookie header. Copy the request \
              as cURL again, from a signed-in music.youtube.com tab.",
         )?
     } else {
-        text.to_string()
+        PasteCredentials {
+            cookies: text.to_string(),
+            headers: vec![],
+        }
     };
-    validate(&cookies)?;
-    Ok(cookies)
+    validate(&credentials.cookies)?;
+    Ok(credentials)
 }
 
 fn validate(cookies: &str) -> Result<(), String> {
@@ -53,29 +69,51 @@ fn has_cookie(cookies: &str, name: &str) -> bool {
         .any(|pair| pair.trim().split('=').next() == Some(name))
 }
 
-/// The cookie value inside a "Copy as cURL" command: a `-H 'Cookie: …'`
-/// header (Safari, Firefox) or a `-b '…'` option (Chrome).
-fn curl_cookie_header(curl: &str) -> Option<String> {
+/// Headers that never replay: the transport negotiates these itself,
+/// and the auth layer computes its own cookie and authorization.
+fn is_ignored_header(name: &str) -> bool {
+    name.starts_with("sec-")
+        || matches!(
+            name,
+            "cookie" | "authorization" | "host" | "content-length" | "accept-encoding"
+        )
+}
+
+/// The cookie and headers inside a "Copy as cURL" command: `-H` pairs
+/// (all browsers) and the `-b` cookie option (Chrome).
+fn curl_credentials(curl: &str) -> Option<PasteCredentials> {
     let arguments = shell_arguments(curl);
+    let mut cookies: Option<String> = None;
+    let mut headers = Vec::new();
     let mut previous: Option<&String> = None;
     for argument in &arguments {
-        if let Some(cookies) = cookie_of_argument_pair(previous, argument) {
-            return Some(cookies);
+        match previous.map(String::as_str) {
+            Some("-H") => collect_header(argument, &mut cookies, &mut headers),
+            Some("-b") | Some("--cookie") => cookies = Some(argument.trim().to_string()),
+            _ => {}
         }
         previous = Some(argument);
     }
-    None
+    Some(PasteCredentials {
+        cookies: cookies?,
+        headers,
+    })
 }
 
-fn cookie_of_argument_pair(flag: Option<&String>, value: &str) -> Option<String> {
-    match flag.map(String::as_str) {
-        Some("-H") => {
-            let (name, rest) = value.split_once(':')?;
-            name.eq_ignore_ascii_case("cookie")
-                .then(|| rest.trim().to_string())
-        }
-        Some("-b") | Some("--cookie") => Some(value.trim().to_string()),
-        _ => None,
+fn collect_header(
+    argument: &str,
+    cookies: &mut Option<String>,
+    headers: &mut Vec<(String, String)>,
+) {
+    let Some((name, value)) = argument.split_once(':') else {
+        return;
+    };
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim().to_string();
+    if name == "cookie" {
+        *cookies = Some(value);
+    } else if !is_ignored_header(&name) {
+        headers.push((name, value));
     }
 }
 
@@ -111,48 +149,66 @@ mod tests {
 
     const FULL: &str = "SID=a; SAPISID=b; __Secure-3PAPISID=c; __Secure-3PSID=d";
 
+    fn cookies_of(paste: &str) -> Result<String, String> {
+        credentials_from_paste(paste).map(|credentials| credentials.cookies)
+    }
+
     #[test]
     fn a_raw_header_value_passes() {
-        assert_eq!(
-            cookies_from_paste(&format!(" {FULL} ")),
-            Ok(FULL.to_string())
-        );
+        assert_eq!(cookies_of(&format!(" {FULL} ")), Ok(FULL.to_string()));
     }
 
     #[test]
     fn a_truncated_paste_names_the_cause() {
-        let error = cookies_from_paste("SID=a…more").unwrap_err();
+        let error = cookies_of("SID=a…more").unwrap_err();
         assert!(error.contains("truncation mark"));
     }
 
     #[test]
     fn missing_cookies_are_named() {
-        let error = cookies_from_paste("SAPISID=b; YSC=x").unwrap_err();
+        let error = cookies_of("SAPISID=b; YSC=x").unwrap_err();
         assert!(error.contains("SID"));
         assert!(error.contains("__Secure-3PSID"));
     }
 
     #[test]
-    fn a_safari_curl_paste_yields_the_header() {
-        let curl = format!("curl 'https://music.youtube.com/' -H 'Cookie: {FULL}' --compressed");
-        assert_eq!(cookies_from_paste(&curl), Ok(FULL.to_string()));
+    fn a_safari_curl_paste_yields_cookie_and_headers() {
+        let curl = format!(
+            "curl 'https://music.youtube.com/' -H 'Cookie: {FULL}' \
+             -H 'X-Goog-AuthUser: 1' -H 'X-Goog-PageId: 12345' \
+             -H 'Sec-Fetch-Mode: cors' -H 'Host: music.youtube.com' --compressed"
+        );
+        let credentials = credentials_from_paste(&curl).unwrap();
+        assert_eq!(credentials.cookies, FULL);
+        assert_eq!(
+            credentials.headers,
+            vec![
+                ("x-goog-authuser".to_string(), "1".to_string()),
+                ("x-goog-pageid".to_string(), "12345".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn a_chrome_curl_paste_yields_the_cookie_option() {
         let curl = format!("curl 'https://music.youtube.com/' -b '{FULL}' -H 'accept: */*'");
-        assert_eq!(cookies_from_paste(&curl), Ok(FULL.to_string()));
+        let credentials = credentials_from_paste(&curl).unwrap();
+        assert_eq!(credentials.cookies, FULL);
+        assert_eq!(
+            credentials.headers,
+            vec![("accept".to_string(), "*/*".to_string())]
+        );
     }
 
     #[test]
     fn a_curl_paste_without_cookies_names_the_cause() {
-        let error = cookies_from_paste("curl 'https://x' -H 'accept: */*'").unwrap_err();
+        let error = cookies_of("curl 'https://x' -H 'accept: */*'").unwrap_err();
         assert!(error.contains("no Cookie header"));
     }
 
     #[test]
     fn the_cookie_header_name_matches_any_case() {
         let curl = format!("curl 'https://x' -H 'cookie: {FULL}'");
-        assert_eq!(cookies_from_paste(&curl), Ok(FULL.to_string()));
+        assert_eq!(cookies_of(&curl), Ok(FULL.to_string()));
     }
 }

@@ -1,24 +1,35 @@
 //! Dumps the raw library-playlists JSON to a local file for diagnosis.
-//! Usage: cargo run --example library_dump
+//! Usage: cargo run --example library_dump [authuser]
 
-fn load_cookies() -> String {
+use reqwest::header::{HeaderMap, HeaderValue};
+use ytmapi_rs::YtMusicBuilder;
+
+fn load(field: &str) -> String {
     let dirs = directories::ProjectDirs::from("", "", "ytamp").expect("a config directory");
-    let dir = dirs.config_dir();
-    if let Ok(json) = std::fs::read_to_string(dir.join("auth.json"))
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&json)
-        && let Some(cookies) = value.get("cookies").and_then(|v| v.as_str())
-    {
-        return cookies.to_string();
-    }
-    std::fs::read_to_string(dir.join("cookies.txt"))
-        .expect("a saved auth.json or cookies.txt")
-        .trim()
+    let json = std::fs::read_to_string(dirs.config_dir().join("auth.json")).expect("auth.json");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    value
+        .get(field)
+        .and_then(|v| v.as_str())
+        .expect("field")
         .to_string()
 }
 
 #[tokio::main]
 async fn main() {
-    let yt = ytmapi_rs::YtMusic::from_cookie(load_cookies())
+    let authuser = std::env::args().nth(1).unwrap_or_else(|| load("authuser"));
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "X-Goog-AuthUser",
+        HeaderValue::from_str(&authuser).expect("index"),
+    );
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("client");
+    let yt = YtMusicBuilder::new_with_client(ytmapi_rs::Client::new_from_reqwest_client(http))
+        .with_browser_token_cookie(load("cookies"))
+        .build()
         .await
         .expect("sign-in");
     let json = yt
@@ -32,5 +43,5 @@ async fn main() {
         serde_json::to_string_pretty(&json).expect("serialize"),
     )
     .expect("write");
-    println!("wrote {}", path.display());
+    println!("authuser {authuser}, wrote {}", path.display());
 }
