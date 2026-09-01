@@ -35,6 +35,11 @@ fn oauth_section(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Ac
     ] {
         ui.label(theme.secondary_label(TextRole::Body, line));
     }
+    ui.colored_label(
+        theme.color(ColorRole::Danger),
+        "Broken on Google's side since 2025-08: every OAuth request answers \
+         HTTP 400 (ytmusicapi issue #813). Use the cookie fallback below.",
+    );
     ui.add_space(theme.metric(MetricRole::GapSmall));
     labeled_field(
         ui,
