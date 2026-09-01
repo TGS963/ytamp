@@ -102,15 +102,20 @@ enum Attempt {
 }
 
 impl ResolverChain {
+    /// yt-dlp goes first while rustypipe is broken upstream (its
+    /// deobfuscator does not parse the 2025 player script). Each failed
+    /// rustypipe attempt cost about 500 ms per track. Swap the order
+    /// back when a fixed rustypipe release lands: native extraction is
+    /// faster than the subprocess.
     pub fn with_default_resolvers() -> Self {
         Self {
             sources: vec![
                 TrackedSource {
-                    source: Box::new(RustyPipeSource::new()),
+                    source: Box::new(YtDlpSource::new()),
                     breaker: CircuitBreaker::new(),
                 },
                 TrackedSource {
-                    source: Box::new(YtDlpSource::new()),
+                    source: Box::new(RustyPipeSource::new()),
                     breaker: CircuitBreaker::new(),
                 },
             ],
