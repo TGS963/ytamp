@@ -1,19 +1,24 @@
-//! The YouTube Music API layer: ytmapi-rs behind the app's own models.
+//! The YouTube Music API layer behind the app's own models.
 //!
-//! Every method returns the app's model types and a plain error text,
-//! so the reducer and the views never see a ytmapi-rs type. The
-//! session authenticates with the OAuth device flow (preferred) or
-//! with browser cookies (the fallback).
+//! Two sessions exist. The OAuth session reads account data from the
+//! official YouTube Data API (the internal API rejects OAuth since
+//! 2025-08) and searches the internal API anonymously. The browser
+//! session runs everything on the internal API with cookies, as the
+//! fallback. Every method returns the app's model types and a plain
+//! error text.
 
 mod convert;
+mod official;
 
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
-use ytmapi_rs::auth::{BrowserToken, OAuthToken};
+use ytmapi_rs::auth::noauth::NoAuthToken;
+use ytmapi_rs::auth::{AuthToken, BrowserToken, OAuthToken};
 use ytmapi_rs::common::{PlaylistID, YoutubeID};
-use ytmapi_rs::query::search::{AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter};
-use ytmapi_rs::query::{GetLibraryPlaylistsQuery, GetPlaylistTracksQuery, Query, SearchQuery};
+use ytmapi_rs::query::search::{
+    AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter, VideosFilter,
+};
+use ytmapi_rs::query::{GetLibraryPlaylistsQuery, GetPlaylistTracksQuery, SearchQuery};
 use ytmapi_rs::{YtMusic, YtMusicBuilder};
 
 use crate::core::effect::{AuthMethod, Credentials};
@@ -21,9 +26,11 @@ use crate::core::model::{Playlist, PlaylistId, SearchResults, Track};
 
 enum Session {
     Browser(YtMusic<BrowserToken>),
-    /// The lock exists for token refresh, which needs exclusive
-    /// access, the same pattern youtui uses.
-    OAuth(RwLock<YtMusic<OAuthToken>>),
+    OAuth {
+        data: official::DataApi,
+        /// Anonymous internal-API client: search needs no sign-in.
+        innertube: YtMusic<NoAuthToken>,
+    },
 }
 
 #[derive(Clone)]
@@ -48,37 +55,48 @@ impl Api {
         Ok(api)
     }
 
-    /// Three filtered queries, the way youtui searches. Basic search
-    /// adds a top-result card whose parse breaks often; the filtered
-    /// endpoints skip it. Songs are the core result: a song failure
-    /// fails the search, a failure of the other two degrades to an
-    /// empty section and a log line.
     pub async fn search(&self, query: &str) -> Result<SearchResults, String> {
-        let songs: SearchQuery<'_, FilteredSearch<SongsFilter>> = query.into();
-        let albums: SearchQuery<'_, FilteredSearch<AlbumsFilter>> = query.into();
-        let artists: SearchQuery<'_, FilteredSearch<ArtistsFilter>> = query.into();
-        let (songs, albums, artists) =
-            tokio::join!(self.run(songs), self.run(albums), self.run(artists));
-        Ok(convert::search_results(
-            songs?,
-            section_or_empty("albums", albums),
-            section_or_empty("artists", artists),
-        ))
+        match &*self.session {
+            Session::Browser(yt) => filtered_search(yt, query).await,
+            Session::OAuth { innertube, .. } => filtered_search(innertube, query).await,
+        }
     }
 
     pub async fn library_playlists(&self) -> Result<Vec<Playlist>, String> {
-        let playlists = self.run(GetLibraryPlaylistsQuery).await?;
-        Ok(playlists
-            .into_iter()
-            .map(convert::library_playlist)
-            .collect())
+        match &*self.session {
+            Session::Browser(yt) => {
+                let playlists = yt
+                    .query::<GetLibraryPlaylistsQuery>(&GetLibraryPlaylistsQuery)
+                    .await
+                    .map_err(readable)?;
+                Ok(playlists
+                    .into_iter()
+                    .map(convert::library_playlist)
+                    .collect())
+            }
+            Session::OAuth { data, .. } => data.playlists().await,
+        }
+    }
+
+    pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
+        match &*self.session {
+            Session::Browser(_) => self.browser_liked_songs().await,
+            Session::OAuth { data, .. } => data.liked_songs().await,
+        }
+    }
+
+    pub async fn playlist_tracks(&self, id: &PlaylistId) -> Result<Vec<Track>, String> {
+        match &*self.session {
+            Session::Browser(_) => self.browser_playlist_tracks(&id.0).await,
+            Session::OAuth { data, .. } => data.playlist_tracks(id).await,
+        }
     }
 
     /// The Liked Music playlist, "LM", per ytmusicapi's get_liked_songs.
     /// A fresh account has an empty one, which parses as a missing
     /// shelf, so that one failure counts as zero songs.
-    pub async fn liked_songs(&self) -> Result<Vec<Track>, String> {
-        match self.raw_playlist_tracks("LM").await {
+    async fn browser_liked_songs(&self) -> Result<Vec<Track>, String> {
+        match self.browser_playlist_tracks("LM").await {
             Ok(tracks) => Ok(tracks),
             Err(error) if error.contains("not found in Api response") => {
                 log::info!("liked songs parse failed, treating as empty: {error}");
@@ -88,45 +106,71 @@ impl Api {
         }
     }
 
-    pub async fn playlist_tracks(&self, id: &PlaylistId) -> Result<Vec<Track>, String> {
-        self.raw_playlist_tracks(&id.0).await
-    }
-
-    async fn raw_playlist_tracks(&self, id: &str) -> Result<Vec<Track>, String> {
+    async fn browser_playlist_tracks(&self, id: &str) -> Result<Vec<Track>, String> {
+        let Session::Browser(yt) = &*self.session else {
+            return Err("not a browser session".to_string());
+        };
         let browse_id = playlist_browse_id(id);
         let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(&browse_id));
-        let items = self.run(query).await?;
+        let items = yt
+            .query::<GetPlaylistTracksQuery>(&query)
+            .await
+            .map_err(readable)?;
         Ok(items
             .into_iter()
             .filter_map(convert::playlist_item_to_track)
             .collect())
     }
+}
 
-    /// Runs one query against the session. An expired OAuth token
-    /// refreshes once and the query retries, per the youtui pattern.
-    async fn run<Q, O>(&self, query: Q) -> Result<O, String>
-    where
-        Q: Query<BrowserToken, Output = O> + Query<OAuthToken, Output = O>,
-    {
-        match &*self.session {
-            Session::Browser(yt) => yt.query::<Q>(&query).await.map_err(readable),
-            Session::OAuth(lock) => {
-                let result = lock.read().await.query::<Q>(&query).await;
-                let error = match result {
-                    Ok(output) => return Ok(output),
-                    Err(error) => error,
-                };
-                let message = format!("YouTube Music request failed: {}", error_chain(&error));
-                match error.into_kind() {
-                    ytmapi_rs::error::ErrorKind::OAuthTokenExpired { .. } => {
-                        refresh_token(lock).await?;
-                        lock.read().await.query::<Q>(&query).await.map_err(readable)
-                    }
-                    _ => Err(message),
-                }
-            }
-        }
-    }
+/// Three filtered queries, the way youtui searches. Basic search adds
+/// a top-result card whose parse breaks often; the filtered endpoints
+/// skip it. Songs are the core result: a song failure fails the
+/// search, a failure of the other two degrades to an empty section.
+async fn filtered_search<A: AuthToken>(
+    yt: &YtMusic<A>,
+    query: &str,
+) -> Result<SearchResults, String> {
+    let songs: SearchQuery<'_, FilteredSearch<SongsFilter>> = query.into();
+    let albums: SearchQuery<'_, FilteredSearch<AlbumsFilter>> = query.into();
+    let artists: SearchQuery<'_, FilteredSearch<ArtistsFilter>> = query.into();
+    let (songs, albums, artists) = tokio::join!(
+        yt.query::<SearchQuery<'_, FilteredSearch<SongsFilter>>>(&songs),
+        yt.query::<SearchQuery<'_, FilteredSearch<AlbumsFilter>>>(&albums),
+        yt.query::<SearchQuery<'_, FilteredSearch<ArtistsFilter>>>(&artists),
+    );
+    let song_tracks = match songs {
+        Ok(songs) => songs.into_iter().map(convert::song_to_track).collect(),
+        Err(error) => video_fallback_search(yt, query, error).await?,
+    };
+    Ok(convert::search_results_from_tracks(
+        song_tracks,
+        section_or_empty("albums", albums),
+        section_or_empty("artists", artists),
+    ))
+}
+
+/// One malformed row fails the whole song-search parse in ytmapi-rs.
+/// The videos filter has a simpler shape, so it answers instead, with
+/// channel names in place of artists.
+async fn video_fallback_search<A: AuthToken>(
+    yt: &YtMusic<A>,
+    query: &str,
+    song_error: ytmapi_rs::Error,
+) -> Result<Vec<Track>, String> {
+    log::warn!(
+        "song search parse failed, using videos: {}",
+        error_chain(&song_error)
+    );
+    let videos: SearchQuery<'_, FilteredSearch<VideosFilter>> = query.into();
+    let videos = yt
+        .query::<SearchQuery<'_, FilteredSearch<VideosFilter>>>(&videos)
+        .await
+        .map_err(readable)?;
+    Ok(videos
+        .into_iter()
+        .filter_map(convert::video_to_track)
+        .collect())
 }
 
 async fn browser_session(credentials: &Credentials) -> Result<Session, String> {
@@ -142,27 +186,16 @@ async fn browser_session(credentials: &Credentials) -> Result<Session, String> {
 async fn oauth_session(token_json: &str) -> Result<Session, String> {
     let token: OAuthToken = serde_json::from_str(token_json)
         .map_err(|error| format!("The stored OAuth token does not parse: {error}"))?;
-    let yt = YtMusicBuilder::new()
-        .with_auth_token(token)
-        .build()
-        .map_err(|error| format!("The OAuth session failed to build: {}", error_chain(&error)))?;
-    Ok(Session::OAuth(RwLock::new(yt)))
-}
-
-/// Refreshes the OAuth token under the write lock and persists it, so
-/// the next start skips the expired token.
-async fn refresh_token(lock: &RwLock<YtMusic<OAuthToken>>) -> Result<(), String> {
-    let mut yt = lock.write().await;
-    let token = yt
-        .refresh_token()
-        .await
-        .map_err(|error| format!("The OAuth refresh failed: {}", error_chain(&error)))?;
-    let json = serde_json::to_string(&token)
-        .map_err(|error| format!("The refreshed token does not serialize: {error}"))?;
-    if let Err(error) = crate::auth::save_oauth_token(&json) {
-        log::warn!("could not persist the refreshed OAuth token: {error}");
-    }
-    Ok(())
+    let innertube = YtMusicBuilder::new().build().await.map_err(|error| {
+        format!(
+            "The search session failed to build: {}",
+            error_chain(&error)
+        )
+    })?;
+    Ok(Session::OAuth {
+        data: official::DataApi::new(token)?,
+        innertube,
+    })
 }
 
 /// An HTTP client that replays the browser's request headers on every
@@ -201,9 +234,9 @@ fn insert_header(headers: &mut reqwest::header::HeaderMap, name: &str, value: &s
 
 /// A failed side section of a search becomes an empty list, so a
 /// brittle album or artist parse never blocks the songs.
-fn section_or_empty<T>(name: &str, result: Result<Vec<T>, String>) -> Vec<T> {
+fn section_or_empty<T>(name: &str, result: Result<Vec<T>, ytmapi_rs::Error>) -> Vec<T> {
     result.unwrap_or_else(|error| {
-        log::warn!("search {name} section failed: {error}");
+        log::warn!("search {name} section failed: {}", error_chain(&error));
         vec![]
     })
 }

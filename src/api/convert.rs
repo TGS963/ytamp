@@ -5,6 +5,7 @@ use std::time::Duration;
 use ytmapi_rs::common::{Thumbnail, YoutubeID};
 use ytmapi_rs::parse::{
     LibraryPlaylist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
+    SearchResultVideo,
 };
 
 use crate::core::model::{
@@ -12,13 +13,13 @@ use crate::core::model::{
     Track, TrackId,
 };
 
-pub fn search_results(
-    songs: Vec<SearchResultSong>,
+pub fn search_results_from_tracks(
+    songs: Vec<Track>,
     albums: Vec<SearchResultAlbum>,
     artists: Vec<SearchResultArtist>,
 ) -> ModelSearchResults {
     ModelSearchResults {
-        songs: songs.into_iter().map(song_to_track).collect(),
+        songs,
         albums: albums.into_iter().map(album_result).collect(),
         artists: artists.into_iter().map(artist_result).collect(),
         playlists: vec![],
@@ -60,6 +61,29 @@ pub fn library_playlist(playlist: LibraryPlaylist) -> Playlist {
         title: playlist.title,
         track_count: leading_number(&playlist.tracks),
         thumbnail_url: largest_thumbnail(&playlist.thumbnails),
+    }
+}
+
+/// A video search result as a track: the fallback when the song
+/// search parse breaks. Episodes disappear from the list.
+pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
+    match video {
+        SearchResultVideo::Video {
+            title,
+            channel_name,
+            video_id,
+            length,
+            thumbnails,
+            ..
+        } => Some(Track {
+            id: TrackId(video_id.get_raw().to_string()),
+            title,
+            artists: vec![channel_name],
+            album: None,
+            duration: parse_duration(&length),
+            thumbnail_url: largest_thumbnail(&thumbnails),
+        }),
+        SearchResultVideo::VideoEpisode { .. } => None,
     }
 }
 

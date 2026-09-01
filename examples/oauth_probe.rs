@@ -1,31 +1,28 @@
-//! Runs raw ytmapi queries with the stored OAuth token and prints
-//! each result. Usage: cargo run --example oauth_probe
-
-use ytmapi_rs::auth::OAuthToken;
-use ytmapi_rs::query::search::{FilteredSearch, SongsFilter};
-use ytmapi_rs::query::{GetLibraryPlaylistsQuery, SearchQuery};
+//! Runs the app's OAuth sign-in path with the stored token and prints
+//! what the library returns. Usage: cargo run --example oauth_probe
 
 #[tokio::main]
 async fn main() {
-    let json = ytamp::auth::load_oauth_token().expect("a stored oauth token");
-    let token: OAuthToken = serde_json::from_str(&json).expect("token parses");
-    let yt = ytmapi_rs::YtMusicBuilder::new()
-        .with_auth_token(token)
-        .build()
-        .expect("client");
-    let search: SearchQuery<'_, FilteredSearch<SongsFilter>> = "test".into();
-    match yt
-        .query::<SearchQuery<FilteredSearch<SongsFilter>>>(&search)
-        .await
-    {
-        Ok(songs) => println!("search: {} songs", songs.len()),
+    let method = ytamp::auth::load_auth_method().expect("a stored sign-in");
+    let api = match ytamp::api::Api::sign_in(&method).await {
+        Ok(api) => api,
+        Err(error) => return println!("sign-in failed: {error}"),
+    };
+    match api.library_playlists().await {
+        Ok(playlists) => {
+            println!("playlists: {}", playlists.len());
+            for playlist in playlists.iter().take(3) {
+                println!("- {} ({:?} tracks)", playlist.title, playlist.track_count);
+            }
+        }
+        Err(error) => println!("library failed: {error}"),
+    }
+    match api.search("test").await {
+        Ok(results) => println!("search: {} songs", results.songs.len()),
         Err(error) => println!("search failed: {error}"),
     }
-    match yt
-        .query::<GetLibraryPlaylistsQuery>(&GetLibraryPlaylistsQuery)
-        .await
-    {
-        Ok(playlists) => println!("library playlists: {}", playlists.len()),
-        Err(error) => println!("library failed: {error}"),
+    match api.liked_songs().await {
+        Ok(tracks) => println!("liked: {} tracks", tracks.len()),
+        Err(error) => println!("liked failed: {error}"),
     }
 }
