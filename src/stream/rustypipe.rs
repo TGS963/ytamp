@@ -32,9 +32,16 @@ impl StreamResolver for RustyPipeResolver {
                 .map_err(|error| error.to_string())?;
             let stream = pick_audio_stream(&player.audio_streams)
                 .ok_or("the response carries no decodable audio stream")?;
+            let user_agent = self
+                .client
+                .query()
+                .user_agent(player.client_type)
+                .to_string();
             Ok(ResolvedStream {
                 url: stream.url.clone(),
                 mime: stream.mime.clone(),
+                user_agent: Some(user_agent),
+                size: Some(stream.size),
             })
         })
     }

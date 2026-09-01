@@ -213,25 +213,87 @@ impl Engine {
     }
 }
 
+/// googlevideo throttles and rejects plain full-file GETs, so chunks
+/// go through the `range` URL parameter, the same way
+/// rustypipe-downloader fetches. Chunk size mirrors its ~9MB.
+const DOWNLOAD_CHUNK: u64 = 9_000_000;
+
 async fn fetch_track(
     resolvers: &ResolverChain,
     http: &reqwest::Client,
     video_id: &str,
 ) -> Result<Vec<u8>, String> {
     let stream = resolvers.resolve(video_id).await?;
-    download(http, &stream.url).await
+    match googlevideo_size(&stream) {
+        Some(size) => download_googlevideo(http, &stream, size).await,
+        None => download_plain(http, &stream).await,
+    }
 }
 
-async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let response = http
-        .get(url)
+/// The known byte size of a googlevideo stream: the resolver's answer,
+/// or the URL's own clen parameter.
+fn googlevideo_size(stream: &crate::stream::ResolvedStream) -> Option<u64> {
+    if !stream.url.contains(".googlevideo.com/videoplayback") {
+        return None;
+    }
+    stream.size.or_else(|| clen_parameter(&stream.url))
+}
+
+fn clen_parameter(url: &str) -> Option<u64> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let clen = parsed
+        .query_pairs()
+        .find(|(key, _)| key == "clen")?
+        .1
+        .into_owned();
+    clen.parse().ok()
+}
+
+async fn download_googlevideo(
+    http: &reqwest::Client,
+    stream: &crate::stream::ResolvedStream,
+    size: u64,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(size as usize);
+    let mut offset = 0;
+    while offset < size {
+        let end = (offset + DOWNLOAD_CHUNK - 1).min(size - 1);
+        let url = format!("{}&range={offset}-{end}", stream.url);
+        let chunk = fetch_bytes(http, &url, stream.user_agent.as_deref()).await?;
+        if chunk.is_empty() {
+            return Err("The audio download returned an empty chunk".to_string());
+        }
+        offset += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn download_plain(
+    http: &reqwest::Client,
+    stream: &crate::stream::ResolvedStream,
+) -> Result<Vec<u8>, String> {
+    fetch_bytes(http, &stream.url, stream.user_agent.as_deref())
+        .await
+        .map(|bytes| bytes.to_vec())
+}
+
+async fn fetch_bytes(
+    http: &reqwest::Client,
+    url: &str,
+    user_agent: Option<&str>,
+) -> Result<bytes::Bytes, String> {
+    let mut request = http.get(url);
+    if let Some(user_agent) = user_agent {
+        request = request.header(reqwest::header::USER_AGENT, user_agent);
+    }
+    let response = request
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| format!("The audio download failed: {error}"))?;
-    let bytes = response
+    response
         .bytes()
         .await
-        .map_err(|error| format!("The audio download broke off: {error}"))?;
-    Ok(bytes.to_vec())
+        .map_err(|error| format!("The audio download broke off: {error}"))
 }

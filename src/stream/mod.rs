@@ -25,6 +25,11 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ResolvedStream {
     pub url: String,
     pub mime: String,
+    /// The user agent of the InnerTube client that produced the URL.
+    /// googlevideo rejects a download whose user agent does not match.
+    pub user_agent: Option<String>,
+    /// The audio size in bytes, when the resolver knows it.
+    pub size: Option<u64>,
 }
 
 pub trait StreamResolver: Send + Sync {

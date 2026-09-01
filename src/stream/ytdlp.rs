@@ -59,6 +59,8 @@ fn stream_from_output(
     Ok(ResolvedStream {
         url,
         mime: "audio/mp4".to_string(),
+        user_agent: None,
+        size: None,
     })
 }
 
