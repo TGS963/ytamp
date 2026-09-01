@@ -12,7 +12,9 @@ bytes = "1.12.1"
 directories = "6.0.0"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "persistence", "links"] }
 egui = "0.36"
+egui_extras = { version = "0.36", default-features = false, features = ["image", "http"] }
 env_logger = "0.11.11"
+image = { version = "*", default-features = false, features = ["jpeg", "png", "webp"] }
 fastrand = "2.5.0"
 log = "0.4.34"
 reqwest = "0.13.4"

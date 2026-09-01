@@ -23,6 +23,7 @@ fn main() -> eframe::Result {
         "ytamp",
         options,
         Box::new(|creation| {
+            egui_extras::install_image_loaders(&creation.egui_ctx);
             let (action_sender, action_receiver) = mpsc::channel();
             let repaint_ctx = creation.egui_ctx.clone();
             let effect_runtime = runtime::EffectRuntime::new(action_sender.clone(), move || {

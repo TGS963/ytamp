@@ -20,6 +20,7 @@ pub enum ColorRole {
     Accent,
     Danger,
     RowHover,
+    ArtPlaceholder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +39,9 @@ pub enum MetricRole {
     RowHeight,
     PlayerBarHeight,
     SidebarWidth,
+    RowArtSize,
+    PlayerArtSize,
+    ArtCornerRadius,
 }
 
 pub trait Theme {

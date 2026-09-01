@@ -57,6 +57,8 @@ fn playlists_list(
 
 fn playlist_row(ui: &mut egui::Ui, playlist: &Playlist, theme: &dyn Theme, out: &mut Vec<Action>) {
     let response = rows::row_frame(ui, theme, |ui| {
+        let art_size = theme.metric(MetricRole::RowArtSize);
+        rows::artwork(ui, theme, playlist.thumbnail_url.as_deref(), art_size);
         ui.label(theme.label(TextRole::Body, playlist_label(playlist)));
     });
     if response.clicked() {

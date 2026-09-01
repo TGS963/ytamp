@@ -16,6 +16,7 @@ impl Theme for DefaultTheme {
             ColorRole::Accent => Color32::from_rgb(255, 64, 64),
             ColorRole::Danger => Color32::from_rgb(255, 110, 90),
             ColorRole::RowHover => Color32::from_rgb(38, 38, 44),
+            ColorRole::ArtPlaceholder => Color32::from_rgb(40, 40, 46),
         }
     }
 
@@ -37,6 +38,9 @@ impl Theme for DefaultTheme {
             MetricRole::RowHeight => 36.0,
             MetricRole::PlayerBarHeight => 72.0,
             MetricRole::SidebarWidth => 200.0,
+            MetricRole::RowArtSize => 24.0,
+            MetricRole::PlayerArtSize => 56.0,
+            MetricRole::ArtCornerRadius => 4.0,
         }
     }
 }

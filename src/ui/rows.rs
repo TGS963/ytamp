@@ -61,6 +61,28 @@ fn track_list_area(
     });
 }
 
+/// Draws one square of album art, `size` pixels on a side, with rounded
+/// corners from `MetricRole::ArtCornerRadius`.
+///
+/// A neutral placeholder square, in `ColorRole::ArtPlaceholder`, always
+/// paints first. When `thumbnail_url` is `Some`, the real image paints
+/// over the placeholder once egui's loader has it in cache; until then,
+/// or when the url is `None`, the placeholder alone shows. The square
+/// claims its space either way, so no row ever shifts.
+pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>, size: f32) {
+    let (rect, _response) =
+        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let radius = theme.metric(MetricRole::ArtCornerRadius);
+    ui.painter()
+        .rect_filled(rect, radius, theme.color(ColorRole::ArtPlaceholder));
+    if let Some(url) = thumbnail_url {
+        egui::Image::from_uri(url.to_string())
+            .corner_radius(radius)
+            .show_loading_spinner(false)
+            .paint_at(ui, rect);
+    }
+}
+
 /// Draws one uniform-height row: a hover-highlighted band around centered
 /// content, `RowHeight` tall. Every row-shaped widget in the app goes
 /// through this, so lists can virtualize on a single row height.
@@ -105,6 +127,8 @@ fn track_row(
 
 fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Action> {
     let mut action = None;
+    let art_size = theme.metric(MetricRole::RowArtSize);
+    artwork(ui, theme, track.thumbnail_url.as_deref(), art_size);
     ui.label(theme.label(TextRole::Body, &track.title));
     ui.label(theme.secondary_label(TextRole::Caption, track.artists.join(", ")));
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

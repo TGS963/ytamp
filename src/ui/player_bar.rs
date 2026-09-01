@@ -9,7 +9,7 @@ use crate::core::queue::RepeatMode;
 use crate::core::state::{PlayStatus, State};
 use crate::theme::{MetricRole, TextRole, Theme};
 
-use super::rows::format_duration;
+use super::rows::{artwork, format_duration};
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     egui::Panel::bottom("player_bar")
@@ -27,15 +27,22 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>
 
 fn now_playing(ui: &mut egui::Ui, state: &State, theme: &dyn Theme) {
     ui.set_min_width(220.0);
+    let art_size = theme.metric(MetricRole::PlayerArtSize);
     match state.playback.queue.current() {
         Some(track) => {
-            ui.vertical(|ui| {
-                ui.label(theme.label(TextRole::Body, &track.title));
-                ui.label(theme.secondary_label(TextRole::Caption, track.artists.join(", ")));
+            ui.horizontal(|ui| {
+                artwork(ui, theme, track.thumbnail_url.as_deref(), art_size);
+                ui.vertical(|ui| {
+                    ui.label(theme.label(TextRole::Body, &track.title));
+                    ui.label(theme.secondary_label(TextRole::Caption, track.artists.join(", ")));
+                });
             });
         }
         None => {
-            ui.label(theme.secondary_label(TextRole::Body, "Nothing playing"));
+            ui.horizontal(|ui| {
+                artwork(ui, theme, None, art_size);
+                ui.label(theme.secondary_label(TextRole::Body, "Nothing playing"));
+            });
         }
     }
 }
