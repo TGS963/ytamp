@@ -18,6 +18,7 @@
 //! slow failure does.
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
@@ -42,9 +43,15 @@ const FAST_EXTRACTOR_ARGS: &str =
 /// The chunk size for reading yt-dlp's stdout.
 const CHUNK_BYTES: usize = 64 * 1024;
 
+/// Fast attempts that failed before the first byte, in a row. At the
+/// limit the fast path stays off for the session, so a blocked fast
+/// path never doubles the time to the first byte on every track.
+const FAST_PATH_FAILURE_LIMIT: u8 = 2;
+
 pub struct YtDlpSource {
     binary: String,
     visitor_data: VisitorData,
+    fast_path_failures: AtomicU8,
 }
 
 impl YtDlpSource {
@@ -52,13 +59,35 @@ impl YtDlpSource {
         Self {
             binary: "yt-dlp".to_string(),
             visitor_data: VisitorData::new(),
+            fast_path_failures: AtomicU8::new(0),
         }
+    }
+
+    fn fast_path_open(&self) -> bool {
+        self.fast_path_failures.load(Ordering::SeqCst) < FAST_PATH_FAILURE_LIMIT
+    }
+
+    fn record_fast_path_failure(&self) {
+        let failures = self.fast_path_failures.fetch_add(1, Ordering::SeqCst) + 1;
+        if failures == FAST_PATH_FAILURE_LIMIT {
+            log::warn!("the fast yt-dlp path failed {failures} times; using the slow path");
+        }
+    }
+
+    fn record_fast_path_success(&self) {
+        self.fast_path_failures.store(0, Ordering::SeqCst);
     }
 }
 
 impl AudioSource for YtDlpSource {
     fn name(&self) -> &'static str {
         "yt-dlp"
+    }
+
+    fn warm_up<'a>(&'a self, http: &'a reqwest::Client) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.visitor_data.get(http).await;
+        })
     }
 
     fn fetch_audio<'a>(
@@ -68,7 +97,11 @@ impl AudioSource for YtDlpSource {
         writer: BufferWriter,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            match self.visitor_data.get(http).await {
+            let token = match self.fast_path_open() {
+                true => self.visitor_data.get(http).await,
+                false => None,
+            };
+            match token {
                 Some(token) => self.fetch_with_fast_path(video_id, &token, writer).await,
                 None => {
                     self.run_attempt(video_id, &extractor_args(None), writer)
@@ -92,11 +125,15 @@ impl YtDlpSource {
     ) -> Result<(), String> {
         let fast_args = extractor_args(Some(token));
         let message = match self.run_attempt(video_id, &fast_args, writer.share()).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                self.record_fast_path_success();
+                return Ok(());
+            }
             Err(message) if writer.delivered_any() => return Err(message),
             Err(message) => message,
         };
         log::info!("fast yt-dlp attempt failed before the first byte: {message}");
+        self.record_fast_path_failure();
         self.visitor_data.invalidate().await;
         self.run_attempt(video_id, &extractor_args(None), writer)
             .await

@@ -39,6 +39,11 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// already be decoding the bytes so far.
 pub trait AudioSource: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Prepares session state ahead of the first track, for example a
+    /// token fetch. The default does nothing.
+    fn warm_up<'a>(&'a self, _http: &'a reqwest::Client) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
     fn fetch_audio<'a>(
         &'a self,
         http: &'a reqwest::Client,
@@ -126,6 +131,14 @@ impl ResolverChain {
     /// Builds a chain from arbitrary sources, each with a fresh
     /// breaker. Test-only: production code always starts from
     /// `with_default_resolvers`.
+    /// Runs every source's warm-up once, so the first track does not
+    /// pay for session setup.
+    pub async fn warm_up(&self, http: &reqwest::Client) {
+        for tracked in &self.sources {
+            tracked.source.warm_up(http).await;
+        }
+    }
+
     #[cfg(test)]
     fn with_sources(sources: Vec<Box<dyn AudioSource>>) -> Self {
         Self {

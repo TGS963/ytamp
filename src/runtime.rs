@@ -37,10 +37,12 @@ impl EffectRuntime {
             .build()
             .expect("the tokio runtime failed to start");
         let request_repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(request_repaint);
+        let resolvers = Arc::new(ResolverChain::with_default_resolvers());
+        warm_up_sources(&tokio, resolvers.clone());
         let player = crate::player::spawn(
             delivery(actions.clone(), request_repaint.clone()),
             tokio.handle().clone(),
-            Arc::new(ResolverChain::with_default_resolvers()),
+            resolvers,
         );
         Self {
             tokio,
@@ -137,6 +139,14 @@ impl EffectRuntime {
     fn delivery(&self) -> impl Fn(Action) + Send + 'static {
         delivery(self.actions.clone(), self.request_repaint.clone())
     }
+}
+
+/// Session setup for the audio sources runs in the background at
+/// start, so the first track does not wait for it.
+fn warm_up_sources(tokio: &tokio::runtime::Runtime, resolvers: Arc<ResolverChain>) {
+    tokio.spawn(async move {
+        resolvers.warm_up(&reqwest::Client::new()).await;
+    });
 }
 
 fn delivery(
