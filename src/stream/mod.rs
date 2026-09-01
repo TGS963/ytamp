@@ -15,6 +15,7 @@ pub mod buffer;
 pub mod disk_cache;
 mod download;
 mod rustypipe;
+mod visitor_data;
 mod ytdlp;
 
 use std::future::Future;

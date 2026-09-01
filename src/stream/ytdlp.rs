@@ -9,12 +9,20 @@
 //! so handing over bytes is the only reliable contract. This source
 //! reads those bytes in chunks and pushes each one, so a decoder
 //! reading the buffer can start before yt-dlp finishes.
+//!
+//! Two extraction paths run in order. The fast path hands yt-dlp a
+//! cached visitor data token, so it skips its own webpage fetch. The
+//! slow path is the plain, always-available extraction. A fast
+//! failure before the first byte falls through to the slow path; a
+//! fast failure after the first byte ends the attempt, the same as a
+//! slow failure does.
 
 use std::process::Stdio;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
+use super::visitor_data::VisitorData;
 use super::{AudioSource, BoxFuture, BufferWriter};
 
 /// itag 140 is AAC 128kbps in M4A, the format the player decodes.
@@ -23,19 +31,27 @@ const FORMAT_SELECTION: &str = "140/bestaudio[ext=m4a]";
 /// yt-dlp downloads the HLS and DASH manifests before it picks a
 /// format. Our format is a plain progressive stream, so the manifests
 /// only cost time: about 700 ms of the 2300 ms to the first byte.
-const EXTRACTOR_ARGS: &str = "youtube:skip=hls,dash,translated_subs";
+const BASE_EXTRACTOR_ARGS: &str = "youtube:skip=hls,dash,translated_subs";
+
+/// Extra extractor arguments for the fast path. With a visitor data
+/// token in hand, yt-dlp skips the webpage, the player config, and
+/// the initial data fetch, and uses the token in their place.
+const FAST_EXTRACTOR_ARGS: &str =
+    ";player_client=visionos;player_skip=webpage,configs,initial_data;visitor_data=";
 
 /// The chunk size for reading yt-dlp's stdout.
 const CHUNK_BYTES: usize = 64 * 1024;
 
 pub struct YtDlpSource {
     binary: String,
+    visitor_data: VisitorData,
 }
 
 impl YtDlpSource {
     pub fn new() -> Self {
         Self {
             binary: "yt-dlp".to_string(),
+            visitor_data: VisitorData::new(),
         }
     }
 }
@@ -47,36 +63,107 @@ impl AudioSource for YtDlpSource {
 
     fn fetch_audio<'a>(
         &'a self,
-        _http: &'a reqwest::Client,
+        http: &'a reqwest::Client,
         video_id: &'a str,
         writer: BufferWriter,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let mut child = spawn_yt_dlp(&self.binary, video_id)?;
-            let stdout = child.stdout.take().expect("stdout is piped");
-            let stderr = child.stderr.take().expect("stderr is piped");
-            let stderr_task = tokio::spawn(collect_stderr(stderr));
-            let read_result = push_chunks(stdout, &writer).await;
-            let status = child
-                .wait()
-                .await
-                .map_err(|error| format!("yt-dlp did not exit cleanly: {error}"))?;
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
-            report_outcome(status.success(), read_result, writer, &stderr_bytes)
+            match self.visitor_data.get(http).await {
+                Some(token) => self.fetch_with_fast_path(video_id, &token, writer).await,
+                None => {
+                    self.run_attempt(video_id, &extractor_args(None), writer)
+                        .await
+                }
+            }
         })
     }
+}
+
+impl YtDlpSource {
+    /// Tries the fast path first. A failure with bytes already
+    /// delivered ends the attempt, the same as the slow path alone
+    /// would. A failure before the first byte drops the cached token
+    /// and retries with the slow path, on the same writer.
+    async fn fetch_with_fast_path(
+        &self,
+        video_id: &str,
+        token: &str,
+        writer: BufferWriter,
+    ) -> Result<(), String> {
+        let fast_args = extractor_args(Some(token));
+        let message = match self.run_attempt(video_id, &fast_args, writer.share()).await {
+            Ok(()) => return Ok(()),
+            Err(message) if writer.delivered_any() => return Err(message),
+            Err(message) => message,
+        };
+        log::info!("fast yt-dlp attempt failed before the first byte: {message}");
+        self.visitor_data.invalidate().await;
+        self.run_attempt(video_id, &extractor_args(None), writer)
+            .await
+    }
+
+    /// Runs one full yt-dlp attempt: spawn, stream stdout into
+    /// `writer`, and settle the writer's final state from the exit
+    /// status and any stderr text.
+    async fn run_attempt(
+        &self,
+        video_id: &str,
+        extractor_args: &str,
+        writer: BufferWriter,
+    ) -> Result<(), String> {
+        let args = command_args(video_id, extractor_args);
+        let mut child = spawn_yt_dlp(&self.binary, &args)?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
+        let stderr_task = tokio::spawn(collect_stderr(stderr));
+        let read_result = push_chunks(stdout, &writer).await;
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("yt-dlp did not exit cleanly: {error}"))?;
+        let stderr_bytes = stderr_task.await.unwrap_or_default();
+        report_outcome(status.success(), read_result, writer, &stderr_bytes)
+    }
+}
+
+/// The extractor arguments for one attempt. With a visitor data
+/// token, the fast path arguments are appended so yt-dlp skips its
+/// own webpage fetch. Without one, only the base arguments apply.
+fn extractor_args(visitor_data: Option<&str>) -> String {
+    match visitor_data {
+        Some(token) => format!("{BASE_EXTRACTOR_ARGS}{FAST_EXTRACTOR_ARGS}{token}"),
+        None => BASE_EXTRACTOR_ARGS.to_string(),
+    }
+}
+
+/// The full yt-dlp command line, `--quiet` and its friends first,
+/// the video URL last, ready for `Command::args`.
+fn command_args(video_id: &str, extractor_args: &str) -> Vec<String> {
+    [
+        "--quiet",
+        "--no-warnings",
+        "--no-playlist",
+        "--format",
+        FORMAT_SELECTION,
+        "--extractor-args",
+        extractor_args,
+        "--output",
+        "-",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .chain(std::iter::once(format!(
+        "https://music.youtube.com/watch?v={video_id}"
+    )))
+    .collect()
 }
 
 /// Starts yt-dlp with its stdout and stderr piped, and `kill_on_drop`
 /// so an abandoned attempt (the chain moving to the next source)
 /// never leaves the process running.
-fn spawn_yt_dlp(binary: &str, video_id: &str) -> Result<Child, String> {
+fn spawn_yt_dlp(binary: &str, args: &[String]) -> Result<Child, String> {
     Command::new(binary)
-        .args(["--quiet", "--no-warnings", "--no-playlist"])
-        .args(["--format", FORMAT_SELECTION])
-        .args(["--extractor-args", EXTRACTOR_ARGS])
-        .args(["--output", "-"])
-        .arg(format!("https://music.youtube.com/watch?v={video_id}"))
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -197,5 +284,39 @@ mod tests {
     fn empty_stderr_falls_back_to_a_generic_message() {
         let result = report_outcome(false, Ok(()), AudioBuffer::new(None).writer(), b"");
         assert_eq!(result.unwrap_err(), "yt-dlp failed");
+    }
+
+    #[test]
+    fn extractor_args_omits_fast_path_fields_without_a_token() {
+        assert_eq!(extractor_args(None), "youtube:skip=hls,dash,translated_subs");
+    }
+
+    #[test]
+    fn extractor_args_appends_the_fast_path_fields_with_a_token() {
+        assert_eq!(
+            extractor_args(Some("TOKEN%3D%3D")),
+            "youtube:skip=hls,dash,translated_subs;player_client=visionos;\
+             player_skip=webpage,configs,initial_data;visitor_data=TOKEN%3D%3D"
+        );
+    }
+
+    #[test]
+    fn command_args_places_the_url_last() {
+        let args = command_args("abc123", "youtube:skip=hls");
+        assert_eq!(
+            args,
+            vec![
+                "--quiet",
+                "--no-warnings",
+                "--no-playlist",
+                "--format",
+                "140/bestaudio[ext=m4a]",
+                "--extractor-args",
+                "youtube:skip=hls",
+                "--output",
+                "-",
+                "https://music.youtube.com/watch?v=abc123",
+            ]
+        );
     }
 }
