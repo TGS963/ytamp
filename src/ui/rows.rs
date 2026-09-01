@@ -93,6 +93,11 @@ pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>
 /// Draws one uniform-height row: a hover-highlighted band around centered
 /// content, `RowHeight` tall. Every row-shaped widget in the app goes
 /// through this, so lists can virtualize on a single row height.
+///
+/// The content draws in a child that does not allocate in the parent.
+/// A `scope` would allocate its rect a second time and move the cursor
+/// back, so each row would advance less than `RowHeight` and the
+/// `show_rows` math would drift.
 pub fn row_frame(
     ui: &mut egui::Ui,
     theme: &dyn Theme,
@@ -107,9 +112,7 @@ pub fn row_frame(
             .rect_filled(rect, radius, theme.color(ColorRole::RowHover));
     }
     let builder = egui::UiBuilder::new().max_rect(rect.shrink(6.0));
-    ui.scope_builder(builder, |ui| {
-        ui.horizontal_centered(content);
-    });
+    ui.new_child(builder).horizontal_centered(content);
     response
 }
 
