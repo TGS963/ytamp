@@ -246,7 +246,11 @@ fn finish_playlist_load(
         return vec![];
     }
     let Ok(tracks) = result else {
-        state.library.open_playlist = Loadable::Failed(result.unwrap_err());
+        apply_load_failure(
+            &mut state.library.open_playlist,
+            result.unwrap_err(),
+            &mut state.notices,
+        );
         return vec![];
     };
     state.library.open_playlist = Loadable::Loaded(tracks.clone());
@@ -258,7 +262,11 @@ fn finish_playlist_load(
 /// Applies a fresh playlist list and schedules it for the cache.
 fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String>) -> Vec<Effect> {
     let Ok(playlists) = result else {
-        state.library.playlists = Loadable::Failed(result.unwrap_err());
+        apply_load_failure(
+            &mut state.library.playlists,
+            result.unwrap_err(),
+            &mut state.notices,
+        );
         return vec![];
     };
     state.library.playlists = Loadable::Loaded(playlists.clone());
@@ -270,11 +278,28 @@ fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String
 /// Applies a fresh liked-songs list and schedules it for the cache.
 fn finish_liked_load(state: &mut State, result: Result<Vec<Track>, String>) -> Vec<Effect> {
     let Ok(tracks) = result else {
-        state.library.liked = Loadable::Failed(result.unwrap_err());
+        apply_load_failure(
+            &mut state.library.liked,
+            result.unwrap_err(),
+            &mut state.notices,
+        );
         return vec![];
     };
     state.library.liked = Loadable::Loaded(tracks.clone());
     vec![Effect::SaveLibraryCache(LibraryCacheWrite::Liked(tracks))]
+}
+
+/// Applies a network failure to a library slot. A slot that shows
+/// cached data keeps it on screen: the failure becomes a notice
+/// instead of an error page. An empty slot shows the failure itself.
+fn apply_load_failure<T>(slot: &mut Loadable<T>, message: String, notices: &mut Vec<String>) {
+    match std::mem::take(slot) {
+        Loadable::Refreshing(cached) => {
+            *slot = Loadable::Loaded(cached);
+            notices.push(message);
+        }
+        _ => *slot = Loadable::Failed(message),
+    }
 }
 
 /// Applies cached library data. A slot accepts the cache only while
@@ -836,6 +861,32 @@ mod tests {
             effects,
             vec![Effect::Player(PlayerCommand::Prefetch(track("a")))]
         );
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_cached_library_and_posts_a_notice() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(
+            &mut state,
+            Action::LibraryCacheLoaded {
+                playlists: None,
+                liked: Some(vec![track("cached")]),
+            },
+        );
+        let effects = apply(&mut state, Action::LikedLoaded(Err("offline".into())));
+        assert_eq!(state.library.liked, Loadable::Loaded(vec![track("cached")]));
+        assert_eq!(state.notices, vec!["offline".to_string()]);
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_failed_load_without_cached_data_shows_the_failure() {
+        let mut state = State::default();
+        apply(&mut state, Action::AuthVerified(Ok(())));
+        apply(&mut state, Action::LikedLoaded(Err("offline".into())));
+        assert_eq!(state.library.liked, Loadable::Failed("offline".into()));
+        assert_eq!(state.notices, Vec::<String>::new());
     }
 
     #[test]

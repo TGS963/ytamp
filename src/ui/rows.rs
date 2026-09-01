@@ -62,7 +62,7 @@ fn track_list_area(
 }
 
 /// Draws one square of album art, `size` pixels on a side, with rounded
-/// corners from `MetricRole::ArtCornerRadius`.
+/// corners from `MetricRole::CornerRadius`.
 ///
 /// A neutral placeholder square, in `ColorRole::ArtPlaceholder`, always
 /// paints first. When `thumbnail_url` is `Some`, the real image paints
@@ -72,7 +72,7 @@ fn track_list_area(
 pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>, size: f32) {
     let (rect, _response) =
         ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let radius = theme.metric(MetricRole::ArtCornerRadius);
+    let radius = theme.metric(MetricRole::CornerRadius);
     ui.painter()
         .rect_filled(rect, radius, theme.color(ColorRole::ArtPlaceholder));
     if let Some(url) = thumbnail_url {
@@ -95,8 +95,9 @@ pub fn row_frame(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
     if response.hovered() {
+        let radius = theme.metric(MetricRole::CornerRadius);
         ui.painter()
-            .rect_filled(rect, 4.0, theme.color(ColorRole::RowHover));
+            .rect_filled(rect, radius, theme.color(ColorRole::RowHover));
     }
     let builder = egui::UiBuilder::new().max_rect(rect.shrink(6.0));
     ui.scope_builder(builder, |ui| {

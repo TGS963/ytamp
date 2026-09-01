@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
+use bytes::Bytes;
 use rodio::source::Source;
 
 use crate::core::action::{Action, PlayerEvent};
@@ -40,12 +41,12 @@ enum PlayerMsg {
     Loaded {
         generation: u64,
         video_id: String,
-        result: Result<Vec<u8>, String>,
+        result: Result<Bytes, String>,
     },
     Prefetched {
         generation: u64,
         video_id: String,
-        result: Result<Vec<u8>, String>,
+        result: Result<Bytes, String>,
     },
 }
 
@@ -68,9 +69,11 @@ pub fn spawn(
 
 /// Fully downloaded track bytes, keyed by video id. Holds at most
 /// `CAPACITY` entries and drops the least recently used one first.
+/// `Bytes` makes every get a cheap reference-count bump, never a
+/// copy of a whole song.
 struct PrefetchCache {
     /// Most recently used entry first.
-    entries: Vec<(String, Vec<u8>)>,
+    entries: Vec<(String, Bytes)>,
 }
 
 impl PrefetchCache {
@@ -86,7 +89,7 @@ impl PrefetchCache {
 
     /// The cached bytes for `video_id`, if present. Marks the entry as
     /// most recently used.
-    fn get(&mut self, video_id: &str) -> Option<Vec<u8>> {
+    fn get(&mut self, video_id: &str) -> Option<Bytes> {
         let index = self.entries.iter().position(|(id, _)| id == video_id)?;
         let entry = self.entries.remove(index);
         let bytes = entry.1.clone();
@@ -96,7 +99,7 @@ impl PrefetchCache {
 
     /// Stores `bytes` under `video_id` as the most recently used entry.
     /// Evicts the least recently used entry when the cache is full.
-    fn insert(&mut self, video_id: String, bytes: Vec<u8>) {
+    fn insert(&mut self, video_id: String, bytes: Bytes) {
         self.entries.retain(|(id, _)| id != &video_id);
         self.entries.insert(0, (video_id, bytes));
         self.entries.truncate(Self::CAPACITY);
@@ -126,6 +129,9 @@ struct Engine {
     /// A prefetch request that arrived while the active download was
     /// still in flight. Starts once that download finishes.
     pending_prefetch: Option<Track>,
+    /// An in-flight prefetch the user skipped onto. Its result plays
+    /// as the active track, so the track never downloads twice.
+    promoted_load: Option<String>,
 }
 
 struct AudioOutput {
@@ -156,6 +162,7 @@ impl Engine {
             prefetch_generation: 0,
             prefetch_inflight_id: None,
             pending_prefetch: None,
+            promoted_load: None,
         }
     }
 
@@ -192,15 +199,28 @@ impl Engine {
     }
 
     /// Loads `track` for active playback. Cached bytes from an earlier
-    /// prefetch play at once; otherwise the track downloads now.
+    /// prefetch play at once. An in-flight prefetch of the same track
+    /// becomes the active load. Otherwise the track downloads now.
     fn load(&mut self, track: Track) {
-        match self.prefetch_cache.get(&track.id.0) {
-            Some(bytes) => {
-                self.stop();
-                self.finish_load(track.id.0, Ok(bytes));
-            }
-            None => self.start_download(track.id.0),
+        if let Some(bytes) = self.prefetch_cache.get(&track.id.0) {
+            self.stop();
+            self.finish_load(track.id.0, Ok(bytes));
+            return;
         }
+        if self.prefetch_inflight_id.as_deref() == Some(track.id.0.as_str()) {
+            self.adopt_prefetch(track.id.0);
+            return;
+        }
+        self.start_download(track.id.0);
+    }
+
+    /// Marks the in-flight prefetch for `video_id` as the active load.
+    /// Its result then plays at once, and the same bytes never
+    /// download a second time.
+    fn adopt_prefetch(&mut self, video_id: String) {
+        self.stop();
+        self.active_loading = true;
+        self.promoted_load = Some(video_id);
     }
 
     /// Downloads happen off this thread. The generation number makes
@@ -222,7 +242,7 @@ impl Engine {
         });
     }
 
-    fn apply_load(&mut self, generation: u64, video_id: String, result: Result<Vec<u8>, String>) {
+    fn apply_load(&mut self, generation: u64, video_id: String, result: Result<Bytes, String>) {
         if generation != self.generation {
             return;
         }
@@ -233,7 +253,7 @@ impl Engine {
     /// reports the failure. A success also enters the cache, so a
     /// repeat-one replay of the same track skips its own download.
     /// Either way, a prefetch that waited for this download now starts.
-    fn finish_load(&mut self, video_id: String, result: Result<Vec<u8>, String>) {
+    fn finish_load(&mut self, video_id: String, result: Result<Bytes, String>) {
         self.active_loading = false;
         match result.and_then(|bytes| self.play_and_cache(video_id, bytes)) {
             Ok(duration) => {
@@ -245,19 +265,23 @@ impl Engine {
         self.start_pending_prefetch();
     }
 
+    /// Bytes that do not decode also leave the disk cache, so a
+    /// poisoned entry cannot fail on every later play.
     fn play_and_cache(
         &mut self,
         video_id: String,
-        bytes: Vec<u8>,
+        bytes: Bytes,
     ) -> Result<Option<Duration>, String> {
-        let duration = self.play_bytes(bytes.clone())?;
+        let source = decode(bytes.clone()).inspect_err(|_| disk_cache::remove(&video_id))?;
+        let duration = self.play_source(source)?;
         self.prefetch_cache.insert(video_id, bytes);
         Ok(duration)
     }
 
-    fn play_bytes(&mut self, bytes: Vec<u8>) -> Result<Option<Duration>, String> {
-        let source = rodio::Decoder::new(Cursor::new(bytes))
-            .map_err(|error| format!("The audio did not decode: {error}"))?;
+    fn play_source(
+        &mut self,
+        source: rodio::Decoder<Cursor<Bytes>>,
+    ) -> Result<Option<Duration>, String> {
         let duration = source.total_duration();
         let volume = self.volume;
         let output = self.output()?;
@@ -311,13 +335,19 @@ impl Engine {
     }
 
     /// Applies a finished background prefetch. A stale result,
-    /// superseded by a newer prefetch, is discarded. A failure stays
-    /// silent: the track downloads normally when it plays later.
-    fn apply_prefetched(&mut self, generation: u64, video_id: String, result: Result<Vec<u8>, String>) {
+    /// superseded by a newer prefetch, is discarded. A prefetch the
+    /// user skipped onto plays as the active track. Any other failure
+    /// stays silent: the track downloads normally when it plays later.
+    fn apply_prefetched(&mut self, generation: u64, video_id: String, result: Result<Bytes, String>) {
         if generation != self.prefetch_generation {
             return;
         }
         self.prefetch_inflight_id = None;
+        if self.promoted_load.as_deref() == Some(video_id.as_str()) {
+            self.promoted_load = None;
+            self.finish_load(video_id, result);
+            return;
+        }
         match result {
             Ok(bytes) => {
                 log::debug!("prefetch ready for {video_id}");
@@ -359,10 +389,15 @@ impl Engine {
         self.with_player(|player| player.set_volume(volume));
     }
 
+    /// Stops playback and invalidates every in-flight load. A pending
+    /// or promoted prefetch belongs to the old queue position, so both
+    /// clear here. The reducer prefetches again after the next start.
     fn stop(&mut self) {
         self.generation += 1;
         self.track_loaded = false;
         self.active_loading = false;
+        self.pending_prefetch = None;
+        self.promoted_load = None;
         self.with_player(|player| player.stop());
     }
 
@@ -385,4 +420,9 @@ impl Engine {
             (self.deliver)(Action::Player(PlayerEvent::PositionChanged(position)));
         }
     }
+}
+
+fn decode(bytes: Bytes) -> Result<rodio::Decoder<Cursor<Bytes>>, String> {
+    rodio::Decoder::new(Cursor::new(bytes))
+        .map_err(|error| format!("The audio did not decode: {error}"))
 }

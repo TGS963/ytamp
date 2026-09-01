@@ -40,7 +40,7 @@ impl Theme for DefaultTheme {
             MetricRole::SidebarWidth => 200.0,
             MetricRole::RowArtSize => 24.0,
             MetricRole::PlayerArtSize => 56.0,
-            MetricRole::ArtCornerRadius => 4.0,
+            MetricRole::CornerRadius => 4.0,
         }
     }
 }

@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use bytes::Bytes;
 use directories::ProjectDirs;
 
 use crate::stream::ResolverChain;
@@ -33,13 +34,38 @@ pub async fn fetch_audio(
     resolvers: &ResolverChain,
     http: &reqwest::Client,
     video_id: &str,
-) -> Result<Vec<u8>, String> {
-    if let Some(bytes) = read(video_id) {
+) -> Result<Bytes, String> {
+    if let Some(bytes) = read_off_thread(video_id.to_string()).await {
         return Ok(bytes);
     }
-    let bytes = resolvers.fetch_audio(http, video_id).await?;
-    write(video_id, &bytes);
+    let bytes = Bytes::from(resolvers.fetch_audio(http, video_id).await?);
+    write_off_thread(video_id.to_string(), bytes.clone());
     Ok(bytes)
+}
+
+/// Deletes the cache entry for `video_id`. The player calls this when
+/// cached bytes do not decode, so a poisoned entry cannot fail on
+/// every later play.
+pub fn remove(video_id: &str) {
+    let Some(dir) = cache_directory() else { return };
+    if let Some(path) = track_path(&dir, video_id) {
+        delete_quietly(&path);
+    }
+}
+
+/// Runs the blocking disk read on tokio's blocking pool, so a large
+/// file read never stalls an async worker thread.
+async fn read_off_thread(video_id: String) -> Option<Bytes> {
+    tokio::task::spawn_blocking(move || read(&video_id).map(Bytes::from))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Queues the blocking write and the cap enforcement on tokio's
+/// blocking pool. The caller does not wait for the write.
+fn write_off_thread(video_id: String, bytes: Bytes) {
+    tokio::task::spawn_blocking(move || write(&video_id, &bytes));
 }
 
 /// The cached bytes for `video_id`, if a readable file exists. Touches

@@ -41,7 +41,7 @@ pub enum MetricRole {
     SidebarWidth,
     RowArtSize,
     PlayerArtSize,
-    ArtCornerRadius,
+    CornerRadius,
 }
 
 pub trait Theme {
