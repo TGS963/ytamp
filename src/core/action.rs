@@ -12,7 +12,8 @@ use super::state::Page;
 pub enum Action {
     // From the user.
     NavigatedTo(Page),
-    CookiesSubmitted(String),
+    CookieDraftChanged(String),
+    CookiesSubmitted,
     SearchInputChanged(String),
     SearchSubmitted,
     PlaylistOpened(PlaylistId),

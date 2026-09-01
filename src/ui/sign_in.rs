@@ -1,0 +1,69 @@
+//! The sign-in page: paste the cookies of a music.youtube.com session.
+
+use egui::Ui;
+
+use crate::core::action::Action;
+use crate::core::state::{AuthState, State};
+use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
+
+pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    egui::CentralPanel::default_margins().show(ui, |ui| {
+        ui.add_space(theme.metric(MetricRole::PagePadding) * 3.0);
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(560.0);
+            ui.label(theme.label(TextRole::Title, "Sign in to YouTube Music"));
+            ui.add_space(theme.metric(MetricRole::GapLarge));
+            instructions(ui, theme);
+            ui.add_space(theme.metric(MetricRole::GapLarge));
+            cookie_editor(ui, state, out);
+            ui.add_space(theme.metric(MetricRole::GapSmall));
+            status_line(ui, state, theme, out);
+        });
+    });
+}
+
+fn instructions(ui: &mut egui::Ui, theme: &dyn Theme) {
+    for line in [
+        "1. Open music.youtube.com in your browser and log in.",
+        "2. Open the developer tools and select the Network tab.",
+        "3. Select a request to music.youtube.com.",
+        "4. Copy the full value of the Cookie request header.",
+        "5. Paste it below.",
+    ] {
+        ui.label(theme.secondary_label(TextRole::Body, line));
+    }
+}
+
+fn cookie_editor(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
+    let mut draft = state.sign_in.draft.clone();
+    let edit = egui::TextEdit::multiline(&mut draft)
+        .hint_text("Cookie header value")
+        .desired_rows(4)
+        .desired_width(f32::INFINITY);
+    if ui.add(edit).changed() {
+        out.push(Action::CookieDraftChanged(draft));
+    }
+}
+
+fn status_line(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    match &state.auth {
+        AuthState::Verifying => {
+            ui.spinner();
+        }
+        AuthState::Failed(message) => {
+            ui.colored_label(theme.color(ColorRole::Danger), message);
+            sign_in_button(ui, state, out);
+        }
+        _ => sign_in_button(ui, state, out),
+    }
+}
+
+fn sign_in_button(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
+    let enabled = !state.sign_in.draft.trim().is_empty();
+    if ui
+        .add_enabled(enabled, egui::Button::new("Sign in"))
+        .clicked()
+    {
+        out.push(Action::CookiesSubmitted);
+    }
+}

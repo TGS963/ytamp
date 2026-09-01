@@ -45,6 +45,12 @@ pub enum Page {
     Playlist(PlaylistId),
 }
 
+/// The cookie text the user is pasting on the sign-in page.
+#[derive(Clone, Debug, Default)]
+pub struct SignInState {
+    pub draft: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SearchState {
     pub input: String,
@@ -92,6 +98,7 @@ impl Default for PlaybackState {
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub auth: AuthState,
+    pub sign_in: SignInState,
     pub page: Page,
     pub search: SearchState,
     pub library: LibraryState,

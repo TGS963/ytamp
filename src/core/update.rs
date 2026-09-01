@@ -19,7 +19,11 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> Vec<Effect> {
     match action {
         Action::NavigatedTo(page) => navigate(state, page),
-        Action::CookiesSubmitted(cookies) => submit_cookies(state, cookies),
+        Action::CookieDraftChanged(draft) => {
+            state.sign_in.draft = draft;
+            vec![]
+        }
+        Action::CookiesSubmitted => submit_cookies(state),
         Action::AuthVerified(result) => finish_sign_in(state, result),
         Action::SearchInputChanged(input) => {
             state.search.input = input;
@@ -98,8 +102,8 @@ fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
     effects
 }
 
-fn submit_cookies(state: &mut State, cookies: String) -> Vec<Effect> {
-    let cookies = cookies.trim().to_string();
+fn submit_cookies(state: &mut State) -> Vec<Effect> {
+    let cookies = state.sign_in.draft.trim().to_string();
     if cookies.is_empty() {
         return vec![];
     }
@@ -262,7 +266,8 @@ mod tests {
     #[test]
     fn cookie_submission_saves_and_verifies() {
         let mut state = State::default();
-        let effects = apply(&mut state, Action::CookiesSubmitted("  c=1  ".into()));
+        state.sign_in.draft = "  c=1  ".into();
+        let effects = apply(&mut state, Action::CookiesSubmitted);
         assert_eq!(state.auth, AuthState::Verifying);
         assert_eq!(
             effects,
@@ -278,10 +283,8 @@ mod tests {
     #[test]
     fn empty_cookie_submission_does_nothing() {
         let mut state = State::default();
-        assert_eq!(
-            apply(&mut state, Action::CookiesSubmitted("  ".into())),
-            vec![]
-        );
+        state.sign_in.draft = "  ".into();
+        assert_eq!(apply(&mut state, Action::CookiesSubmitted), vec![]);
         assert_eq!(state.auth, AuthState::SignedOut);
     }
 
