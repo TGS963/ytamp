@@ -21,7 +21,7 @@ use rodio::source::Source;
 use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
 use crate::core::model::Track;
-use crate::stream::ResolverChain;
+use crate::stream::{ResolverChain, disk_cache};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -213,7 +213,7 @@ impl Engine {
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = resolvers.fetch_audio(&http, &video_id).await;
+            let result = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
             let _ = results.send(PlayerMsg::Loaded {
                 generation,
                 video_id,
@@ -295,7 +295,7 @@ impl Engine {
         let http = self.http.clone();
         let results = self.self_sender.clone();
         self.tokio.spawn(async move {
-            let result = resolvers.fetch_audio(&http, &video_id).await;
+            let result = disk_cache::fetch_audio(&resolvers, &http, &video_id).await;
             let _ = results.send(PlayerMsg::Prefetched {
                 generation,
                 video_id,

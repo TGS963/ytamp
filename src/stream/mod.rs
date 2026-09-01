@@ -10,6 +10,7 @@
 //! downloads the bytes itself, because a URL from `--get-url` binds
 //! to yt-dlp's own session and rejects another program's fetch.
 
+pub mod disk_cache;
 mod download;
 mod rustypipe;
 mod ytdlp;
