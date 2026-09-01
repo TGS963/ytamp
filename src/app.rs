@@ -11,7 +11,7 @@ use crate::core::state::State;
 use crate::core::update::update;
 use crate::media_keys::MediaKeys;
 use crate::runtime::EffectRuntime;
-use crate::theme::{DefaultTheme, Theme};
+use crate::theme::{ColorRole, DefaultTheme, Theme};
 use crate::ui;
 
 pub struct App {
@@ -77,5 +77,14 @@ impl eframe::App for App {
         if let Some(json) = session.to_json() {
             storage.set_string(SESSION_STORAGE_KEY, json);
         }
+    }
+
+    /// The color eframe clears the window with before any panel paints.
+    /// It shows through any gap a panel frame does not cover, so it
+    /// must match the theme, not the library's semi-transparent default.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        self.theme
+            .color(ColorRole::PageBackground)
+            .to_normalized_gamma_f32()
     }
 }

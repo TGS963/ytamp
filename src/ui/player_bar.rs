@@ -7,13 +7,16 @@ use egui::Ui;
 use crate::core::action::Action;
 use crate::core::queue::RepeatMode;
 use crate::core::state::{PlayStatus, State};
-use crate::theme::{MetricRole, TextRole, Theme};
+use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
+use super::panel_frame;
 use super::rows::{artwork, format_duration};
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    let frame = panel_frame(ui, theme, ColorRole::PanelBackground);
     egui::Panel::bottom("player_bar")
         .exact_size(theme.metric(MetricRole::PlayerBarHeight))
+        .frame(frame)
         .show(ui, |ui| {
             ui.add_space(theme.metric(MetricRole::GapSmall));
             ui.horizontal(|ui| {

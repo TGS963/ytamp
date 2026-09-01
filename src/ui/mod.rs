@@ -53,16 +53,30 @@ fn keyboard_shortcuts(ui: &Ui, out: &mut Vec<Action>) {
     });
 }
 
+/// Sets the widget colors every panel shares (dark theme, accent
+/// selection), and a page-background fallback for any panel that does
+/// not name its own fill. Each panel below still names its own fill
+/// through `panel_frame`, so this fallback rarely fires.
 fn apply_page_style(ui: &mut Ui, theme: &dyn Theme) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = theme.color(ColorRole::PageBackground);
+    visuals.window_fill = theme.color(ColorRole::PageBackground);
     visuals.selection.bg_fill = theme.color(ColorRole::Accent);
     ui.ctx().set_visuals(visuals);
 }
 
+/// A side- or bottom-panel frame filled with the given role, in place
+/// of egui's shared `panel_fill`. This is how the sidebar and the
+/// player bar earn a tone distinct from the page behind them.
+pub(super) fn panel_frame(ui: &Ui, theme: &dyn Theme, role: ColorRole) -> egui::Frame {
+    egui::Frame::side_top_panel(ui.style()).fill(theme.color(role))
+}
+
 fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    let frame = panel_frame(ui, theme, ColorRole::PanelBackground);
     egui::Panel::left("sidebar")
         .exact_size(theme.metric(MetricRole::SidebarWidth))
+        .frame(frame)
         .show(ui, |ui| {
             ui.add_space(theme.metric(MetricRole::PagePadding));
             nav_item(
@@ -120,7 +134,8 @@ fn nav_item(
 }
 
 fn page(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
-    egui::CentralPanel::default_margins().show(ui, |ui| {
+    let frame = egui::Frame::central_panel(ui.style()).fill(theme.color(ColorRole::PageBackground));
+    egui::CentralPanel::default_margins().frame(frame).show(ui, |ui| {
         ui.add_space(theme.metric(MetricRole::PagePadding));
         match &state.page {
             Page::SignIn | Page::Search => search::view(ui, state, theme, out),

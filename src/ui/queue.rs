@@ -4,13 +4,16 @@ use egui::Ui;
 
 use crate::core::model::Track;
 use crate::core::state::State;
-use crate::theme::{MetricRole, TextRole, Theme};
+use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
+use super::panel_frame;
 use super::rows;
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) {
+    let frame = panel_frame(ui, theme, ColorRole::PanelBackground);
     egui::Panel::right("queue")
         .exact_size(theme.metric(MetricRole::SidebarWidth) * 1.4)
+        .frame(frame)
         .show(ui, |ui| {
             ui.add_space(theme.metric(MetricRole::PagePadding));
             ui.label(theme.label(TextRole::Heading, "Queue"));
