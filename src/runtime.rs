@@ -182,7 +182,9 @@ fn load_named_skin(name: Option<String>) -> Result<Arc<Skin>, String> {
     };
     let path = skins_dir::skin_path(&name)
         .ok_or_else(|| format!("the skin \"{name}\" is no longer in the skins folder"))?;
-    Skin::load(&path).map(Arc::new).map_err(|error| error.to_string())
+    Skin::load(&path)
+        .map(Arc::new)
+        .map_err(|error| error.to_string())
 }
 
 /// Session setup for the audio sources runs in the background at

@@ -42,7 +42,10 @@ impl App {
     /// while it is open, since the two are one app wearing two looks,
     /// not two windows at once.
     fn winamp_window(&mut self, ctx: &egui::Context) -> Vec<Action> {
-        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Visible(false));
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Visible(false),
+        );
         let size = ui::winamp::window_size_points(
             &self.winamp,
             self.state.winamp.scale,

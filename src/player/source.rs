@@ -492,7 +492,9 @@ mod tests {
             assert!(batch.push(0.0, 2).is_none(), "frame {frame} full");
         }
         assert!(batch.push(1.0, 2).is_none());
-        let full = batch.push(0.0, 2).expect("the batch fills on the last frame");
+        let full = batch
+            .push(0.0, 2)
+            .expect("the batch fills on the last frame");
         assert_eq!(full.len(), TAP_BATCH_FRAMES);
         assert!(full.iter().all(|mono| (*mono - 0.5).abs() < 1e-6));
     }
@@ -504,7 +506,10 @@ mod tests {
 
     #[test]
     fn decide_next_sample_plays_silence_while_the_decoder_is_alive() {
-        assert_eq!(decide_next_sample(Err(TryRecvError::Empty), false), Some(0.0));
+        assert_eq!(
+            decide_next_sample(Err(TryRecvError::Empty), false),
+            Some(0.0)
+        );
     }
 
     #[test]
@@ -514,7 +519,10 @@ mod tests {
 
     #[test]
     fn decide_next_sample_ends_the_track_when_the_decoder_is_gone() {
-        assert_eq!(decide_next_sample(Err(TryRecvError::Disconnected), false), None);
+        assert_eq!(
+            decide_next_sample(Err(TryRecvError::Disconnected), false),
+            None
+        );
     }
 
     /// A minimal RIFF/WAVE header for 16-bit PCM, plus `sample_count`

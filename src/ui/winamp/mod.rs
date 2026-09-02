@@ -419,7 +419,8 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
     }
     if vis_moving {
         ctx.request_repaint_after(VIS_FRAME * 2);
-    } else if state.playback.status == PlayStatus::Playing || state.playback.status == PlayStatus::Paused
+    } else if state.playback.status == PlayStatus::Playing
+        || state.playback.status == PlayStatus::Paused
     {
         ctx.request_repaint_after(PLAYING_REPAINT);
     }
@@ -972,7 +973,12 @@ fn draw_spectrum(
 
 /// The oscilloscope trace: read from the audio tap, and shaded by how
 /// far each row sits from the centre.
-fn draw_scope(view: &mut View, area: Area, sounding: bool, color: impl Fn(usize) -> Color32) -> bool {
+fn draw_scope(
+    view: &mut View,
+    area: Area,
+    sounding: bool,
+    color: impl Fn(usize) -> Color32,
+) -> bool {
     let samples = if sounding {
         AudioTap::shared().window(vis::SCOPE_SAMPLES, vis::LAG)
     } else {

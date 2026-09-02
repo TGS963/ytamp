@@ -186,8 +186,7 @@ fn volume_slider(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     } else {
         "Winamp skin (Ctrl+M)"
     };
-    let winamp_button =
-        selectable_icon(ui, "🎵", state.winamp.open).on_hover_text(winamp_hint);
+    let winamp_button = selectable_icon(ui, "🎵", state.winamp.open).on_hover_text(winamp_hint);
     if winamp_button.clicked() {
         out.push(Action::WinampToggled);
     }

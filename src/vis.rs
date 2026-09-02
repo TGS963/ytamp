@@ -99,7 +99,10 @@ impl AudioTap {
     /// Adds one interleaved sample. Once `channels` of them have
     /// arrived, their mean joins the ring as one mono sample.
     pub fn push(&self, sample: f32, channels: u32) {
-        let mut ring = self.ring.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut ring = self
+            .ring
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         push_frame(&mut ring, sample, channels.max(1));
     }
 
@@ -107,7 +110,10 @@ impl AudioTap {
     /// calls this every few dozen frames instead of once per sample,
     /// so it takes the lock about a thousand times a second at most.
     pub fn push_mono(&self, samples: &[f32]) {
-        let mut ring = self.ring.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut ring = self
+            .ring
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         for sample in samples {
             if ring.samples.len() == KEPT {
                 ring.samples.pop_front();
@@ -119,12 +125,18 @@ impl AudioTap {
     /// The `count` samples ending `lag` samples before the newest,
     /// with silence where there are fewer than that.
     pub fn window(&self, count: usize, lag: usize) -> Vec<f32> {
-        let ring = self.ring.lock().unwrap_or_else(|poison| poison.into_inner());
+        let ring = self
+            .ring
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         window_from(&ring.samples, count, lag)
     }
 
     pub fn clear(&self) {
-        let mut ring = self.ring.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut ring = self
+            .ring
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         ring.samples.clear();
         ring.frame_sum = 0.0;
         ring.frame_len = 0;
@@ -156,7 +168,10 @@ fn window_from(samples: &VecDeque<f32>, count: usize, lag: usize) -> Vec<f32> {
     let start = end.saturating_sub(count);
     let mut out = vec![0.0; count];
     let taken = end - start;
-    for (slot, sample) in out[count - taken..].iter_mut().zip(samples.range(start..end)) {
+    for (slot, sample) in out[count - taken..]
+        .iter_mut()
+        .zip(samples.range(start..end))
+    {
         *slot = *sample;
     }
     out

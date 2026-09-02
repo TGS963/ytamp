@@ -148,7 +148,10 @@ mod tests {
     #[test]
     fn a_ytimg_url_gets_the_still_matching_the_pixel_size() {
         let url = "https://i.ytimg.com/vi/abc123/hqdefault.jpg";
-        assert_eq!(sized(url, 72), "https://i.ytimg.com/vi/abc123/mqdefault.jpg");
+        assert_eq!(
+            sized(url, 72),
+            "https://i.ytimg.com/vi/abc123/mqdefault.jpg"
+        );
         assert_eq!(
             sized(url, 400),
             "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
@@ -161,6 +164,9 @@ mod tests {
 
     #[test]
     fn an_unrecognized_host_url_is_unchanged() {
-        assert_eq!(sized("https://example.com/x.jpg", 72), "https://example.com/x.jpg");
+        assert_eq!(
+            sized("https://example.com/x.jpg", 72),
+            "https://example.com/x.jpg"
+        );
     }
 }

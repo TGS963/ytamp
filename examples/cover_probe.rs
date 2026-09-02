@@ -3,9 +3,9 @@
 //! custom cover shows the difference.
 //! Usage: cargo run --example cover_probe [count]
 
+use ytmapi_rs::YtMusicBuilder;
 use ytmapi_rs::common::{PlaylistID, YoutubeID};
 use ytmapi_rs::query::GetPlaylistDetailsQuery;
-use ytmapi_rs::YtMusicBuilder;
 
 #[tokio::main]
 async fn main() {
@@ -18,7 +18,10 @@ async fn main() {
         .await
         .expect("the sign-in works");
     let playlists = api.library_playlists().await.expect("playlists load");
-    let yt = YtMusicBuilder::new().build().await.expect("anonymous client");
+    let yt = YtMusicBuilder::new()
+        .build()
+        .await
+        .expect("anonymous client");
     for playlist in playlists.iter().take(count) {
         println!("{} ({})", playlist.title, playlist.id.0);
         println!("  data api : {:?}", playlist.thumbnail_url);

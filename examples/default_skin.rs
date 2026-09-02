@@ -809,8 +809,7 @@ fn eq_ex_sheet() -> Canvas {
     c
 }
 
-const PLEDIT_TXT: &str =
-    "[Text]\r\nNormal=#A0A0A5\r\nCurrent=#FF4040\r\nNormalBG=#121214\r\nSelectedBG=#303037\r\nFont=Inter\r\n";
+const PLEDIT_TXT: &str = "[Text]\r\nNormal=#A0A0A5\r\nCurrent=#FF4040\r\nNormalBG=#121214\r\nSelectedBG=#303037\r\nFont=Inter\r\n";
 
 /// Background, grid, sixteen spectrum bands from the top down, the
 /// oscilloscope's five shades, and the peak marks.
@@ -984,8 +983,7 @@ struct Args {
 /// Reads the command line: an optional output path, and an optional
 /// `--preview <png>` pair, in either order.
 fn parse_args() -> Args {
-    let default_output =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/skins/builtin.wsz");
+    let default_output = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/skins/builtin.wsz");
     let mut output = default_output;
     let mut preview = None;
     let mut args = std::env::args().skip(1);
@@ -1003,11 +1001,7 @@ fn main() {
     let args = parse_args();
     let archive = archive();
     std::fs::write(&args.output, &archive).expect("the skin can be written");
-    println!(
-        "wrote {} bytes to {}",
-        archive.len(),
-        args.output.display()
-    );
+    println!("wrote {} bytes to {}", archive.len(), args.output.display());
     if let Some(preview_path) = args.preview {
         write_preview(&archive, &preview_path);
     }

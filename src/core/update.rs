@@ -615,7 +615,10 @@ fn is_custom_cover(url: Option<&str>) -> bool {
 /// whether it currently shows a cached list or the fresh network one,
 /// and schedules the result for the cache. An empty batch, the shape
 /// a failed fetch delivers, changes nothing.
-fn finish_playlist_covers_load(state: &mut State, covers: Vec<(PlaylistId, String)>) -> Vec<Effect> {
+fn finish_playlist_covers_load(
+    state: &mut State,
+    covers: Vec<(PlaylistId, String)>,
+) -> Vec<Effect> {
     if covers.is_empty() {
         return vec![];
     }
@@ -635,13 +638,15 @@ fn finish_playlist_covers_load(state: &mut State, covers: Vec<(PlaylistId, Strin
 fn apply_covers(playlists: Vec<Playlist>, covers: &[(PlaylistId, String)]) -> Vec<Playlist> {
     playlists
         .into_iter()
-        .map(|playlist| match covers.iter().find(|(id, _)| id == &playlist.id) {
-            Some((_, url)) => Playlist {
-                thumbnail_url: Some(url.clone()),
-                ..playlist
+        .map(
+            |playlist| match covers.iter().find(|(id, _)| id == &playlist.id) {
+                Some((_, url)) => Playlist {
+                    thumbnail_url: Some(url.clone()),
+                    ..playlist
+                },
+                None => playlist,
             },
-            None => playlist,
-        })
+        )
         .collect()
 }
 
@@ -1063,13 +1068,15 @@ pub fn is_liked(liked: &Loadable<Vec<Track>>, id: &TrackId) -> bool {
 fn with_count_delta(playlists: Vec<Playlist>, id: &PlaylistId, delta: i64) -> Vec<Playlist> {
     playlists
         .into_iter()
-        .map(|playlist| match (&playlist.id == id, playlist.track_count) {
-            (true, Some(count)) => Playlist {
-                track_count: Some((count as i64 + delta).max(0) as usize),
-                ..playlist
+        .map(
+            |playlist| match (&playlist.id == id, playlist.track_count) {
+                (true, Some(count)) => Playlist {
+                    track_count: Some((count as i64 + delta).max(0) as usize),
+                    ..playlist
+                },
+                _ => playlist,
             },
-            _ => playlist,
-        })
+        )
         .collect()
 }
 
@@ -1262,12 +1269,43 @@ fn finish_library_write(
     };
     state.notices.push(message);
     match what {
-        LibraryWrite::Liked => vec![Effect::Api(ApiRequest::FetchLiked)],
-        LibraryWrite::Playlist(id) => vec![
-            Effect::Api(ApiRequest::FetchPlaylistTracks(id)),
-            Effect::Api(ApiRequest::FetchPlaylists),
-        ],
+        LibraryWrite::Liked => {
+            begin_refresh(
+                &mut state.library.liked,
+                &mut state.library.liked_loading_more,
+                &mut state.library.incoming_liked,
+            );
+            vec![Effect::Api(ApiRequest::FetchLiked)]
+        }
+        LibraryWrite::Playlist(id) => {
+            begin_refresh(
+                &mut state.library.open_playlist,
+                &mut state.library.open_playlist_loading_more,
+                &mut state.library.incoming_playlist,
+            );
+            vec![
+                Effect::Api(ApiRequest::FetchPlaylistTracks(id)),
+                Effect::Api(ApiRequest::FetchPlaylists),
+            ]
+        }
     }
+}
+
+/// Prepares a loaded list for a streamed refetch. The pages of a
+/// refetch buffer behind a `Refreshing` slot and replace the list at
+/// the end. On a `Loaded` slot they would append, and the list would
+/// double.
+fn begin_refresh(
+    slot: &mut Loadable<Vec<Track>>,
+    loading_more: &mut bool,
+    incoming: &mut Vec<Track>,
+) {
+    *slot = match std::mem::take(slot) {
+        Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) => Loadable::Refreshing(tracks),
+        other => other,
+    };
+    *loading_more = false;
+    incoming.clear();
 }
 
 fn set_loadable<T>(slot: &mut Loadable<T>, result: Result<T, String>) {
@@ -1692,7 +1730,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         assert_eq!(state.playback.status, PlayStatus::Stopped);
@@ -1712,7 +1754,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         assert_eq!(state.playback.status, PlayStatus::Loading);
@@ -1734,7 +1780,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1764,7 +1814,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1787,7 +1841,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1811,7 +1869,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1835,7 +1897,11 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         apply(
@@ -2037,7 +2103,11 @@ mod tests {
         );
         let effects = apply(
             &mut restored,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         assert_eq!(
             effects,
@@ -2065,7 +2135,11 @@ mod tests {
         );
         let effects = apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         assert_eq!(
             effects,
@@ -2164,7 +2238,11 @@ mod tests {
         );
         let effects = apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44_100,
+            }),
         );
         assert_eq!(effects, vec![]);
     }
@@ -2425,10 +2503,7 @@ mod tests {
         let mut state = State::default();
         let effects = apply(&mut state, Action::SkinInstalled(Ok("Zaxon".to_string())));
         assert_eq!(state.winamp.skin, Some("Zaxon".to_string()));
-        assert_eq!(
-            effects,
-            vec![Effect::LoadSkin(Some("Zaxon".to_string()))]
-        );
+        assert_eq!(effects, vec![Effect::LoadSkin(Some("Zaxon".to_string()))]);
 
         let effects = apply(&mut state, Action::SkinInstalled(Err("bad file".into())));
         assert_eq!(state.notices, vec!["bad file".to_string()]);
@@ -2715,6 +2790,29 @@ mod tests {
         let result = without_item(tracks, "i1");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, TrackId("b".into()));
+    }
+
+    #[test]
+    fn a_failed_like_refetches_without_doubling_the_liked_list() {
+        let mut state = State::default();
+        state.library.liked = Loadable::Loaded(vec![track("a"), track("b")]);
+        let effects = apply(
+            &mut state,
+            Action::LibraryWriteFinished {
+                what: LibraryWrite::Liked,
+                result: Err("quota".into()),
+            },
+        );
+        assert_eq!(effects, vec![Effect::Api(ApiRequest::FetchLiked)]);
+        apply(
+            &mut state,
+            Action::LikedPageLoaded {
+                tracks: vec![track("b")],
+                finished: true,
+            },
+        );
+        assert_eq!(state.library.liked, Loadable::Loaded(vec![track("b")]));
+        assert_eq!(state.notices.len(), 1);
     }
 
     // -- TrackLikeToggled --
