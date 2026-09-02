@@ -108,6 +108,12 @@ impl App {
                 self.winamp.wear(skin);
                 None
             }
+            Action::SkinLoaded(Err(message)) if self.state.winamp.skin.is_some() => {
+                self.reduce(vec![Action::SkinChosen(None)]);
+                Some(Action::NoticePosted(format!(
+                    "{message} The built-in skin is in use."
+                )))
+            }
             Action::SkinLoaded(Err(message)) => Some(Action::NoticePosted(message)),
             other => Some(other),
         }
