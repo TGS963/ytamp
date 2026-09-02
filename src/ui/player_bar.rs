@@ -165,4 +165,14 @@ fn volume_slider(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     if queue_button.clicked() {
         out.push(Action::QueuePanelToggled);
     }
+    let winamp_hint = if cfg!(target_os = "macos") {
+        "Winamp skin (Cmd+Shift+M)"
+    } else {
+        "Winamp skin (Ctrl+M)"
+    };
+    let winamp_button =
+        selectable_icon(ui, "🎵", state.winamp.open).on_hover_text(winamp_hint);
+    if winamp_button.clicked() {
+        out.push(Action::WinampToggled);
+    }
 }

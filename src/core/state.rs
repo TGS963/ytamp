@@ -133,6 +133,10 @@ pub struct PlaybackState {
     /// The id of the track a running radio fetch started from. Guards
     /// a late result against a queue the user has since replaced.
     pub radio_request: Option<TrackId>,
+    /// The decoded stream's channel count, zero until a track starts.
+    pub channels: u16,
+    /// The decoded stream's sample rate in Hz, zero until a track starts.
+    pub sample_rate: u32,
 }
 
 impl Default for PlaybackState {
@@ -147,6 +151,32 @@ impl Default for PlaybackState {
             last_hover_prefetch: None,
             autoplay: true,
             radio_request: None,
+            channels: 0,
+            sample_rate: 0,
+        }
+    }
+}
+
+/// The Winamp skin window's settings: whether it is open, and how it
+/// is shown. Saved in the session.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WinampSettings {
+    pub open: bool,
+    /// Screen pixels per skin pixel, from 1 to 4.
+    pub scale: u8,
+    pub on_top: bool,
+    /// The skin file name in the skins folder, or `None` for the
+    /// built-in skin.
+    pub skin: Option<String>,
+}
+
+impl Default for WinampSettings {
+    fn default() -> Self {
+        Self {
+            open: false,
+            scale: 2,
+            on_top: false,
+            skin: None,
         }
     }
 }
@@ -161,6 +191,7 @@ pub struct State {
     pub browse: BrowseState,
     pub playback: PlaybackState,
     pub queue_open: bool,
+    pub winamp: WinampSettings,
     /// Pages the user navigated away from, most recent last. Back
     /// pops the top entry. Sidebar navigation clears it, so Back never
     /// crosses a deliberate jump to a different section.

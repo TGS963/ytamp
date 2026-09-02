@@ -109,6 +109,18 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.queue_open = !state.queue_open;
             vec![]
         }
+        Action::WinampToggled => {
+            state.winamp.open = !state.winamp.open;
+            vec![]
+        }
+        Action::WinampScaleSet(scale) => {
+            state.winamp.scale = scale.clamp(1, 4);
+            vec![]
+        }
+        Action::WinampOnTopToggled => {
+            state.winamp.on_top = !state.winamp.on_top;
+            vec![]
+        }
         Action::NoticeDismissed(index) => {
             if index < state.notices.len() {
                 state.notices.remove(index);
@@ -662,6 +674,7 @@ fn restore_session(state: &mut State, session: crate::core::session::SavedSessio
     state.playback.volume = session.volume.clamp(0.0, 1.0);
     state.playback.autoplay = session.autoplay;
     state.playback.status = PlayStatus::Stopped;
+    state.winamp = session.winamp;
     state.playback.track_duration = state
         .playback
         .queue
@@ -688,9 +701,15 @@ fn set_volume(state: &mut State, volume: f32) -> Vec<Effect> {
 
 fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
     match event {
-        PlayerEvent::TrackStarted { duration } => {
+        PlayerEvent::TrackStarted {
+            duration,
+            channels,
+            sample_rate,
+        } => {
             state.playback.status = PlayStatus::Playing;
             state.playback.track_duration = duration.or(state.playback.track_duration);
+            state.playback.channels = channels;
+            state.playback.sample_rate = sample_rate;
             let mut effects = prefetch_next(state);
             if let Some(position) = state.playback.resume_position.take() {
                 state.playback.position = position;
@@ -1282,7 +1301,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         assert_eq!(state.playback.status, PlayStatus::Stopped);
@@ -1302,7 +1321,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         assert_eq!(state.playback.status, PlayStatus::Loading);
@@ -1324,7 +1343,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1354,7 +1373,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1377,7 +1396,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1401,7 +1420,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         let effects = apply(
@@ -1425,7 +1444,7 @@ mod tests {
         );
         apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         apply(
@@ -1627,7 +1646,7 @@ mod tests {
         );
         let effects = apply(
             &mut restored,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         assert_eq!(
             effects,
@@ -1655,7 +1674,7 @@ mod tests {
         );
         let effects = apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         assert_eq!(
             effects,
@@ -1754,7 +1773,7 @@ mod tests {
         );
         let effects = apply(
             &mut state,
-            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+            Action::Player(PlayerEvent::TrackStarted { duration: None, channels: 2, sample_rate: 44_100 }),
         );
         assert_eq!(effects, vec![]);
     }
@@ -1962,5 +1981,51 @@ mod tests {
         assert!(!state.library.liked_loading_more);
         assert_eq!(state.notices, vec!["offline".to_string()]);
         assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn winamp_toggled_flips_open() {
+        let mut state = State::default();
+        assert!(!state.winamp.open);
+        apply(&mut state, Action::WinampToggled);
+        assert!(state.winamp.open);
+        apply(&mut state, Action::WinampToggled);
+        assert!(!state.winamp.open);
+    }
+
+    #[test]
+    fn winamp_scale_set_clamps_to_the_allowed_range() {
+        let mut state = State::default();
+        apply(&mut state, Action::WinampScaleSet(3));
+        assert_eq!(state.winamp.scale, 3);
+        apply(&mut state, Action::WinampScaleSet(0));
+        assert_eq!(state.winamp.scale, 1);
+        apply(&mut state, Action::WinampScaleSet(9));
+        assert_eq!(state.winamp.scale, 4);
+    }
+
+    #[test]
+    fn winamp_on_top_toggled_flips_on_top() {
+        let mut state = State::default();
+        assert!(!state.winamp.on_top);
+        apply(&mut state, Action::WinampOnTopToggled);
+        assert!(state.winamp.on_top);
+        apply(&mut state, Action::WinampOnTopToggled);
+        assert!(!state.winamp.on_top);
+    }
+
+    #[test]
+    fn track_started_carries_the_stream_shape() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: Some(Duration::from_secs(180)),
+                channels: 2,
+                sample_rate: 44_100,
+            }),
+        );
+        assert_eq!(state.playback.channels, 2);
+        assert_eq!(state.playback.sample_rate, 44_100);
     }
 }

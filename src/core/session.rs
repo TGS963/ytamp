@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::queue::Queue;
-use super::state::State;
+use super::state::{State, WinampSettings};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -19,6 +19,10 @@ pub struct SavedSession {
     /// session keeps autoplay on, the default behavior.
     #[serde(default = "default_autoplay")]
     pub autoplay: bool,
+    /// Missing in a session saved before the Winamp window existed.
+    /// Such a session starts with the window closed, the default.
+    #[serde(default)]
+    pub winamp: WinampSettings,
 }
 
 fn default_autoplay() -> bool {
@@ -32,6 +36,7 @@ impl SavedSession {
             position_secs: state.playback.position.as_secs(),
             volume: state.playback.volume,
             autoplay: state.playback.autoplay,
+            winamp: state.winamp.clone(),
         }
     }
 

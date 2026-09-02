@@ -56,6 +56,11 @@ pub enum Action {
     AutoplayToggled,
     QueuePanelToggled,
     NoticeDismissed(usize),
+    /// Opens or closes the Winamp skin window.
+    WinampToggled,
+    /// Sets the skin window's scale, clamped to 1 through 4.
+    WinampScaleSet(u8),
+    WinampOnTopToggled,
 
     // From the shell at startup.
     StoredAuthFound(crate::core::effect::AuthMethod),
@@ -101,9 +106,13 @@ pub enum Action {
 
 #[derive(Clone, Debug)]
 pub enum PlayerEvent {
-    /// The stream resolved and decoding started. Carries the real duration.
+    /// The stream resolved and decoding started. Carries the real
+    /// duration and the decoded stream's shape, for the Winamp
+    /// window's mono/stereo lamps and kHz text.
     TrackStarted {
         duration: Option<Duration>,
+        channels: u16,
+        sample_rate: u32,
     },
     PositionChanged(Duration),
     TrackEnded,

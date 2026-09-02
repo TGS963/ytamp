@@ -10,6 +10,7 @@ mod queue;
 mod rows;
 mod search;
 mod sign_in;
+pub mod winamp;
 
 use egui::Ui;
 
@@ -48,12 +49,25 @@ fn keyboard_shortcuts(ui: &Ui, out: &mut Vec<Action>) {
         (egui::Key::Backspace, || Action::BackPressed),
     ];
     ui.input(|input| {
+        if winamp_shortcut_pressed(input) {
+            out.push(Action::WinampToggled);
+        }
         for (key, action) in shortcuts {
             if input.key_pressed(key) {
                 out.push(action());
             }
         }
     });
+}
+
+/// The Winamp window's shortcut: Ctrl+M everywhere but macOS, where
+/// Ctrl+M is taken by window minimize, so it is Cmd+Shift+M there.
+fn winamp_shortcut_pressed(input: &egui::InputState) -> bool {
+    if cfg!(target_os = "macos") {
+        input.modifiers.mac_cmd && input.modifiers.shift && input.key_pressed(egui::Key::M)
+    } else {
+        input.modifiers.ctrl && input.key_pressed(egui::Key::M)
+    }
 }
 
 /// Sets the widget colors every panel shares (dark theme, accent

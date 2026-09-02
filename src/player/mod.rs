@@ -326,10 +326,18 @@ impl Engine {
         let Some(handle) = self.pending_source.take() else {
             return;
         };
+        let shape = result.as_ref().ok().copied();
         match result.and_then(|ready| self.start_playback(handle, ready)) {
             Ok(duration) => {
                 self.track_loaded = true;
-                (self.deliver)(Action::Player(PlayerEvent::TrackStarted { duration }));
+                let (channels, sample_rate) = shape
+                    .map(|ready| (ready.channels.get(), ready.sample_rate.get()))
+                    .unwrap_or_default();
+                (self.deliver)(Action::Player(PlayerEvent::TrackStarted {
+                    duration,
+                    channels,
+                    sample_rate,
+                }));
             }
             Err(message) => {
                 if was_complete {

@@ -21,6 +21,7 @@ pub struct App {
     incoming: Receiver<Action>,
     media_keys: MediaKeys,
     rng: fastrand::Rng,
+    winamp: ui::winamp::WinampShell,
 }
 
 impl App {
@@ -32,7 +33,50 @@ impl App {
             incoming,
             media_keys,
             rng: fastrand::Rng::new(),
+            winamp: ui::winamp::WinampShell::new(),
         }
+    }
+
+    /// Opens the Winamp skin window as a borderless egui viewport, and
+    /// draws it through the ported skin view. Hides the main window
+    /// while it is open, since the two are one app wearing two looks,
+    /// not two windows at once.
+    fn winamp_window(&mut self, ctx: &egui::Context) -> Vec<Action> {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Visible(false));
+        let size = ui::winamp::window_size_points(
+            self.winamp.shade,
+            self.state.winamp.scale,
+            ctx.pixels_per_point(),
+        );
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("ytamp")
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_resizable(false)
+            .with_inner_size(size)
+            .with_min_inner_size(size)
+            .with_max_inner_size(size);
+        if self.state.winamp.on_top {
+            builder = builder.with_always_on_top();
+        }
+        let mut actions = Vec::new();
+        let state = &self.state;
+        let winamp = &mut self.winamp;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("winamp"),
+            builder,
+            |ui, _class| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        ui::winamp::show(ui, state, winamp, &mut actions);
+                    });
+                if ui.ctx().input(|input| input.viewport().close_requested()) {
+                    actions.push(Action::WinampToggled);
+                }
+            },
+        );
+        actions
     }
 
     pub fn queue_action(&mut self, action: Action) {
@@ -68,6 +112,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut actions: Vec<Action> = self.incoming.try_iter().collect();
         actions.extend(ui::view(ui, &self.state, self.theme.as_ref()));
+        let ctx = ui.ctx().clone();
+        if self.state.winamp.open {
+            actions.extend(self.winamp_window(&ctx));
+        } else {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Visible(true));
+        }
         self.reduce(actions);
         self.media_keys.sync(&self.state);
     }
