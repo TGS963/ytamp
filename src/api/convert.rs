@@ -5,12 +5,12 @@ use std::time::Duration;
 use ytmapi_rs::common::{Thumbnail, YoutubeID};
 use ytmapi_rs::parse::{
     AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, LibraryPlaylist, ParsedSongAlbum,
-    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong, SearchResultVideo,
-    WatchPlaylistTrack,
+    ParsedSongArtist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
+    SearchResultVideo, WatchPlaylistTrack,
 };
 
 use crate::core::model::{
-    Album, AlbumId, AlbumPage, Artist, ArtistId, ArtistPage, Playlist, PlaylistId,
+    Album, AlbumId, AlbumPage, Artist, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId,
     SearchResults as ModelSearchResults, Track, TrackId,
 };
 
@@ -32,11 +32,21 @@ pub fn song_to_track(song: SearchResultSong) -> Track {
     Track {
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
-        artists: vec![song.artist],
+        artists: vec![ArtistRef::named(song.artist)],
         album,
         album_id,
         duration: parse_duration(&song.duration),
         thumbnail_url: largest_thumbnail(&song.thumbnails),
+    }
+}
+
+/// A song artist credit as `ArtistRef`. Playlist items and an
+/// artist's top songs carry a channel id here; a search result does
+/// not, so this helper stays unused there.
+fn artist_ref(artist: ParsedSongArtist) -> ArtistRef {
+    ArtistRef {
+        name: artist.name,
+        id: artist.id.map(|id| ArtistId(id.get_raw().to_string())),
     }
 }
 
@@ -81,7 +91,7 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
         } => Some(Track {
             id: TrackId(video_id.get_raw().to_string()),
             title,
-            artists: vec![channel_name],
+            artists: vec![ArtistRef::named(channel_name)],
             album: None,
             album_id: None,
             duration: parse_duration(&length),
@@ -100,7 +110,7 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
             Some(Track {
                 id: TrackId(song.video_id.get_raw().to_string()),
                 title: song.title,
-                artists: song.artists.into_iter().map(|artist| artist.name).collect(),
+                artists: song.artists.into_iter().map(artist_ref).collect(),
                 album,
                 album_id,
                 duration: parse_duration(&song.duration),
@@ -110,7 +120,10 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
         PlaylistItem::Video(video) => Some(Track {
             id: TrackId(video.video_id.get_raw().to_string()),
             title: video.title,
-            artists: vec![video.channel_name],
+            artists: vec![ArtistRef {
+                name: video.channel_name,
+                id: Some(ArtistId(video.channel_id.get_raw().to_string())),
+            }],
             album: None,
             album_id: None,
             duration: parse_duration(&video.duration),
@@ -162,7 +175,7 @@ fn artist_song_to_track(song: ArtistSong) -> Track {
     Track {
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
-        artists: song.artists.into_iter().map(|artist| artist.name).collect(),
+        artists: song.artists.into_iter().map(artist_ref).collect(),
         album: Some(song.album.name),
         album_id: Some(AlbumId(song.album.id.get_raw().to_string())),
         duration: None,
@@ -225,7 +238,7 @@ fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
         .into_iter()
         .map(|track| Track {
             artists: match track.artists.is_empty() {
-                true => album.artists.clone(),
+                true => album.artists.iter().cloned().map(ArtistRef::named).collect(),
                 false => track.artists,
             },
             album: Some(album.title.clone()),
@@ -241,7 +254,7 @@ pub fn watch_track(track: WatchPlaylistTrack) -> Track {
     Track {
         id: TrackId(track.video_id.get_raw().to_string()),
         title: track.title,
-        artists: vec![track.author],
+        artists: vec![ArtistRef::named(track.author)],
         album: None,
         album_id: None,
         duration: parse_duration(&track.duration),
@@ -337,7 +350,7 @@ mod tests {
         assert_eq!(stamped[0].album, Some("Origins".into()));
         assert_eq!(stamped[0].album_id, Some(AlbumId("album-1".into())));
         assert_eq!(stamped[0].thumbnail_url, Some("art-url".into()));
-        assert_eq!(stamped[0].artists, vec!["Artist".to_string()]);
+        assert_eq!(stamped[0].artists, vec![ArtistRef::named("Artist")]);
     }
 
     #[test]

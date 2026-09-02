@@ -80,7 +80,7 @@ fn show_metadata(controls: &mut MediaControls, state: &State) {
         let _ = controls.set_playback(MediaPlayback::Stopped);
         return;
     };
-    let artist = track.artists.join(", ");
+    let artist = track.artist_names();
     let metadata = MediaMetadata {
         title: Some(&track.title),
         artist: Some(&artist),

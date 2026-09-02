@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use crate::core::action::Action;
-use crate::core::model::Track;
+use crate::core::model::{ArtistRef, Track};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
 /// Draws `tracks` as a virtualized, scrollable list that fills the space
@@ -227,7 +227,9 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
     let art_size = theme.metric(MetricRole::RowArtSize);
     artwork(ui, theme, track.thumbnail_url.as_deref(), art_size);
     ui.label(theme.label(TextRole::Body, &track.title));
-    ui.label(theme.secondary_label(TextRole::Caption, track.artists.join(", ")));
+    if let Some(artist_action) = artist_labels(ui, track, theme) {
+        action = Some(artist_action);
+    }
     if let Some(album_action) = album_label(ui, track, theme) {
         action = Some(album_action);
     }
@@ -240,6 +242,39 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
         }
     });
     action
+}
+
+/// The track's artist credits, one clickable label per artist,
+/// separated by ", " labels. A click on an artist with an id opens
+/// that artist page. A click on a bare name searches for it instead.
+pub(crate) fn artist_labels(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Action> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (index, artist) in track.artists.iter().enumerate() {
+            if index > 0 {
+                ui.label(theme.secondary_label(TextRole::Caption, ","));
+            }
+            if let Some(clicked) = artist_label(ui, artist, theme) {
+                action = Some(clicked);
+            }
+        }
+    });
+    action
+}
+
+/// One artist's clickable label: `ArtistOpened` with a channel id,
+/// `ArtistSearchRequested` by name otherwise.
+fn artist_label(ui: &mut egui::Ui, artist: &ArtistRef, theme: &dyn Theme) -> Option<Action> {
+    let label = theme.secondary_label(TextRole::Caption, &artist.name);
+    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+    if !response.clicked() {
+        return None;
+    }
+    Some(match artist.id.clone() {
+        Some(id) => Action::ArtistOpened(id),
+        None => Action::ArtistSearchRequested(artist.name.clone()),
+    })
 }
 
 /// The track's album name, clickable when the track carries an album

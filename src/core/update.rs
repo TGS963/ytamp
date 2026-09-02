@@ -56,6 +56,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         }
         Action::PlaylistOpened(id) => open_playlist(state, id),
         Action::ArtistOpened(id) => open_artist(state, id),
+        Action::ArtistSearchRequested(name) => search_by_artist_name(state, name),
         Action::AlbumOpened(id) => open_album(state, id),
         Action::BackPressed => go_back(state),
         Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
@@ -250,6 +251,15 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
     }
     state.search.results = Loadable::Loading;
     vec![Effect::Api(ApiRequest::Search { query })]
+}
+
+/// A click on an artist row with no id: runs a name search in place
+/// of opening the artist page directly.
+fn search_by_artist_name(state: &mut State, name: String) -> Vec<Effect> {
+    state.search.input = name;
+    push_history(state);
+    state.page = Page::Search;
+    submit_search(state)
 }
 
 /// Opens a playlist page and starts its two loads. A playlist already
@@ -1085,6 +1095,26 @@ mod tests {
         let effects = apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         assert_eq!(effects, vec![]);
         assert_eq!(state.history, vec![Page::Search]);
+    }
+
+    #[test]
+    fn an_artist_search_request_fills_and_submits_the_search() {
+        let mut state = State::default();
+        state.page = Page::Library;
+        let effects = apply(
+            &mut state,
+            Action::ArtistSearchRequested("Radiohead".to_string()),
+        );
+        assert_eq!(state.search.input, "Radiohead");
+        assert_eq!(state.page, Page::Search);
+        assert_eq!(state.history, vec![Page::Library]);
+        assert_eq!(state.search.results, Loadable::Loading);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::Search {
+                query: "Radiohead".to_string()
+            })]
+        );
     }
 
     #[test]

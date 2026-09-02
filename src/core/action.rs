@@ -28,6 +28,9 @@ pub enum Action {
     SearchSubmitted,
     PlaylistOpened(PlaylistId),
     ArtistOpened(ArtistId),
+    /// A click on an artist name with no channel id: searches for
+    /// the artist by name instead of opening a page directly.
+    ArtistSearchRequested(String),
     AlbumOpened(AlbumId),
     /// Returns to the page Back left, popping `State.history`.
     BackPressed,

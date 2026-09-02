@@ -23,6 +23,7 @@ async fn main() {
     }
     let mut page_count = 0;
     let mut total = 0;
+    let mut first_tracks = Vec::new();
     let result = api
         .liked_songs(|tracks, finished| {
             page_count += 1;
@@ -31,10 +32,44 @@ async fn main() {
                 "liked page {page_count}: {} tracks (total {total}, finished {finished})",
                 tracks.len()
             );
+            if first_tracks.is_empty() {
+                first_tracks = tracks.into_iter().take(3).collect();
+            }
         })
         .await;
     match result {
         Ok(()) => println!("liked: {total} tracks across {page_count} pages"),
         Err(error) => println!("liked failed after {page_count} pages: {error}"),
+    }
+    probe_artist_ids(&api, &first_tracks).await;
+}
+
+/// Prints the first liked tracks' artist ids, then resolves the first
+/// present id through `Api::artist`, to check a channel id from the
+/// liked list opens as an artist page.
+async fn probe_artist_ids(api: &ytamp::api::Api, first_tracks: &[ytamp::core::model::Track]) {
+    for track in first_tracks {
+        let ids: Vec<String> = track
+            .artists
+            .iter()
+            .map(|artist| format!("{:?}", artist.id))
+            .collect();
+        println!(
+            "track {:?} artists {:?} ids {ids:?}",
+            track.title,
+            track.artist_names()
+        );
+    }
+    let Some(id) = first_tracks
+        .iter()
+        .flat_map(|track| track.artists.iter())
+        .find_map(|artist| artist.id.clone())
+    else {
+        println!("no liked track carried an artist id");
+        return;
+    };
+    match api.artist(&id).await {
+        Ok(page) => println!("artist {id:?} resolved to {:?}", page.name),
+        Err(error) => println!("artist {id:?} failed to resolve: {error}"),
     }
 }
