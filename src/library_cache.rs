@@ -19,7 +19,7 @@ use crate::core::model::{Playlist, PlaylistId, Track};
 
 /// Bumped when the snapshot shape changes, so a file from an older
 /// build counts as a miss rather than a failed parse.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 /// The longest playlist id this cache accepts into a file name.
 const MAX_PLAYLIST_ID_LEN: usize = 128;
@@ -179,6 +179,7 @@ mod tests {
             album_id: None,
             duration: None,
             thumbnail_url: None,
+            playlist_item_id: None,
         }
     }
 

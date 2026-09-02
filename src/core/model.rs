@@ -68,6 +68,10 @@ pub struct Track {
     pub album_id: Option<AlbumId>,
     pub duration: Option<Duration>,
     pub thumbnail_url: Option<String>,
+    /// The id of this track's row in the playlist it came from. Only
+    /// a removal needs it.
+    #[serde(default)]
+    pub playlist_item_id: Option<String>,
 }
 
 impl Track {
@@ -183,6 +187,7 @@ mod tests {
             album_id: None,
             duration: None,
             thumbnail_url: None,
+            playlist_item_id: None,
         };
         assert_eq!(track.artist_names(), "A, B");
     }

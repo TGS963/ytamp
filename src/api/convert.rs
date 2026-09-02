@@ -38,6 +38,7 @@ pub fn song_to_track(song: SearchResultSong) -> Track {
         album_id,
         duration: parse_duration(&song.duration),
         thumbnail_url: track_art(&song.thumbnails, song.video_id.get_raw()),
+        playlist_item_id: None,
     }
 }
 
@@ -97,6 +98,7 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
             album_id: None,
             duration: parse_duration(&length),
             thumbnail_url: track_art(&thumbnails, video_id.get_raw()),
+            playlist_item_id: None,
         }),
         SearchResultVideo::VideoEpisode { .. } => None,
     }
@@ -104,6 +106,10 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
 
 /// Songs and videos become tracks. Episodes and uploads are out of the
 /// v1 scope and disappear from the list.
+///
+/// ytmapi-rs's `PlaylistSong` and `PlaylistVideo` carry no set-video
+/// id for this browse response, so `playlist_item_id` stays `None`
+/// here for a browser session.
 pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
     match item {
         PlaylistItem::Song(song) => {
@@ -116,6 +122,7 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
                 album_id,
                 duration: parse_duration(&song.duration),
                 thumbnail_url: track_art(&song.thumbnails, song.video_id.get_raw()),
+                playlist_item_id: None,
             })
         }
         PlaylistItem::Video(video) => Some(Track {
@@ -129,6 +136,7 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
             album_id: None,
             duration: parse_duration(&video.duration),
             thumbnail_url: track_art(&video.thumbnails, video.video_id.get_raw()),
+            playlist_item_id: None,
         }),
         PlaylistItem::Episode(_) | PlaylistItem::UploadSong(_) => None,
     }
@@ -188,6 +196,7 @@ fn artist_song_to_track(song: ArtistSong) -> Track {
         album_id: Some(AlbumId(song.album.id.get_raw().to_string())),
         duration: None,
         thumbnail_url,
+        playlist_item_id: None,
     }
 }
 
@@ -237,6 +246,7 @@ fn album_song_to_track(song: AlbumSong) -> Track {
         album_id: None,
         duration: parse_duration(&song.duration),
         thumbnail_url,
+        playlist_item_id: None,
     }
 }
 
@@ -281,6 +291,7 @@ pub fn watch_track(track: WatchPlaylistTrack) -> Track {
         album_id: None,
         duration: parse_duration(&track.duration),
         thumbnail_url: track_art(&track.thumbnails, track.video_id.get_raw()),
+        playlist_item_id: None,
     }
 }
 
@@ -342,6 +353,7 @@ mod tests {
             album_id: None,
             duration: None,
             thumbnail_url: None,
+            playlist_item_id: None,
         };
         let stamped = tracks_with_album_art(vec![bare_track], &album);
         assert_eq!(stamped[0].album, Some("Origins".into()));

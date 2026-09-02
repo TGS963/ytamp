@@ -14,13 +14,17 @@ use std::sync::Arc;
 
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::{AuthToken, BrowserToken, OAuthToken};
-use ytmapi_rs::common::{AlbumID, ArtistChannelID, PlaylistID, VideoID, YoutubeID};
+use ytmapi_rs::common::{
+    AlbumID, ArtistChannelID, LikeStatus, PlaylistID, SetVideoID, VideoID, YoutubeID,
+};
+use ytmapi_rs::query::playlist::{BasicCreatePlaylist, DuplicateHandlingMode, PrivacyStatus};
 use ytmapi_rs::query::search::{
     AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter, VideosFilter,
 };
 use ytmapi_rs::query::{
-    GetAlbumQuery, GetArtistQuery, GetLibraryPlaylistsQuery, GetPlaylistDetailsQuery,
-    GetPlaylistTracksQuery, GetWatchPlaylistQuery, SearchQuery,
+    AddPlaylistItemsQuery, CreatePlaylistQuery, DeletePlaylistQuery, GetAlbumQuery, GetArtistQuery,
+    GetLibraryPlaylistsQuery, GetPlaylistDetailsQuery, GetPlaylistTracksQuery,
+    GetWatchPlaylistQuery, RateSongQuery, RemovePlaylistItemsQuery, SearchQuery,
 };
 use ytmapi_rs::{YtMusic, YtMusicBuilder};
 
@@ -195,6 +199,59 @@ impl Api {
         }
     }
 
+    /// Likes or unlikes a track. The liked state is the track's
+    /// membership in the liked-songs list, so the caller updates that
+    /// list itself; this call only tells the server.
+    pub async fn rate_track(&self, id: &TrackId, liked: bool) -> Result<(), String> {
+        match &*self.session {
+            Session::Browser(yt) => browser_rate_track(yt, id, liked).await,
+            Session::OAuth { data, .. } => data.rate_video(id, liked).await,
+        }
+    }
+
+    /// Adds a track to a playlist and returns the new row's item id,
+    /// for a later [`Self::remove_from_playlist`].
+    pub async fn add_to_playlist(
+        &self,
+        playlist: &PlaylistId,
+        track: &TrackId,
+    ) -> Result<String, String> {
+        match &*self.session {
+            Session::Browser(yt) => browser_add_to_playlist(yt, playlist, track).await,
+            Session::OAuth { data, .. } => data.insert_playlist_item(playlist, track).await,
+        }
+    }
+
+    /// Removes one row from a playlist by its item id: the official
+    /// API's playlist-item id for an OAuth session, or the internal
+    /// API's set-video id for a browser session.
+    pub async fn remove_from_playlist(
+        &self,
+        playlist: &PlaylistId,
+        item_id: &str,
+    ) -> Result<(), String> {
+        match &*self.session {
+            Session::Browser(yt) => browser_remove_from_playlist(yt, playlist, item_id).await,
+            Session::OAuth { data, .. } => data.delete_playlist_item(item_id).await,
+        }
+    }
+
+    /// Creates a private playlist and returns it.
+    pub async fn create_playlist(&self, title: &str) -> Result<Playlist, String> {
+        match &*self.session {
+            Session::Browser(yt) => browser_create_playlist(yt, title).await,
+            Session::OAuth { data, .. } => data.insert_playlist(title).await,
+        }
+    }
+
+    /// Deletes a playlist the user owns.
+    pub async fn delete_playlist(&self, id: &PlaylistId) -> Result<(), String> {
+        match &*self.session {
+            Session::Browser(yt) => browser_delete_playlist(yt, id).await,
+            Session::OAuth { data, .. } => data.delete_playlist(id).await,
+        }
+    }
+
     async fn browser_playlist_tracks(&self, id: &str) -> Result<Vec<Track>, String> {
         let Session::Browser(yt) = &*self.session else {
             return Err("not a browser session".to_string());
@@ -240,6 +297,73 @@ async fn fetch_radio<A: AuthToken>(yt: &YtMusic<A>, id: &TrackId) -> Result<Vec<
     let query = GetWatchPlaylistQuery::new_from_video_id(VideoID::from_raw(id.0.as_str()));
     let tracks = yt.query(query).await.map_err(readable)?;
     Ok(tracks.into_iter().map(convert::watch_track).collect())
+}
+
+async fn browser_rate_track(
+    yt: &YtMusic<BrowserToken>,
+    id: &TrackId,
+    liked: bool,
+) -> Result<(), String> {
+    let rating = if liked {
+        LikeStatus::Liked
+    } else {
+        LikeStatus::Indifferent
+    };
+    let query = RateSongQuery::new(VideoID::from_raw(id.0.as_str()), rating);
+    yt.query(query).await.map_err(readable)
+}
+
+async fn browser_add_to_playlist(
+    yt: &YtMusic<BrowserToken>,
+    playlist: &PlaylistId,
+    track: &TrackId,
+) -> Result<String, String> {
+    let query = AddPlaylistItemsQuery::new_from_videos(
+        PlaylistID::from_raw(playlist.0.as_str()),
+        [VideoID::from_raw(track.0.as_str())],
+        DuplicateHandlingMode::default(),
+    );
+    let items = yt.query(query).await.map_err(readable)?;
+    items
+        .into_iter()
+        .next()
+        .map(|item| item.set_video_id.get_raw().to_string())
+        .ok_or_else(|| "The playlist did not answer with the new row.".to_string())
+}
+
+async fn browser_remove_from_playlist(
+    yt: &YtMusic<BrowserToken>,
+    playlist: &PlaylistId,
+    item_id: &str,
+) -> Result<(), String> {
+    let query = RemovePlaylistItemsQuery::new(
+        PlaylistID::from_raw(playlist.0.as_str()),
+        [SetVideoID::from_raw(item_id)],
+    );
+    yt.query(query).await.map_err(readable)
+}
+
+async fn browser_create_playlist(
+    yt: &YtMusic<BrowserToken>,
+    title: &str,
+) -> Result<Playlist, String> {
+    let query: CreatePlaylistQuery<'_, BasicCreatePlaylist> =
+        CreatePlaylistQuery::new(title, None, PrivacyStatus::Private);
+    let id = yt.query(query).await.map_err(readable)?;
+    Ok(Playlist {
+        id: PlaylistId(id.get_raw().to_string()),
+        title: title.to_string(),
+        track_count: Some(0),
+        thumbnail_url: None,
+    })
+}
+
+async fn browser_delete_playlist(
+    yt: &YtMusic<BrowserToken>,
+    id: &PlaylistId,
+) -> Result<(), String> {
+    let query = DeletePlaylistQuery::new(PlaylistID::from_raw(id.0.as_str()));
+    yt.query(query).await.map_err(readable)
 }
 
 /// One playlist's custom cover, from the anonymous InnerTube playlist

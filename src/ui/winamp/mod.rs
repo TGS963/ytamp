@@ -1533,6 +1533,7 @@ mod tests {
             album_id: None,
             duration: None,
             thumbnail_url: None,
+            playlist_item_id: None,
         };
         state
             .playback

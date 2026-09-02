@@ -69,6 +69,47 @@ impl DataApi {
         self.tracks_of(&id.0, NO_PAGE_CAP, on_page).await
     }
 
+    /// Likes or unlikes a video. The like state is a rating, not a
+    /// resource: 204 with no body on success.
+    pub async fn rate_video(&self, id: &TrackId, liked: bool) -> Result<(), String> {
+        let url = format!("{BASE}{}", rate_path(id, liked));
+        self.post_json(&url, serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    /// Adds one track to a playlist and returns the new row's item
+    /// id, for a later removal.
+    pub async fn insert_playlist_item(
+        &self,
+        playlist_id: &PlaylistId,
+        track_id: &TrackId,
+    ) -> Result<String, String> {
+        let url = format!("{BASE}/playlistItems?part=snippet");
+        let body = playlist_item_body(playlist_id, track_id);
+        let response = self.post_json(&url, body).await?;
+        item_id_of(&response)
+    }
+
+    /// Removes one row from a playlist by its item id.
+    pub async fn delete_playlist_item(&self, item_id: &str) -> Result<(), String> {
+        let url = format!("{BASE}/playlistItems?id={item_id}");
+        self.delete(&url).await
+    }
+
+    /// Creates a private playlist and returns it.
+    pub async fn insert_playlist(&self, title: &str) -> Result<Playlist, String> {
+        let url = format!("{BASE}/playlists?part=snippet,status");
+        let body = playlist_body(title);
+        let response = self.post_json(&url, body).await?;
+        Ok(parse_playlist(&response))
+    }
+
+    /// Deletes a playlist the user owns.
+    pub async fn delete_playlist(&self, id: &PlaylistId) -> Result<(), String> {
+        let url = format!("{BASE}/playlists?id={}", id.0);
+        self.delete(&url).await
+    }
+
     /// Fetches one page, fills its durations, and hands it to
     /// `on_page`, until the listing ends or `page_cap` is reached. A
     /// mid-stream error ends the stream after the pages already
@@ -129,23 +170,49 @@ impl DataApi {
         }
     }
 
-    /// One GET with the bearer token. A 401 refreshes the token once
-    /// and retries, then persists the fresh token for the next start.
+    /// One GET with the bearer token.
     async fn get_json(&self, url: &str) -> Result<Value, String> {
-        let first = self.get_with_current_token(url).await?;
+        self.send_with_retry(|http, token| http.get(url).bearer_auth(token))
+            .await
+    }
+
+    /// One POST with the bearer token and a JSON body.
+    async fn post_json(&self, url: &str, body: Value) -> Result<Value, String> {
+        self.send_with_retry(|http, token| http.post(url).bearer_auth(token).json(&body))
+            .await
+    }
+
+    /// One DELETE with the bearer token. A 204 with no body counts
+    /// as success.
+    async fn delete(&self, url: &str) -> Result<(), String> {
+        self.send_with_retry(|http, token| http.delete(url).bearer_auth(token))
+            .await?;
+        Ok(())
+    }
+
+    /// Sends the request `build` describes, over the current bearer
+    /// token. A 401 refreshes the token once and retries with the
+    /// fresh one; `build` runs again for that retry, so it borrows
+    /// its inputs rather than consuming them.
+    async fn send_with_retry(
+        &self,
+        build: impl Fn(&reqwest::Client, &str) -> reqwest::RequestBuilder,
+    ) -> Result<Value, String> {
+        let first = self.send_with_current_token(&build).await?;
         if first.status() != reqwest::StatusCode::UNAUTHORIZED {
             return parse_response(first).await;
         }
         self.refresh_token().await?;
-        let second = self.get_with_current_token(url).await?;
+        let second = self.send_with_current_token(&build).await?;
         parse_response(second).await
     }
 
-    async fn get_with_current_token(&self, url: &str) -> Result<reqwest::Response, String> {
+    async fn send_with_current_token(
+        &self,
+        build: &impl Fn(&reqwest::Client, &str) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, String> {
         let access_token = access_token_of(&*self.token.read().await)?;
-        self.http
-            .get(url)
-            .bearer_auth(access_token)
+        build(&self.http, &access_token)
             .send()
             .await
             .map_err(|error| format!("The request failed: {error}"))
@@ -177,6 +244,9 @@ fn access_token_of(token: &ytmapi_rs::auth::OAuthToken) -> Result<String, String
 
 async fn parse_response(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
+    if status == reqwest::StatusCode::NO_CONTENT {
+        return Ok(Value::Null);
+    }
     let body: Value = response
         .json()
         .await
@@ -215,6 +285,44 @@ fn items_of(page: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
+/// The path and query for a like or unlike request against one video.
+fn rate_path(id: &TrackId, liked: bool) -> String {
+    let rating = if liked { "like" } else { "none" };
+    format!("/videos/rate?id={}&rating={rating}", id.0)
+}
+
+/// The body of a `playlistItems.insert` request: the video's place in
+/// the playlist.
+fn playlist_item_body(playlist_id: &PlaylistId, track_id: &TrackId) -> Value {
+    serde_json::json!({
+        "snippet": {
+            "playlistId": playlist_id.0,
+            "resourceId": {
+                "kind": "youtube#video",
+                "videoId": track_id.0,
+            }
+        }
+    })
+}
+
+/// The body of a `playlists.insert` request: a private playlist with
+/// this title.
+fn playlist_body(title: &str) -> Value {
+    serde_json::json!({
+        "snippet": {"title": title},
+        "status": {"privacyStatus": "private"}
+    })
+}
+
+/// The `id` field of a write response, the new resource's id.
+fn item_id_of(value: &Value) -> Result<String, String> {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "The write response carried no id.".to_string())
+}
+
 fn parse_playlist(item: &Value) -> Playlist {
     Playlist {
         id: PlaylistId(text_of(item, "/id")),
@@ -243,6 +351,7 @@ fn parse_playlist_item(item: &Value) -> Option<Track> {
         album_id: None,
         duration: None,
         thumbnail_url: thumbnail_of(item),
+        playlist_item_id: Some(text_of(item, "/id")),
     })
 }
 
@@ -347,6 +456,35 @@ mod tests {
     fn playlist_items_without_a_channel_are_stubs() {
         let stub = serde_json::json!({"snippet": {"resourceId": {"videoId": "abc"}, "title": "Deleted video"}});
         assert_eq!(parse_playlist_item(&stub), None);
+    }
+
+    #[test]
+    fn rate_path_carries_the_video_id_and_rating() {
+        let id = TrackId("abc".into());
+        assert_eq!(rate_path(&id, true), "/videos/rate?id=abc&rating=like");
+        assert_eq!(rate_path(&id, false), "/videos/rate?id=abc&rating=none");
+    }
+
+    #[test]
+    fn playlist_item_body_names_the_playlist_and_the_video() {
+        let body = playlist_item_body(&PlaylistId("PL1".into()), &TrackId("v1".into()));
+        assert_eq!(body["snippet"]["playlistId"], "PL1");
+        assert_eq!(body["snippet"]["resourceId"]["videoId"], "v1");
+        assert_eq!(body["snippet"]["resourceId"]["kind"], "youtube#video");
+    }
+
+    #[test]
+    fn playlist_body_is_private_with_the_given_title() {
+        let body = playlist_body("My Mix");
+        assert_eq!(body["snippet"]["title"], "My Mix");
+        assert_eq!(body["status"]["privacyStatus"], "private");
+    }
+
+    #[test]
+    fn item_id_of_reads_the_id_field() {
+        let response = serde_json::json!({"id": "item-1"});
+        assert_eq!(item_id_of(&response), Ok("item-1".to_string()));
+        assert!(item_id_of(&serde_json::json!({})).is_err());
     }
 
     #[test]

@@ -714,6 +714,7 @@ mod tests {
             album_id: None,
             duration: duration_secs.map(Duration::from_secs),
             thumbnail_url: None,
+            playlist_item_id: None,
         }
     }
 
