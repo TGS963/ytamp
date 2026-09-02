@@ -238,6 +238,7 @@ mod tests {
             title: id.to_string(),
             artists: vec![],
             album: None,
+            album_id: None,
             duration: None,
             thumbnail_url: None,
         }

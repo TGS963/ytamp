@@ -243,6 +243,7 @@ fn parse_playlist_item(item: &Value) -> Option<Track> {
         title: text_of(item, "/snippet/title"),
         artists: vec![text_of(item, "/snippet/videoOwnerChannelTitle")],
         album: None,
+        album_id: None,
         duration: None,
         thumbnail_url: thumbnail_of(item),
     })

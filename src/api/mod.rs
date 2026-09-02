@@ -14,15 +14,20 @@ use std::sync::Arc;
 
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::{AuthToken, BrowserToken, OAuthToken};
-use ytmapi_rs::common::{PlaylistID, YoutubeID};
+use ytmapi_rs::common::{AlbumID, ArtistChannelID, PlaylistID, VideoID, YoutubeID};
 use ytmapi_rs::query::search::{
     AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter, VideosFilter,
 };
-use ytmapi_rs::query::{GetLibraryPlaylistsQuery, GetPlaylistTracksQuery, SearchQuery};
+use ytmapi_rs::query::{
+    GetAlbumQuery, GetArtistQuery, GetLibraryPlaylistsQuery, GetPlaylistTracksQuery,
+    GetWatchPlaylistQuery, SearchQuery,
+};
 use ytmapi_rs::{YtMusic, YtMusicBuilder};
 
 use crate::core::effect::{AuthMethod, Credentials};
-use crate::core::model::{Playlist, PlaylistId, SearchResults, Track};
+use crate::core::model::{
+    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track, TrackId,
+};
 
 enum Session {
     Browser(YtMusic<BrowserToken>),
@@ -59,6 +64,30 @@ impl Api {
         match &*self.session {
             Session::Browser(yt) => filtered_search(yt, query).await,
             Session::OAuth { innertube, .. } => filtered_search(innertube, query).await,
+        }
+    }
+
+    /// An artist's browse page: name, art, top songs, albums, singles.
+    pub async fn artist(&self, id: &ArtistId) -> Result<ArtistPage, String> {
+        match &*self.session {
+            Session::Browser(yt) => fetch_artist(yt, id).await,
+            Session::OAuth { innertube, .. } => fetch_artist(innertube, id).await,
+        }
+    }
+
+    /// An album's browse page: the album and its track list.
+    pub async fn album(&self, id: &AlbumId) -> Result<AlbumPage, String> {
+        match &*self.session {
+            Session::Browser(yt) => fetch_album(yt, id).await,
+            Session::OAuth { innertube, .. } => fetch_album(innertube, id).await,
+        }
+    }
+
+    /// The "Start radio" list for a track: related songs to play next.
+    pub async fn radio(&self, id: &TrackId) -> Result<Vec<Track>, String> {
+        match &*self.session {
+            Session::Browser(yt) => fetch_radio(yt, id).await,
+            Session::OAuth { innertube, .. } => fetch_radio(innertube, id).await,
         }
     }
 
@@ -150,6 +179,24 @@ fn deliver_whole_list(
     let tracks = result?;
     on_page(tracks, true);
     Ok(())
+}
+
+async fn fetch_artist<A: AuthToken>(yt: &YtMusic<A>, id: &ArtistId) -> Result<ArtistPage, String> {
+    let query = GetArtistQuery::new(ArtistChannelID::from_raw(id.0.as_str()));
+    let artist = yt.query(query).await.map_err(readable)?;
+    Ok(convert::artist_page(artist, id.clone()))
+}
+
+async fn fetch_album<A: AuthToken>(yt: &YtMusic<A>, id: &AlbumId) -> Result<AlbumPage, String> {
+    let query = GetAlbumQuery::new(AlbumID::from_raw(id.0.as_str()));
+    let album = yt.query(query).await.map_err(readable)?;
+    Ok(convert::album_page(album, id.clone()))
+}
+
+async fn fetch_radio<A: AuthToken>(yt: &YtMusic<A>, id: &TrackId) -> Result<Vec<Track>, String> {
+    let query = GetWatchPlaylistQuery::new_from_video_id(VideoID::from_raw(id.0.as_str()));
+    let tracks = yt.query(query).await.map_err(readable)?;
+    Ok(tracks.into_iter().map(convert::watch_track).collect())
 }
 
 /// Three filtered queries, the way youtui searches. Basic search adds

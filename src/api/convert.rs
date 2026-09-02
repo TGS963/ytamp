@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use ytmapi_rs::common::{Thumbnail, YoutubeID};
 use ytmapi_rs::parse::{
-    LibraryPlaylist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
-    SearchResultVideo,
+    AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, LibraryPlaylist, ParsedSongAlbum,
+    PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong, SearchResultVideo,
+    WatchPlaylistTrack,
 };
 
 use crate::core::model::{
-    Album, AlbumId, Artist, ArtistId, Playlist, PlaylistId, SearchResults as ModelSearchResults,
-    Track, TrackId,
+    Album, AlbumId, AlbumPage, Artist, ArtistId, ArtistPage, Playlist, PlaylistId,
+    SearchResults as ModelSearchResults, Track, TrackId,
 };
 
 pub fn search_results_from_tracks(
@@ -27,11 +28,13 @@ pub fn search_results_from_tracks(
 }
 
 pub fn song_to_track(song: SearchResultSong) -> Track {
+    let (album, album_id) = split_song_album(song.album);
     Track {
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
         artists: vec![song.artist],
-        album: song.album.map(|album| album.name),
+        album,
+        album_id,
         duration: parse_duration(&song.duration),
         thumbnail_url: largest_thumbnail(&song.thumbnails),
     }
@@ -80,6 +83,7 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
             title,
             artists: vec![channel_name],
             album: None,
+            album_id: None,
             duration: parse_duration(&length),
             thumbnail_url: largest_thumbnail(&thumbnails),
         }),
@@ -91,23 +95,147 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
 /// v1 scope and disappear from the list.
 pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
     match item {
-        PlaylistItem::Song(song) => Some(Track {
-            id: TrackId(song.video_id.get_raw().to_string()),
-            title: song.title,
-            artists: song.artists.into_iter().map(|artist| artist.name).collect(),
-            album: Some(song.album.name),
-            duration: parse_duration(&song.duration),
-            thumbnail_url: largest_thumbnail(&song.thumbnails),
-        }),
+        PlaylistItem::Song(song) => {
+            let (album, album_id) = split_song_album(Some(song.album));
+            Some(Track {
+                id: TrackId(song.video_id.get_raw().to_string()),
+                title: song.title,
+                artists: song.artists.into_iter().map(|artist| artist.name).collect(),
+                album,
+                album_id,
+                duration: parse_duration(&song.duration),
+                thumbnail_url: largest_thumbnail(&song.thumbnails),
+            })
+        }
         PlaylistItem::Video(video) => Some(Track {
             id: TrackId(video.video_id.get_raw().to_string()),
             title: video.title,
             artists: vec![video.channel_name],
             album: None,
+            album_id: None,
             duration: parse_duration(&video.duration),
             thumbnail_url: largest_thumbnail(&video.thumbnails),
         }),
         PlaylistItem::Episode(_) | PlaylistItem::UploadSong(_) => None,
+    }
+}
+
+/// Splits a parsed song album into its display name and id, so a
+/// track can show its album title and later open that album page.
+fn split_song_album(album: Option<ParsedSongAlbum>) -> (Option<String>, Option<AlbumId>) {
+    match album {
+        Some(album) => (
+            Some(album.name),
+            Some(AlbumId(album.id.get_raw().to_string())),
+        ),
+        None => (None, None),
+    }
+}
+
+/// An artist's browse page: name, art, top songs, then albums and
+/// singles. Top songs carry no duration and no thumbnail in the
+/// artist response, so those fields stay empty.
+pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
+    let releases = artist.top_releases;
+    ArtistPage {
+        id,
+        name: artist.name,
+        thumbnail_url: largest_thumbnail(&artist.thumbnails),
+        top_songs: releases
+            .songs
+            .map(|songs| songs.results.into_iter().map(artist_song_to_track).collect())
+            .unwrap_or_default(),
+        albums: releases
+            .albums
+            .map(|albums| albums.results.into_iter().map(artist_album_result).collect())
+            .unwrap_or_default(),
+        singles: releases
+            .singles
+            .map(|singles| singles.results.into_iter().map(artist_album_result).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn artist_song_to_track(song: ArtistSong) -> Track {
+    Track {
+        id: TrackId(song.video_id.get_raw().to_string()),
+        title: song.title,
+        artists: song.artists.into_iter().map(|artist| artist.name).collect(),
+        album: Some(song.album.name),
+        album_id: Some(AlbumId(song.album.id.get_raw().to_string())),
+        duration: None,
+        thumbnail_url: None,
+    }
+}
+
+fn artist_album_result(album: AlbumResult) -> Album {
+    Album {
+        id: AlbumId(album.album_id.get_raw().to_string()),
+        title: album.title,
+        artists: vec![],
+        year: Some(album.year),
+        thumbnail_url: largest_thumbnail(&album.thumbnails),
+    }
+}
+
+/// An album's browse page. Album tracks carry no thumbnail in the
+/// album response, so each one gets the album's own art and id.
+pub fn album_page(album: GetAlbum, id: AlbumId) -> AlbumPage {
+    let page_album = Album {
+        id: id.clone(),
+        title: album.title,
+        artists: album.artists.into_iter().map(|artist| artist.name).collect(),
+        year: Some(album.year),
+        thumbnail_url: largest_thumbnail(&album.thumbnails),
+    };
+    let tracks = tracks_with_album_art(
+        album.tracks.into_iter().map(album_song_to_track).collect(),
+        &page_album,
+    );
+    AlbumPage {
+        album: page_album,
+        tracks,
+    }
+}
+
+fn album_song_to_track(song: AlbumSong) -> Track {
+    Track {
+        id: TrackId(song.video_id.get_raw().to_string()),
+        title: song.title,
+        artists: vec![],
+        album: None,
+        album_id: None,
+        duration: parse_duration(&song.duration),
+        thumbnail_url: None,
+    }
+}
+
+/// Stamps every track with its album's name, id, and art. Pulled out
+/// as its own pure step because `GetAlbum` and `AlbumSong` are
+/// `#[non_exhaustive]` in ytmapi-rs, so a unit test builds `Track` and
+/// `Album` values directly instead of the ytmapi-rs response types.
+fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
+    tracks
+        .into_iter()
+        .map(|track| Track {
+            album: Some(album.title.clone()),
+            album_id: Some(album.id.clone()),
+            thumbnail_url: album.thumbnail_url.clone(),
+            ..track
+        })
+        .collect()
+}
+
+/// A "Start radio" track. It carries no album information at all.
+pub fn watch_track(track: WatchPlaylistTrack) -> Track {
+    Track {
+        id: TrackId(track.video_id.get_raw().to_string()),
+        title: track.title,
+        artists: vec![track.author],
+        album: None,
+        album_id: None,
+        duration: parse_duration(&track.duration),
+        thumbnail_url: largest_thumbnail(&track.thumbnails),
     }
 }
 
@@ -172,5 +300,49 @@ mod tests {
     fn track_counts_parse_from_byline_text() {
         assert_eq!(leading_number("42 tracks"), Some(42));
         assert_eq!(leading_number("no digits"), None);
+    }
+
+    // `GetAlbum` and `AlbumSong` are `#[non_exhaustive]` in ytmapi-rs, so
+    // this test builds `Track` and `Album` directly and exercises the
+    // pure helper `tracks_with_album_art` in place of `album_page`.
+    #[test]
+    fn album_art_and_id_land_on_every_track() {
+        let album = Album {
+            id: AlbumId("album-1".into()),
+            title: "Origins".into(),
+            artists: vec!["Artist".into()],
+            year: Some("2020".into()),
+            thumbnail_url: Some("art-url".into()),
+        };
+        let bare_track = Track {
+            id: TrackId("t1".into()),
+            title: "Song".into(),
+            artists: vec![],
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail_url: None,
+        };
+        let stamped = tracks_with_album_art(vec![bare_track], &album);
+        assert_eq!(stamped[0].album, Some("Origins".into()));
+        assert_eq!(stamped[0].album_id, Some(AlbumId("album-1".into())));
+        assert_eq!(stamped[0].thumbnail_url, Some("art-url".into()));
+    }
+
+    #[test]
+    fn a_song_with_no_album_carries_no_album_id() {
+        assert_eq!(split_song_album(None), (None, None));
+    }
+
+    #[test]
+    fn a_song_album_splits_into_a_name_and_an_id() {
+        let album = ParsedSongAlbum {
+            name: "Origins".into(),
+            id: ytmapi_rs::common::AlbumID::from_raw("album-1"),
+        };
+        assert_eq!(
+            split_song_album(Some(album)),
+            (Some("Origins".into()), Some(AlbumId("album-1".into())))
+        );
     }
 }

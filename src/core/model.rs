@@ -23,6 +23,7 @@ pub struct Track {
     pub title: String,
     pub artists: Vec<String>,
     pub album: Option<String>,
+    pub album_id: Option<AlbumId>,
     pub duration: Option<Duration>,
     pub thumbnail_url: Option<String>,
 }
@@ -58,4 +59,22 @@ pub struct SearchResults {
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,
     pub playlists: Vec<Playlist>,
+}
+
+/// An artist's browse page: top songs, then albums and singles.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArtistPage {
+    pub id: ArtistId,
+    pub name: String,
+    pub thumbnail_url: Option<String>,
+    pub top_songs: Vec<Track>,
+    pub albums: Vec<Album>,
+    pub singles: Vec<Album>,
+}
+
+/// An album's browse page: the album and its track list.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlbumPage {
+    pub album: Album,
+    pub tracks: Vec<Track>,
 }
