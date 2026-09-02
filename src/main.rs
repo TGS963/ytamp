@@ -13,9 +13,14 @@ fn main() -> eframe::Result {
     )
     .init();
     let options = eframe::NativeOptions {
+        // The Winamp window is a child viewport that needs an alpha
+        // channel for shaped skins. Every viewport shares the root's
+        // GL config, so the root asks for transparency too. The pages
+        // paint an opaque background, so nothing shows through.
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 720.0])
             .with_min_inner_size([700.0, 480.0])
+            .with_transparent(true)
             .with_title("ytamp"),
         ..Default::default()
     };
