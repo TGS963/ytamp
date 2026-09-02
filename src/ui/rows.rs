@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::core::action::Action;
 use crate::core::model::{ArtistRef, Track};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
+use crate::thumbnails::sized;
 
 /// Draws `tracks` as a virtualized, scrollable list that fills the space
 /// its caller gives it. Only the rows in view get laid out each frame. A
@@ -82,7 +83,8 @@ pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>
     ui.painter()
         .rect_filled(rect, radius, theme.color(ColorRole::ArtPlaceholder));
     if let Some(url) = thumbnail_url {
-        egui::Image::from_uri(url.to_string())
+        let target_px = (size * ui.ctx().pixels_per_point() * 1.5).ceil() as u32;
+        egui::Image::from_uri(sized(url, target_px))
             .corner_radius(radius)
             .show_loading_spinner(false)
             .paint_at(ui, rect);

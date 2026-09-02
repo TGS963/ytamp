@@ -61,6 +61,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::AlbumOpened(id) => open_album(state, id),
         Action::BackPressed => go_back(state),
         Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
+        Action::PlaylistCoversLoaded(covers) => finish_playlist_covers_load(state, covers),
         Action::LikedLoaded(result) => finish_liked_load(state, result),
         Action::PlaylistTracksLoaded(id, result) => finish_playlist_load(state, id, result),
         Action::ArtistLoaded(id, result) => finish_artist_load(state, id, result),
@@ -506,7 +507,11 @@ fn finish_playlist_tracks_page(
     save_full_list(full, |all| LibraryCacheWrite::PlaylistTracks(id, all))
 }
 
-/// Applies a fresh playlist list and schedules it for the cache.
+/// Applies a fresh playlist list, keeping a custom cover a prior load
+/// already found even where the fresh list carries the Data API's
+/// generic per-video thumbnail instead. Schedules the merged list for
+/// the cache, then asks for the custom cover of every playlist that
+/// still has none.
 fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String>) -> Vec<Effect> {
     let Ok(playlists) = result else {
         apply_load_failure(
@@ -516,10 +521,98 @@ fn finish_playlists_load(state: &mut State, result: Result<Vec<Playlist>, String
         );
         return vec![];
     };
-    state.library.playlists = Loadable::Loaded(playlists.clone());
-    vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
-        playlists,
-    ))]
+    let previous = previous_playlists(&state.library.playlists);
+    let merged = merge_covers(playlists, &previous);
+    state.library.playlists = Loadable::Loaded(merged.clone());
+    let mut effects = vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+        merged.clone(),
+    ))];
+    let missing_covers = ids_without_cover(&merged);
+    if !missing_covers.is_empty() {
+        effects.push(Effect::Api(ApiRequest::FetchPlaylistCovers(missing_covers)));
+    }
+    effects
+}
+
+/// The playlist list a prior load left in `slot`, or an empty list
+/// when there was none. Read before a fresh list overwrites `slot`,
+/// so a fresh load can carry forward a cover the fresh data lacks.
+fn previous_playlists(slot: &Loadable<Vec<Playlist>>) -> Vec<Playlist> {
+    slot.loaded().cloned().unwrap_or_default()
+}
+
+/// `fresh`, with each playlist's cover kept from `previous` where
+/// `previous` already held a custom cover and `fresh` does not. A
+/// refresh can never downgrade a playlist from its custom cover back
+/// to the Data API's generic thumbnail.
+fn merge_covers(fresh: Vec<Playlist>, previous: &[Playlist]) -> Vec<Playlist> {
+    fresh
+        .into_iter()
+        .map(|playlist| match custom_cover_of(previous, &playlist.id) {
+            Some(cover) if !is_custom_cover(playlist.thumbnail_url.as_deref()) => Playlist {
+                thumbnail_url: Some(cover),
+                ..playlist
+            },
+            _ => playlist,
+        })
+        .collect()
+}
+
+/// The playlists in `playlists` that carry no custom cover, by id.
+fn ids_without_cover(playlists: &[Playlist]) -> Vec<PlaylistId> {
+    playlists
+        .iter()
+        .filter(|playlist| !is_custom_cover(playlist.thumbnail_url.as_deref()))
+        .map(|playlist| playlist.id.clone())
+        .collect()
+}
+
+/// `id`'s custom cover in `playlists`, when it has one.
+fn custom_cover_of(playlists: &[Playlist], id: &PlaylistId) -> Option<String> {
+    let playlist = playlists.iter().find(|playlist| &playlist.id == id)?;
+    is_custom_cover(playlist.thumbnail_url.as_deref())
+        .then(|| playlist.thumbnail_url.clone())
+        .flatten()
+}
+
+/// A playlist cover url from the anonymous InnerTube playlist page,
+/// rather than the Data API's generic per-video thumbnail.
+fn is_custom_cover(url: Option<&str>) -> bool {
+    url.is_some_and(|url| url.contains("googleusercontent.com"))
+}
+
+/// Applies a batch of fetched playlist covers to the playlists slot,
+/// whether it currently shows a cached list or the fresh network one,
+/// and schedules the result for the cache. An empty batch, the shape
+/// a failed fetch delivers, changes nothing.
+fn finish_playlist_covers_load(state: &mut State, covers: Vec<(PlaylistId, String)>) -> Vec<Effect> {
+    if covers.is_empty() {
+        return vec![];
+    }
+    match &mut state.library.playlists {
+        Loadable::Loaded(playlists) | Loadable::Refreshing(playlists) => {
+            *playlists = apply_covers(std::mem::take(playlists), &covers);
+            vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+                playlists.clone(),
+            ))]
+        }
+        _ => vec![],
+    }
+}
+
+/// `playlists`, with each playlist's thumbnail replaced by its cover
+/// in `covers`, when `covers` carries one for that playlist's id.
+fn apply_covers(playlists: Vec<Playlist>, covers: &[(PlaylistId, String)]) -> Vec<Playlist> {
+    playlists
+        .into_iter()
+        .map(|playlist| match covers.iter().find(|(id, _)| id == &playlist.id) {
+            Some((_, url)) => Playlist {
+                thumbnail_url: Some(url.clone()),
+                ..playlist
+            },
+            None => playlist,
+        })
+        .collect()
 }
 
 /// Applies a fresh liked-songs list and schedules it for the cache.
@@ -2188,5 +2281,128 @@ mod tests {
             .map(|track| track.id.0.as_str())
             .collect();
         assert_eq!(upcoming, vec!["b"]);
+    }
+
+    fn playlist(id: &str, thumbnail_url: Option<&str>) -> Playlist {
+        Playlist {
+            id: PlaylistId(id.to_string()),
+            title: id.to_string(),
+            track_count: None,
+            thumbnail_url: thumbnail_url.map(str::to_string),
+        }
+    }
+
+    const CUSTOM_COVER: &str = "https://yt3.googleusercontent.com/abc=s1200";
+    const GENERIC_COVER: &str = "https://i.ytimg.com/vi/abc/hqdefault.jpg";
+
+    #[test]
+    fn merge_covers_keeps_a_prior_custom_cover_a_fresh_load_lacks() {
+        let fresh = vec![playlist("p1", Some(GENERIC_COVER))];
+        let previous = vec![playlist("p1", Some(CUSTOM_COVER))];
+        let merged = merge_covers(fresh, &previous);
+        assert_eq!(merged[0].thumbnail_url.as_deref(), Some(CUSTOM_COVER));
+    }
+
+    #[test]
+    fn merge_covers_leaves_a_fresh_custom_cover_alone() {
+        let fresh = vec![playlist("p1", Some(CUSTOM_COVER))];
+        let previous = vec![playlist("p1", Some(GENERIC_COVER))];
+        let merged = merge_covers(fresh, &previous);
+        assert_eq!(merged[0].thumbnail_url.as_deref(), Some(CUSTOM_COVER));
+    }
+
+    #[test]
+    fn merge_covers_leaves_a_playlist_with_no_prior_entry_alone() {
+        let fresh = vec![playlist("p1", Some(GENERIC_COVER))];
+        let merged = merge_covers(fresh, &[]);
+        assert_eq!(merged[0].thumbnail_url.as_deref(), Some(GENERIC_COVER));
+    }
+
+    #[test]
+    fn ids_without_cover_names_only_the_generic_ones() {
+        let playlists = vec![
+            playlist("p1", Some(CUSTOM_COVER)),
+            playlist("p2", Some(GENERIC_COVER)),
+            playlist("p3", None),
+        ];
+        assert_eq!(
+            ids_without_cover(&playlists),
+            vec![PlaylistId("p2".into()), PlaylistId("p3".into())]
+        );
+    }
+
+    #[test]
+    fn a_fresh_playlists_load_asks_for_covers_it_still_lacks() {
+        let mut state = State::default();
+        let effects = apply(
+            &mut state,
+            Action::PlaylistsLoaded(Ok(vec![
+                playlist("p1", Some(CUSTOM_COVER)),
+                playlist("p2", Some(GENERIC_COVER)),
+            ])),
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(vec![
+                    playlist("p1", Some(CUSTOM_COVER)),
+                    playlist("p2", Some(GENERIC_COVER)),
+                ])),
+                Effect::Api(ApiRequest::FetchPlaylistCovers(vec![PlaylistId(
+                    "p2".into()
+                )])),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refresh_keeps_a_custom_cover_the_fresh_load_no_longer_carries() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::PlaylistsLoaded(Ok(vec![playlist("p1", Some(CUSTOM_COVER))])),
+        );
+        apply(
+            &mut state,
+            Action::PlaylistsLoaded(Ok(vec![playlist("p1", Some(GENERIC_COVER))])),
+        );
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to be loaded");
+        };
+        assert_eq!(playlists[0].thumbnail_url.as_deref(), Some(CUSTOM_COVER));
+    }
+
+    #[test]
+    fn a_covers_result_updates_the_slot_and_saves_the_cache() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::PlaylistsLoaded(Ok(vec![playlist("p1", Some(GENERIC_COVER))])),
+        );
+        let effects = apply(
+            &mut state,
+            Action::PlaylistCoversLoaded(vec![(PlaylistId("p1".into()), CUSTOM_COVER.into())]),
+        );
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to be loaded");
+        };
+        assert_eq!(playlists[0].thumbnail_url.as_deref(), Some(CUSTOM_COVER));
+        assert_eq!(
+            effects,
+            vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+                vec![playlist("p1", Some(CUSTOM_COVER))]
+            ))]
+        );
+    }
+
+    #[test]
+    fn an_empty_covers_result_changes_nothing() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::PlaylistsLoaded(Ok(vec![playlist("p1", Some(GENERIC_COVER))])),
+        );
+        let effects = apply(&mut state, Action::PlaylistCoversLoaded(vec![]));
+        assert_eq!(effects, vec![]);
     }
 }

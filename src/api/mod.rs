@@ -19,8 +19,8 @@ use ytmapi_rs::query::search::{
     AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter, VideosFilter,
 };
 use ytmapi_rs::query::{
-    GetAlbumQuery, GetArtistQuery, GetLibraryPlaylistsQuery, GetPlaylistTracksQuery,
-    GetWatchPlaylistQuery, SearchQuery,
+    GetAlbumQuery, GetArtistQuery, GetLibraryPlaylistsQuery, GetPlaylistDetailsQuery,
+    GetPlaylistTracksQuery, GetWatchPlaylistQuery, SearchQuery,
 };
 use ytmapi_rs::{YtMusic, YtMusicBuilder};
 
@@ -28,6 +28,11 @@ use crate::core::effect::{AuthMethod, Credentials};
 use crate::core::model::{
     AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track, TrackId,
 };
+use crate::thumbnails::preferred;
+
+/// The most playlist-cover requests this app keeps in flight at once,
+/// against the anonymous InnerTube endpoint.
+const PLAYLIST_COVER_CONCURRENCY: usize = 6;
 
 enum Session {
     Browser(YtMusic<BrowserToken>),
@@ -105,6 +110,49 @@ impl Api {
             }
             Session::OAuth { data, .. } => data.playlists().await,
         }
+    }
+
+    /// The custom cover art of every playlist in `ids` that has one,
+    /// from the anonymous InnerTube playlist page. A private playlist
+    /// always fails there, so it is silently missing from the result;
+    /// the caller keeps that playlist's existing thumbnail.
+    ///
+    /// Cost: the first library load after this feature ships runs one
+    /// request per playlist (61 for the user who reported this). Every
+    /// later load runs one request only for a playlist that still has
+    /// no custom cover.
+    pub async fn playlist_covers(&self, ids: &[PlaylistId]) -> Vec<(PlaylistId, String)> {
+        let mut covers = Vec::new();
+        for chunk in ids.chunks(PLAYLIST_COVER_CONCURRENCY) {
+            let mut set = tokio::task::JoinSet::new();
+            for id in chunk {
+                let api = self.clone();
+                let id = id.clone();
+                set.spawn(async move {
+                    let cover = api.playlist_cover(&id).await;
+                    (id, cover)
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                if let Ok((id, Some(url))) = joined {
+                    covers.push((id, url));
+                }
+            }
+        }
+        covers
+    }
+
+    /// One playlist's custom cover, or `None` when the InnerTube page
+    /// fails to load or carries no thumbnails.
+    async fn playlist_cover(&self, id: &PlaylistId) -> Option<String> {
+        let result = match &*self.session {
+            Session::Browser(yt) => fetch_playlist_cover(yt, id).await,
+            Session::OAuth { innertube, .. } => fetch_playlist_cover(innertube, id).await,
+        };
+        result.unwrap_or_else(|error| {
+            log::debug!("playlist cover fetch failed for {}: {error}", id.0);
+            None
+        })
     }
 
     /// Streams the liked-songs list to `on_page`. The OAuth session
@@ -192,6 +240,19 @@ async fn fetch_radio<A: AuthToken>(yt: &YtMusic<A>, id: &TrackId) -> Result<Vec<
     let query = GetWatchPlaylistQuery::new_from_video_id(VideoID::from_raw(id.0.as_str()));
     let tracks = yt.query(query).await.map_err(readable)?;
     Ok(tracks.into_iter().map(convert::watch_track).collect())
+}
+
+/// One playlist's custom cover, from the anonymous InnerTube playlist
+/// page. A private playlist fails to parse there, so its error is a
+/// normal outcome, not a bug.
+async fn fetch_playlist_cover<A: AuthToken>(
+    yt: &YtMusic<A>,
+    id: &PlaylistId,
+) -> Result<Option<String>, String> {
+    let browse_id = playlist_browse_id(&id.0);
+    let query = GetPlaylistDetailsQuery::new(PlaylistID::from_raw(&browse_id));
+    let details = yt.query(query).await.map_err(readable)?;
+    Ok(preferred(&details.thumbnails))
 }
 
 /// Three filtered queries, the way youtui searches. Basic search adds

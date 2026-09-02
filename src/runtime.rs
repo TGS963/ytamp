@@ -325,6 +325,10 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
             let result = api.radio(&id).await;
             deliver(Action::RadioLoaded(id, result));
         }
+        ApiRequest::FetchPlaylistCovers(ids) => {
+            let covers = api.playlist_covers(&ids).await;
+            deliver(Action::PlaylistCoversLoaded(covers));
+        }
     }
 }
 
@@ -370,5 +374,6 @@ fn request_failure(request: ApiRequest, message: String) -> Action {
         ApiRequest::FetchArtist(id) => Action::ArtistLoaded(id, Err(message)),
         ApiRequest::FetchAlbum(id) => Action::AlbumLoaded(id, Err(message)),
         ApiRequest::FetchRadio(id) => Action::RadioLoaded(id, Err(message)),
+        ApiRequest::FetchPlaylistCovers(_) => Action::PlaylistCoversLoaded(vec![]),
     }
 }

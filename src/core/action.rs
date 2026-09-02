@@ -98,6 +98,9 @@ pub enum Action {
     AuthVerified(Result<(), String>),
     SearchLoaded(Result<SearchResults, String>),
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),
+    /// Custom cover art fetched for a batch of playlists. Always
+    /// carries only the playlists a fetch actually found a cover for.
+    PlaylistCoversLoaded(Vec<(PlaylistId, String)>),
     LikedLoaded(Result<Vec<Track>, String>),
     PlaylistTracksLoaded(PlaylistId, Result<Vec<Track>, String>),
     ArtistLoaded(ArtistId, Result<ArtistPage, String>),

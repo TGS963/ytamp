@@ -89,6 +89,9 @@ pub enum ApiRequest {
     /// A radio of songs related to a track, for autoplay at the
     /// queue end.
     FetchRadio(TrackId),
+    /// The custom cover art of every playlist in the list, for a
+    /// playlist whose thumbnail is not one already.
+    FetchPlaylistCovers(Vec<PlaylistId>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

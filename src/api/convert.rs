@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ytmapi_rs::common::{Thumbnail, YoutubeID};
+use ytmapi_rs::common::YoutubeID;
 use ytmapi_rs::parse::{
     AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, LibraryPlaylist, ParsedSongAlbum,
     ParsedSongArtist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
@@ -13,6 +13,7 @@ use crate::core::model::{
     Album, AlbumId, AlbumPage, Artist, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId,
     SearchResults as ModelSearchResults, Track, TrackId,
 };
+use crate::thumbnails::{preferred, track_art, video_thumbnail};
 
 pub fn search_results_from_tracks(
     songs: Vec<Track>,
@@ -36,7 +37,7 @@ pub fn song_to_track(song: SearchResultSong) -> Track {
         album,
         album_id,
         duration: parse_duration(&song.duration),
-        thumbnail_url: largest_thumbnail(&song.thumbnails),
+        thumbnail_url: track_art(&song.thumbnails, song.video_id.get_raw()),
     }
 }
 
@@ -56,7 +57,7 @@ fn album_result(album: SearchResultAlbum) -> Album {
         title: album.title,
         artists: vec![album.artist],
         year: Some(album.year),
-        thumbnail_url: largest_thumbnail(&album.thumbnails),
+        thumbnail_url: preferred(&album.thumbnails),
     }
 }
 
@@ -64,7 +65,7 @@ fn artist_result(artist: SearchResultArtist) -> Artist {
     Artist {
         id: ArtistId(artist.browse_id.get_raw().to_string()),
         name: artist.artist,
-        thumbnail_url: largest_thumbnail(&artist.thumbnails),
+        thumbnail_url: preferred(&artist.thumbnails),
     }
 }
 
@@ -73,7 +74,7 @@ pub fn library_playlist(playlist: LibraryPlaylist) -> Playlist {
         id: PlaylistId(playlist.playlist_id.get_raw().to_string()),
         title: playlist.title,
         track_count: leading_number(&playlist.tracks),
-        thumbnail_url: largest_thumbnail(&playlist.thumbnails),
+        thumbnail_url: preferred(&playlist.thumbnails),
     }
 }
 
@@ -95,7 +96,7 @@ pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
             album: None,
             album_id: None,
             duration: parse_duration(&length),
-            thumbnail_url: largest_thumbnail(&thumbnails),
+            thumbnail_url: track_art(&thumbnails, video_id.get_raw()),
         }),
         SearchResultVideo::VideoEpisode { .. } => None,
     }
@@ -114,7 +115,7 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
                 album,
                 album_id,
                 duration: parse_duration(&song.duration),
-                thumbnail_url: largest_thumbnail(&song.thumbnails),
+                thumbnail_url: track_art(&song.thumbnails, song.video_id.get_raw()),
             })
         }
         PlaylistItem::Video(video) => Some(Track {
@@ -127,7 +128,7 @@ pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
             album: None,
             album_id: None,
             duration: parse_duration(&video.duration),
-            thumbnail_url: largest_thumbnail(&video.thumbnails),
+            thumbnail_url: track_art(&video.thumbnails, video.video_id.get_raw()),
         }),
         PlaylistItem::Episode(_) | PlaylistItem::UploadSong(_) => None,
     }
@@ -155,7 +156,7 @@ pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
     ArtistPage {
         id,
         name: name.clone(),
-        thumbnail_url: largest_thumbnail(&artist.thumbnails),
+        thumbnail_url: preferred(&artist.thumbnails),
         top_songs: releases
             .songs
             .map(|songs| {
@@ -178,6 +179,7 @@ pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
 }
 
 fn artist_song_to_track(song: ArtistSong) -> Track {
+    let thumbnail_url = Some(video_thumbnail(song.video_id.get_raw()));
     Track {
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
@@ -185,7 +187,7 @@ fn artist_song_to_track(song: ArtistSong) -> Track {
         album: Some(song.album.name),
         album_id: Some(AlbumId(song.album.id.get_raw().to_string())),
         duration: None,
-        thumbnail_url: None,
+        thumbnail_url,
     }
 }
 
@@ -197,7 +199,7 @@ fn artist_album_result(album: AlbumResult, artist_name: &str) -> Album {
         title: album.title,
         artists: vec![artist_name.to_string()],
         year: Some(album.year),
-        thumbnail_url: largest_thumbnail(&album.thumbnails),
+        thumbnail_url: preferred(&album.thumbnails),
     }
 }
 
@@ -213,7 +215,7 @@ pub fn album_page(album: GetAlbum, id: AlbumId) -> AlbumPage {
             .map(|artist| artist.name)
             .collect(),
         year: Some(album.year),
-        thumbnail_url: largest_thumbnail(&album.thumbnails),
+        thumbnail_url: preferred(&album.thumbnails),
     };
     let tracks = tracks_with_album_art(
         album.tracks.into_iter().map(album_song_to_track).collect(),
@@ -226,6 +228,7 @@ pub fn album_page(album: GetAlbum, id: AlbumId) -> AlbumPage {
 }
 
 fn album_song_to_track(song: AlbumSong) -> Track {
+    let thumbnail_url = Some(video_thumbnail(song.video_id.get_raw()));
     Track {
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
@@ -233,7 +236,7 @@ fn album_song_to_track(song: AlbumSong) -> Track {
         album: None,
         album_id: None,
         duration: parse_duration(&song.duration),
-        thumbnail_url: None,
+        thumbnail_url,
     }
 }
 
@@ -241,8 +244,9 @@ fn album_song_to_track(song: AlbumSong) -> Track {
 /// as its own pure step because `GetAlbum` and `AlbumSong` are
 /// `#[non_exhaustive]` in ytmapi-rs, so a unit test builds `Track` and
 /// `Album` values directly instead of the ytmapi-rs response types.
-/// Album songs carry no artists, no art, and no album of their own.
-/// Each track takes them from the album.
+/// Album songs carry no artists and no album of their own; each track
+/// takes them from the album. A track keeps its own video-thumbnail
+/// fallback when the album carries no art of its own.
 fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
     tracks
         .into_iter()
@@ -258,7 +262,10 @@ fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
             },
             album: Some(album.title.clone()),
             album_id: Some(album.id.clone()),
-            thumbnail_url: album.thumbnail_url.clone(),
+            thumbnail_url: album
+                .thumbnail_url
+                .clone()
+                .or_else(|| track.thumbnail_url.clone()),
             ..track
         })
         .collect()
@@ -273,7 +280,7 @@ pub fn watch_track(track: WatchPlaylistTrack) -> Track {
         album: None,
         album_id: None,
         duration: parse_duration(&track.duration),
-        thumbnail_url: largest_thumbnail(&track.thumbnails),
+        thumbnail_url: track_art(&track.thumbnails, track.video_id.get_raw()),
     }
 }
 
@@ -288,13 +295,6 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
         seconds = seconds * 60 + part.parse::<u64>().ok()?;
     }
     Some(Duration::from_secs(seconds))
-}
-
-fn largest_thumbnail(thumbnails: &[Thumbnail]) -> Option<String> {
-    thumbnails
-        .iter()
-        .max_by_key(|thumbnail| thumbnail.width * thumbnail.height)
-        .map(|thumbnail| thumbnail.url.clone())
 }
 
 /// Reads the number that starts a text like "42 tracks".
@@ -314,24 +314,6 @@ mod tests {
         assert_eq!(parse_duration("245"), Some(Duration::from_secs(245)));
         assert_eq!(parse_duration("bad"), None);
         assert_eq!(parse_duration("1:2:3:4"), None);
-    }
-
-    #[test]
-    fn the_largest_thumbnail_wins() {
-        let thumbnails = vec![
-            Thumbnail {
-                height: 60,
-                width: 60,
-                url: "small".into(),
-            },
-            Thumbnail {
-                height: 544,
-                width: 544,
-                url: "large".into(),
-            },
-        ];
-        assert_eq!(largest_thumbnail(&thumbnails), Some("large".into()));
-        assert_eq!(largest_thumbnail(&[]), None);
     }
 
     #[test]
