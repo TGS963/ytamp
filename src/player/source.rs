@@ -16,6 +16,7 @@ use rodio::source::{SeekError, Source};
 use rodio::{ChannelCount, SampleRate};
 
 use crate::stream::AudioBuffer;
+use crate::vis::AudioTap;
 
 /// Decoded samples buffered ahead of playback. Chosen as a round
 /// number close to one second of audio at common music sample rates,
@@ -68,6 +69,7 @@ impl DecoderHandle {
             sample_rate: ready.sample_rate,
             total_duration: ready.total_duration,
             progress,
+            tap: AudioTap::shared(),
         };
         (source, position)
     }
@@ -332,6 +334,9 @@ pub struct StreamingSource {
     sample_rate: SampleRate,
     total_duration: Option<Duration>,
     progress: Arc<Progress>,
+    /// Where every real sample this source plays also goes, for the
+    /// Winamp skin's visualiser. See `crate::vis::AudioTap`.
+    tap: Arc<AudioTap>,
 }
 
 impl Iterator for StreamingSource {
@@ -339,8 +344,9 @@ impl Iterator for StreamingSource {
 
     fn next(&mut self) -> Option<f32> {
         let received = self.samples.try_recv();
-        if received.is_ok() {
+        if let Ok(sample) = received {
             self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
+            self.tap.push(sample, u32::from(self.channels.get()));
         }
         let ended = self.progress.ended.load(Ordering::Acquire);
         decide_next_sample(received, ended)

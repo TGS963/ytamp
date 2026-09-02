@@ -13,15 +13,16 @@ mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use egui::{Sense, Ui, ViewportCommand};
+use egui::{Color32, Sense, Ui, ViewportCommand};
 
 use crate::core::action::Action;
 use crate::core::queue::RepeatMode;
 use crate::core::state::{PlayStatus, State};
 use crate::skin::layout::{self, Area};
 use crate::skin::{Sheet, Skin, sprites};
+use crate::vis::{self, AudioTap};
 
 pub use view::{SliderEvent, View};
 
@@ -32,6 +33,32 @@ const PLAYING_REPAINT: Duration = Duration::from_millis(250);
 /// How often the window repaints while the marquee scrolls: the
 /// marquee's own step interval, so no step is ever skipped.
 const MARQUEE_REPAINT: Duration = Duration::from_millis(220);
+
+/// How often the visualiser wants a frame while it moves. Two of
+/// these gives the analyser's own 16.667 ms step some room without
+/// asking egui for an unreachable frame rate.
+const VIS_FRAME: Duration = Duration::from_micros(16_667);
+
+/// What the display shows: the spectrum bars, the oscilloscope, or
+/// nothing. A click on the display moves to the next one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VisMode {
+    #[default]
+    Spectrum,
+    Scope,
+    Off,
+}
+
+impl VisMode {
+    /// The mode a click on the display moves to.
+    fn next(self) -> Self {
+        match self {
+            VisMode::Spectrum => VisMode::Scope,
+            VisMode::Scope => VisMode::Off,
+            VisMode::Off => VisMode::Spectrum,
+        }
+    }
+}
 
 /// The skin data and window-local look the core never sees: the
 /// loaded skin, its textures on the graphics card, and the two toggles
@@ -74,6 +101,12 @@ pub struct WinampShell {
     /// The playlist's own text cache: track rows drawn with the
     /// bundled face, not the skin's bitmap font.
     playlist_text: pixel_text::PixelText,
+    /// The display's mode: spectrum bars, the oscilloscope, or off.
+    pub vis_mode: VisMode,
+    /// The spectrum analyser's falling bars and peaks, moved once
+    /// each visualiser step regardless of how often the window
+    /// repaints.
+    vis_analyser: vis::Analyser,
 }
 
 impl Default for WinampShell {
@@ -96,6 +129,8 @@ impl Default for WinampShell {
             playlist_wheel: 0.0,
             playlist_resize: 0.0,
             playlist_text: pixel_text::PixelText::default(),
+            vis_mode: VisMode::default(),
+            vis_analyser: vis::Analyser::default(),
         }
     }
 }
@@ -366,11 +401,12 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
         skin: &skin,
         textures: &textures,
     };
-    if shell.shade {
+    let vis_moving = if shell.shade {
         shade_bar(&mut view, &ctx, state, shell, out, focused);
+        false
     } else {
-        full_window(&mut view, &ctx, state, shell, out, focused, time);
-    }
+        full_window(&mut view, &ctx, state, shell, out, focused, time)
+    };
     if shell.playlist_open {
         let mut below = View {
             ui: view.ui,
@@ -381,13 +417,17 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
         };
         playlist::show(&mut below, &ctx, state, shell, out, focused);
     }
-    if state.playback.status == PlayStatus::Playing || state.playback.status == PlayStatus::Paused {
+    if vis_moving {
+        ctx.request_repaint_after(VIS_FRAME * 2);
+    } else if state.playback.status == PlayStatus::Playing || state.playback.status == PlayStatus::Paused
+    {
         ctx.request_repaint_after(PLAYING_REPAINT);
     }
 }
 
 /// The main window as it usually looks: background, title bar, the
-/// readouts, the sliders, and the transport.
+/// readouts, the sliders, and the transport. Returns whether the
+/// visualiser is still moving.
 fn full_window(
     view: &mut View,
     ctx: &egui::Context,
@@ -396,7 +436,7 @@ fn full_window(
     out: &mut Vec<Action>,
     focused: bool,
     time: f64,
-) {
+) -> bool {
     view.sprite(
         sprites::MAIN_BACKGROUND,
         Area::new(0, 0, layout::WINDOW_WIDTH, layout::WINDOW_HEIGHT),
@@ -410,11 +450,13 @@ fn full_window(
     balance_slider(view);
     let position_event = position_slider(view, state, out);
     marquee(view, state, shell, time, volume_event, position_event);
+    let vis_moving = visualiser(view, state, shell);
     windows_buttons(view, shell);
     play_pause_stop(view, state, out);
     simple_transport(view, out);
     shuffle_repeat(view, state, out);
     clutter_bar(view, state, out);
+    vis_moving
 }
 
 /// The window rolled up to its title bar: the time, a little seek
@@ -859,6 +901,127 @@ fn shade_position(view: &mut View, state: &State, out: &mut Vec<Action>) {
     let travel = layout::SHADE_POSITION.width - 3;
     let thumb_x = layout::SHADE_POSITION.x + (fraction * travel as f32).round() as u32;
     view.sprite_at(thumb, thumb_x, layout::SHADE_POSITION.y);
+}
+
+/// The display's box: the spectrum bars, the oscilloscope, or
+/// nothing, in the skin's own `viscolor.txt` colours. A click cycles
+/// to the next mode. Returns whether anything is still moving, so the
+/// caller can keep asking for frames while the bars fall.
+fn visualiser(view: &mut View, state: &State, shell: &mut WinampShell) -> bool {
+    let area = layout::VISUALIZER;
+    if view
+        .interact(area, "visualiser", Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    {
+        shell.vis_mode = shell.vis_mode.next();
+    }
+    if shell.vis_mode == VisMode::Off {
+        return false;
+    }
+    let palette = view.skin.vis_colors;
+    let color = move |index: usize| {
+        let [r, g, b] = palette[index];
+        Color32::from_rgb(r, g, b)
+    };
+    view.fill(area.x, area.y, area.width, area.height, color(0));
+    for y in (0..area.height).step_by(2) {
+        for x in (0..area.width).step_by(2) {
+            view.fill(area.x + x, area.y + y, 1, 1, color(1));
+        }
+    }
+    let sounding = matches!(
+        state.playback.status,
+        PlayStatus::Playing | PlayStatus::Loading
+    );
+    if shell.vis_mode == VisMode::Scope {
+        draw_scope(view, area, sounding, color)
+    } else {
+        draw_spectrum(view, area, shell, sounding, color)
+    }
+}
+
+/// The spectrum bars: read from the audio tap, stepped by the
+/// analyser, and drawn with their peaks. Returns whether they are
+/// still moving.
+fn draw_spectrum(
+    view: &mut View,
+    area: Area,
+    shell: &mut WinampShell,
+    sounding: bool,
+    color: impl Fn(usize) -> Color32,
+) -> bool {
+    let samples = if sounding {
+        AudioTap::shared().window(vis::FFT_SAMPLES, vis::LAG)
+    } else {
+        vec![0.0; vis::FFT_SAMPLES]
+    };
+    let bars = shell.vis_analyser.step(&samples, Instant::now());
+    for (index, bar) in bars.iter().enumerate() {
+        let x = bar_x(area.x, index);
+        for row in (vis::ROWS - bar.height)..vis::ROWS {
+            view.fill(x, area.y + u32::from(row), 3, 1, color(bar_row_color(row)));
+        }
+        if let Some(peak) = bar.peak {
+            let row = vis::ROWS - peak;
+            view.fill(x, area.y + u32::from(row), 3, 1, color(PEAK_COLOR));
+        }
+    }
+    sounding || !shell.vis_analyser.settled()
+}
+
+/// The oscilloscope trace: read from the audio tap, and shaded by how
+/// far each row sits from the centre.
+fn draw_scope(view: &mut View, area: Area, sounding: bool, color: impl Fn(usize) -> Color32) -> bool {
+    let samples = if sounding {
+        AudioTap::shared().window(vis::SCOPE_SAMPLES, vis::LAG)
+    } else {
+        vec![0.0; vis::SCOPE_SAMPLES]
+    };
+    let rows = vis::scope(&samples);
+    let mut last = rows[0];
+    for (x, &y) in rows.iter().enumerate() {
+        let (top, bottom) = scope_span(y, last);
+        last = y;
+        let shade = color(scope_color(y));
+        for row in top..=bottom {
+            view.fill(area.x + x as u32, area.y + u32::from(row), 1, 1, shade);
+        }
+    }
+    sounding
+}
+
+/// The palette index for the analyser's peak mark, past the sixteen
+/// bar-row colours.
+const PEAK_COLOR: usize = 23;
+
+/// The x position, in skin pixels, of the bar at `index`: each bar is
+/// three columns wide with one gap.
+fn bar_x(area_x: u32, index: usize) -> u32 {
+    area_x + 4 * index as u32
+}
+
+/// The palette index for a bar's row, counting up from the bar-row
+/// colours at `viscolor[2..18]`.
+fn bar_row_color(row: u8) -> usize {
+    2 + usize::from(row)
+}
+
+/// The palette index for a scope row, among the five oscilloscope
+/// colours at `viscolor[18..23]`.
+fn scope_color(row: u8) -> usize {
+    18 + vis::scope_shade(row)
+}
+
+/// The rows a scope column fills between its own row and the row
+/// before it, so the trace draws as a connected line rather than
+/// separate dots.
+fn scope_span(row: u8, previous: u8) -> (u8, u8) {
+    if previous < row {
+        (previous + 1, row)
+    } else {
+        (row, previous)
+    }
 }
 
 /// The EQ and PL toggles. EQ has no function yet: the equalizer is a
@@ -1423,6 +1586,39 @@ mod tests {
             Some("a notice".to_string())
         );
         assert_eq!(shell.current_notice(&notices, 3.1), None);
+    }
+
+    #[test]
+    fn the_vis_mode_cycles_spectrum_scope_off_and_back() {
+        assert_eq!(VisMode::Spectrum.next(), VisMode::Scope);
+        assert_eq!(VisMode::Scope.next(), VisMode::Off);
+        assert_eq!(VisMode::Off.next(), VisMode::Spectrum);
+    }
+
+    #[test]
+    fn bars_sit_four_skin_pixels_apart() {
+        assert_eq!(bar_x(24, 0), 24);
+        assert_eq!(bar_x(24, 1), 28);
+        assert_eq!(bar_x(24, 18), 24 + 4 * 18);
+    }
+
+    #[test]
+    fn bar_row_color_starts_at_the_third_palette_entry() {
+        assert_eq!(bar_row_color(0), 2);
+        assert_eq!(bar_row_color(15), 17);
+    }
+
+    #[test]
+    fn scope_color_starts_at_the_nineteenth_palette_entry() {
+        assert_eq!(scope_color(7), 18); // the centre row, brightest shade
+        assert_eq!(scope_color(0), 18 + 3);
+    }
+
+    #[test]
+    fn scope_span_connects_a_row_to_the_one_before_it() {
+        assert_eq!(scope_span(5, 7), (5, 7));
+        assert_eq!(scope_span(7, 5), (6, 7));
+        assert_eq!(scope_span(7, 7), (7, 7));
     }
 
     #[test]

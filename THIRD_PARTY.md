@@ -53,6 +53,10 @@ Each file below carries a header comment that names this notice.
   `system_fonts` probe and its bundled emoji face: the playlist shows
   track titles, not arbitrary Spotify text, so the bundled Inter face
   alone is enough
+- `src/vis.rs`, ported from `src/vis.rs` of fastpotify (the audio tap,
+  the classic spectrum analyser, and the oscilloscope), without its
+  MilkDrop shared-memory ring, its player-mixing `Tapped` sink, and
+  its equalizer and limiter hooks, none of which ytamp has
 
 ### Bundled skin
 

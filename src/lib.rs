@@ -16,3 +16,4 @@ pub mod skins_dir;
 pub mod stream;
 pub mod theme;
 pub mod ui;
+pub mod vis;
