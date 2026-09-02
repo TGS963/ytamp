@@ -1,5 +1,14 @@
 # Winamp classic skins
 
+## Status
+
+Phases A to D are done and reviewed: `19eb82d` (skin layer),
+`5a48fe2` and `cc0f9d2` (main window, menu, skins, marquee),
+`71fde8f` (ytamp built-in skin), `ff6e1d6` (playlist window),
+`09f6b41` (visualizer), plus review fixes. The viewport model works
+on macOS. Deferred: the equalizer, shaped skins through `region.txt`
+in the blitter, modern skins.
+
 ## Goal
 
 ytamp wears any Winamp 2 `.wsz` skin as a second look: a pixel-exact
