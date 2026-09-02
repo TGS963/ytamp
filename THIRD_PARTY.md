@@ -39,9 +39,14 @@ Each file below carries a header comment that names this notice.
 - `src/skin/font.rs`, ported from `src/skin/font.rs` of fastpotify
 - `src/skin/config.rs`, ported from `src/skin/config.rs` of fastpotify
 - `src/skin/mod.rs`, ported from `src/skin/mod.rs` of fastpotify
+- `examples/default_skin.rs`, ported from `examples/default_skin.rs` of
+  fastpotify
 
 ### Bundled skin
 
-The file `assets/skins/builtin.wsz` is the built-in Winamp skin of
-fastpotify. The generator at `examples/default_skin.rs` in fastpotify
-drew this skin. The skin ships here under the same MIT license.
+The file `assets/skins/builtin.wsz` is the built-in Winamp skin of ytamp.
+`examples/default_skin.rs` draws the skin, in the dark and red palette of
+ytamp, not the green palette of fastpotify. That generator is a port of
+the fastpotify file of the same name. For this reason, the ported file
+above still carries the MIT notice, even though it now draws a skin that
+belongs to ytamp.
