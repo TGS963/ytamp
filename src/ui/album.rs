@@ -5,9 +5,15 @@ use crate::core::model::AlbumPage;
 use crate::core::state::{Loadable, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
-use super::rows;
+use super::rows::{self, RowContext};
 
-pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+pub fn view(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     match &state.browse.album {
         Loadable::NotAsked | Loadable::Loading => {
             ui.spinner();
@@ -15,14 +21,22 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
         Loadable::Failed(message) => {
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
-        Loadable::Loaded(page) | Loadable::Refreshing(page) => page_view(ui, page, theme, out),
+        Loadable::Loaded(page) | Loadable::Refreshing(page) => {
+            page_view(ui, page, theme, context, out)
+        }
     }
 }
 
-fn page_view(ui: &mut egui::Ui, page: &AlbumPage, theme: &dyn Theme, out: &mut Vec<Action>) {
+fn page_view(
+    ui: &mut egui::Ui,
+    page: &AlbumPage,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     header(ui, page, theme, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
-    rows::track_list(ui, "album_tracks", &page.tracks, false, theme, out);
+    rows::track_list(ui, "album_tracks", &page.tracks, false, theme, context, out);
 }
 
 fn header(ui: &mut egui::Ui, page: &AlbumPage, theme: &dyn Theme, out: &mut Vec<Action>) {

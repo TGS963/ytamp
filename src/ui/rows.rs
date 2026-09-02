@@ -7,9 +7,21 @@
 use std::time::Duration;
 
 use crate::core::action::Action;
-use crate::core::model::{ArtistRef, Track};
+use crate::core::model::{ArtistRef, Playlist, Track};
+use crate::core::state::{Loadable, Page};
+use crate::core::update::is_liked;
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 use crate::thumbnails::sized;
+
+/// What a track row's context menu needs, gathered once per list
+/// rather than rebuilt for every row: whether a track is liked, the
+/// playlists to offer under "Add to playlist", and the page the row
+/// is on, which decides whether "Remove from this playlist" shows.
+pub struct RowContext<'a> {
+    pub liked: &'a Loadable<Vec<Track>>,
+    pub playlists: &'a [Playlist],
+    pub page: &'a Page,
+}
 
 /// Draws `tracks` as a virtualized, scrollable list that fills the space
 /// its caller gives it. Only the rows in view get laid out each frame. A
@@ -26,9 +38,10 @@ pub fn track_list(
     tracks: &[Track],
     loading_more: bool,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
-    track_list_area(ui, id_salt, tracks, loading_more, None, theme, out);
+    track_list_area(ui, id_salt, tracks, loading_more, None, theme, context, out);
 }
 
 /// Draws `tracks` the same way as [`track_list`], but caps the visible
@@ -39,11 +52,22 @@ pub fn track_list_capped(
     tracks: &[Track],
     max_height: f32,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
-    track_list_area(ui, id_salt, tracks, false, Some(max_height), theme, out);
+    track_list_area(
+        ui,
+        id_salt,
+        tracks,
+        false,
+        Some(max_height),
+        theme,
+        context,
+        out,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn track_list_area(
     ui: &mut egui::Ui,
     id_salt: &str,
@@ -51,6 +75,7 @@ fn track_list_area(
     loading_more: bool,
     max_height: Option<f32>,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
     let row_height = theme.metric(MetricRole::RowHeight);
@@ -62,7 +87,7 @@ fn track_list_area(
     area.show_rows(ui, row_height, row_count, |ui, row_range| {
         for index in row_range {
             match tracks.get(index) {
-                Some(track) => out.extend(track_row(ui, track, index, tracks, theme)),
+                Some(track) => out.extend(track_row(ui, track, index, tracks, theme, context)),
                 None => loading_more_row(ui, theme),
             }
         }
@@ -133,6 +158,7 @@ fn track_row(
     index: usize,
     all: &[Track],
     theme: &dyn Theme,
+    context: &RowContext,
 ) -> Vec<Action> {
     let mut button_action = None;
     let response = row_frame(ui, theme, |ui| {
@@ -148,7 +174,97 @@ fn track_row(
         None => {}
     }
     actions.extend(hover_prefetch_action(ui, &response, track, theme));
+    if let Some(action) = row_context_menu(&response, track, context) {
+        actions.push(action);
+    }
     actions
+}
+
+/// The row's right-click menu: like or unlike, add to the queue, add
+/// to a playlist, and, on a playlist page, remove from it. Returns at
+/// most one action, the last menu item the user clicked.
+fn row_context_menu(
+    response: &egui::Response,
+    track: &Track,
+    context: &RowContext,
+) -> Option<Action> {
+    let mut action = None;
+    response.context_menu(|ui| {
+        like_menu_item(ui, track, context, &mut action);
+        if ui.button("Add to queue").clicked() {
+            action = Some(Action::TrackQueued(track.clone()));
+            ui.close();
+        }
+        add_to_playlist_menu(ui, track, context, &mut action);
+        remove_from_playlist_menu_item(ui, track, context, &mut action);
+    });
+    action
+}
+
+fn like_menu_item(
+    ui: &mut egui::Ui,
+    track: &Track,
+    context: &RowContext,
+    action: &mut Option<Action>,
+) {
+    let label = if is_liked(context.liked, &track.id) {
+        "Unlike"
+    } else {
+        "Like"
+    };
+    if ui.button(label).clicked() {
+        *action = Some(Action::TrackLikeToggled(track.clone()));
+        ui.close();
+    }
+}
+
+/// The "Add to playlist" submenu: one entry per playlist in the
+/// library, plus "New playlist..." to create one and add the track to
+/// it once it exists.
+fn add_to_playlist_menu(
+    ui: &mut egui::Ui,
+    track: &Track,
+    context: &RowContext,
+    action: &mut Option<Action>,
+) {
+    ui.menu_button("Add to playlist", |ui| {
+        for playlist in context.playlists {
+            if ui.button(&playlist.title).clicked() {
+                *action = Some(Action::TrackAddedToPlaylist {
+                    playlist: playlist.id.clone(),
+                    track: track.clone(),
+                });
+                ui.close();
+            }
+        }
+        if ui.button("New playlist...").clicked() {
+            *action = Some(Action::CreatePlaylistDialogOpened(Some(track.clone())));
+            ui.close();
+        }
+    });
+}
+
+/// "Remove from this playlist", shown only on a playlist page and only
+/// for a row that carries the item id a removal needs.
+fn remove_from_playlist_menu_item(
+    ui: &mut egui::Ui,
+    track: &Track,
+    context: &RowContext,
+    action: &mut Option<Action>,
+) {
+    let Page::Playlist(playlist_id) = context.page else {
+        return;
+    };
+    let Some(item_id) = &track.playlist_item_id else {
+        return;
+    };
+    if ui.button("Remove from this playlist").clicked() {
+        *action = Some(Action::TrackRemovedFromPlaylist {
+            playlist: playlist_id.clone(),
+            item_id: item_id.clone(),
+        });
+        ui.close();
+    }
 }
 
 /// The dwell timer for one track row, in egui's own frame memory

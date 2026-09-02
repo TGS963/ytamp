@@ -8,6 +8,7 @@ use crate::core::action::Action;
 use crate::core::model::Track;
 use crate::core::queue::RepeatMode;
 use crate::core::state::{PlayStatus, State};
+use crate::core::update::is_liked;
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
 use super::panel_frame;
@@ -104,6 +105,7 @@ fn transport(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     if selectable_icon(ui, "🔀", shuffle_on).clicked() {
         out.push(Action::ShuffleToggled);
     }
+    like_button(ui, state, out);
     if ui.button("⏮").clicked() {
         out.push(Action::PreviousPressed);
     }
@@ -121,6 +123,20 @@ fn transport(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
         .on_hover_text("Autoplay related songs when the queue ends");
     if autoplay_button.clicked() {
         out.push(Action::AutoplayToggled);
+    }
+}
+
+/// A heart toggle for the current track, filled while it is liked.
+/// Draws nothing while nothing plays.
+fn like_button(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
+    let Some(track) = state.playback.queue.current() else {
+        return;
+    };
+    let liked = is_liked(&state.library.liked, &track.id);
+    let icon = if liked { "♥" } else { "♡" };
+    let button = selectable_icon(ui, icon, liked).on_hover_text("Like");
+    if button.clicked() {
+        out.push(Action::TrackLikeToggled(track.clone()));
     }
 }
 

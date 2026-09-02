@@ -52,6 +52,18 @@ pub enum Page {
     Album(AlbumId),
 }
 
+/// A modal dialog on top of the page. Only one shows at a time.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dialog {
+    /// The "New playlist" window. `then_add` is the track that opened
+    /// it from a row's context menu, remembered so the playlist that
+    /// comes back from the create request also receives that track.
+    CreatePlaylist {
+        title_draft: String,
+        then_add: Option<Track>,
+    },
+}
+
 /// What the user is entering on the sign-in page.
 #[derive(Clone, Debug, Default)]
 pub struct SignInState {
@@ -203,4 +215,10 @@ pub struct State {
     pub history: Vec<Page>,
     /// User-visible problem reports, newest last.
     pub notices: Vec<String>,
+    /// The modal dialog on screen, if any.
+    pub dialog: Option<Dialog>,
+    /// The track a create-playlist request will add once the new
+    /// playlist comes back, carried here once the dialog that
+    /// remembered it has closed.
+    pub pending_playlist_track: Option<Track>,
 }

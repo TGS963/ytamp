@@ -5,13 +5,19 @@ use crate::core::model::{Album, Artist, SearchResults};
 use crate::core::state::{Loadable, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
-use super::rows;
+use super::rows::{self, RowContext};
 
 /// How many song rows show before the songs panel scrolls internally.
 /// Caps the panel so albums and artists, drawn below it, stay reachable.
 const SONGS_VISIBLE_ROWS: f32 = 10.0;
 
-pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+pub fn view(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     query_box(ui, state, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
     match &state.search.results {
@@ -25,7 +31,7 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
         Loadable::Loaded(results) | Loadable::Refreshing(results) => {
-            results_view(ui, results, theme, out)
+            results_view(ui, results, theme, context, out)
         }
     }
 }
@@ -48,12 +54,13 @@ fn results_view(
     ui: &mut egui::Ui,
     results: &SearchResults,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
     egui::ScrollArea::vertical()
         .id_salt("search_results")
         .show(ui, |ui| {
-            songs_section(ui, results, theme, out);
+            songs_section(ui, results, theme, context, out);
             albums_section(ui, results, theme, out);
             artists_section(ui, results, theme, out);
         });
@@ -63,6 +70,7 @@ fn songs_section(
     ui: &mut egui::Ui,
     results: &SearchResults,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
     if results.songs.is_empty() {
@@ -70,7 +78,15 @@ fn songs_section(
     }
     ui.label(theme.label(TextRole::Heading, "Songs"));
     let max_height = theme.metric(MetricRole::RowHeight) * SONGS_VISIBLE_ROWS;
-    rows::track_list_capped(ui, "search_songs", &results.songs, max_height, theme, out);
+    rows::track_list_capped(
+        ui,
+        "search_songs",
+        &results.songs,
+        max_height,
+        theme,
+        context,
+        out,
+    );
 }
 
 fn albums_section(

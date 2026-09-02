@@ -5,14 +5,20 @@ use crate::core::model::{Album, ArtistPage};
 use crate::core::state::{Loadable, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
-use super::rows;
+use super::rows::{self, RowContext};
 
 /// How many top-song rows show before the songs panel scrolls
 /// internally. Caps the panel so the album and single rows below it
 /// stay reachable.
 const TOP_SONGS_VISIBLE_ROWS: f32 = 8.0;
 
-pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+pub fn view(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     match &state.browse.artist {
         Loadable::NotAsked | Loadable::Loading => {
             ui.spinner();
@@ -20,17 +26,25 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
         Loadable::Failed(message) => {
             ui.colored_label(theme.color(ColorRole::Danger), message);
         }
-        Loadable::Loaded(page) | Loadable::Refreshing(page) => page_view(ui, page, theme, out),
+        Loadable::Loaded(page) | Loadable::Refreshing(page) => {
+            page_view(ui, page, theme, context, out)
+        }
     }
 }
 
-fn page_view(ui: &mut egui::Ui, page: &ArtistPage, theme: &dyn Theme, out: &mut Vec<Action>) {
+fn page_view(
+    ui: &mut egui::Ui,
+    page: &ArtistPage,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     egui::ScrollArea::vertical()
         .id_salt("artist_page")
         .show(ui, |ui| {
             header(ui, page, theme);
             ui.add_space(theme.metric(MetricRole::GapLarge));
-            top_songs_section(ui, page, theme, out);
+            top_songs_section(ui, page, theme, context, out);
             albums_section(ui, "Albums", &page.albums, theme, out);
             albums_section(ui, "Singles", &page.singles, theme, out);
         });
@@ -48,6 +62,7 @@ fn top_songs_section(
     ui: &mut egui::Ui,
     page: &ArtistPage,
     theme: &dyn Theme,
+    context: &RowContext,
     out: &mut Vec<Action>,
 ) {
     if page.top_songs.is_empty() {
@@ -61,6 +76,7 @@ fn top_songs_section(
         &page.top_songs,
         max_height,
         theme,
+        context,
         out,
     );
     ui.add_space(theme.metric(MetricRole::GapLarge));

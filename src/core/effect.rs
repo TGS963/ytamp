@@ -92,6 +92,26 @@ pub enum ApiRequest {
     /// The custom cover art of every playlist in the list, for a
     /// playlist whose thumbnail is not one already.
     FetchPlaylistCovers(Vec<PlaylistId>),
+    /// Likes or unlikes a track on the server. The reducer has already
+    /// applied the change to the liked list.
+    RateTrack {
+        id: TrackId,
+        liked: bool,
+    },
+    /// Adds a track to a playlist on the server. The reducer has
+    /// already raised the playlist's shown track count.
+    AddToPlaylist {
+        playlist: PlaylistId,
+        track: Track,
+    },
+    /// Removes one row from a playlist on the server, by its item id.
+    /// The reducer has already dropped the row and lowered the count.
+    RemoveFromPlaylist {
+        playlist: PlaylistId,
+        item_id: String,
+    },
+    /// Creates a private playlist with the given title.
+    CreatePlaylist(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -15,8 +15,9 @@ pub mod winamp;
 use egui::Ui;
 
 use crate::core::action::Action;
-use crate::core::state::{AuthState, Page, State};
+use crate::core::state::{AuthState, Dialog, Page, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
+use rows::RowContext;
 
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -33,7 +34,24 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) -> Vec<Action> {
     }
     notices(ui, state, theme, &mut actions);
     page(ui, state, theme, &mut actions);
+    create_playlist_dialog(ui, state, &mut actions);
     actions
+}
+
+/// The row context every track list on the page shares: the liked
+/// list, the library's playlists, and the page itself. Built once here
+/// rather than once per list, let alone once per row.
+fn row_context(state: &State) -> RowContext<'_> {
+    RowContext {
+        liked: &state.library.liked,
+        playlists: state
+            .library
+            .playlists
+            .loaded()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        page: &state.page,
+    }
 }
 
 /// Global shortcuts. They stay quiet while a text field has the focus.
@@ -152,17 +170,18 @@ fn nav_item(
 
 fn page(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     let frame = egui::Frame::central_panel(ui.style()).fill(theme.color(ColorRole::PageBackground));
+    let context = row_context(state);
     egui::CentralPanel::default_margins()
         .frame(frame)
         .show(ui, |ui| {
             ui.add_space(theme.metric(MetricRole::PagePadding));
             back_button(ui, state, theme, out);
             match &state.page {
-                Page::SignIn | Page::Search => search::view(ui, state, theme, out),
-                Page::Library => library::view(ui, state, theme, out),
-                Page::Playlist(_) => playlist::view(ui, state, theme, out),
-                Page::Artist(_) => artist::view(ui, state, theme, out),
-                Page::Album(_) => album::view(ui, state, theme, out),
+                Page::SignIn | Page::Search => search::view(ui, state, theme, &context, out),
+                Page::Library => library::view(ui, state, theme, &context, out),
+                Page::Playlist(_) => playlist::view(ui, state, theme, &context, out),
+                Page::Artist(_) => artist::view(ui, state, theme, &context, out),
+                Page::Album(_) => album::view(ui, state, theme, &context, out),
             }
         });
 }
@@ -197,6 +216,45 @@ fn notices(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>)
                     out.push(Action::NoticeDismissed(index));
                 }
             });
+        }
+    });
+}
+
+/// The "New playlist" window, drawn only while `state.dialog` holds a
+/// `Dialog::CreatePlaylist`. Its text field takes the keyboard focus
+/// as soon as it opens.
+fn create_playlist_dialog(ui: &mut Ui, state: &State, out: &mut Vec<Action>) {
+    let Some(Dialog::CreatePlaylist { title_draft, .. }) = &state.dialog else {
+        return;
+    };
+    let mut draft = title_draft.clone();
+    egui::Window::new("New playlist")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ui.ctx(), |ui| {
+            create_playlist_dialog_contents(ui, &mut draft, out)
+        });
+}
+
+/// The dialog's text field and its Create and Cancel buttons. Enter
+/// creates the playlist; Escape cancels.
+fn create_playlist_dialog_contents(ui: &mut Ui, draft: &mut String, out: &mut Vec<Action>) {
+    let field = ui.add(egui::TextEdit::singleline(draft).hint_text("Playlist name"));
+    if field.changed() {
+        out.push(Action::CreatePlaylistDraftChanged(draft.clone()));
+    }
+    if ui.memory(|memory| memory.focused().is_none()) {
+        field.request_focus();
+    }
+    let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    ui.horizontal(|ui| {
+        if ui.button("Create").clicked() || enter {
+            out.push(Action::PlaylistCreateRequested(draft.clone()));
+        }
+        if ui.button("Cancel").clicked() || escape {
+            out.push(Action::DialogDismissed);
         }
     });
 }

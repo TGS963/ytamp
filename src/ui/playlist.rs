@@ -5,9 +5,15 @@ use crate::core::model::Playlist;
 use crate::core::state::{Loadable, Page, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
-use super::rows;
+use super::rows::{self, RowContext};
 
-pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+pub fn view(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     header(ui, state, theme);
     ui.add_space(theme.metric(MetricRole::GapLarge));
     match &state.library.open_playlist {
@@ -24,6 +30,7 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
                 tracks,
                 state.library.open_playlist_loading_more,
                 theme,
+                context,
                 out,
             );
         }

@@ -6,13 +6,13 @@
 
 use std::time::Duration;
 
-use super::action::{Action, PlayerEvent};
+use super::action::{Action, LibraryWrite, PlayerEvent};
 use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
 use super::model::{
     AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId, Track, TrackId,
 };
 use super::queue::{Queue, RandomBelow};
-use super::state::{AuthState, Loadable, Page, PlayStatus, State};
+use super::state::{AuthState, Dialog, Loadable, Page, PlayStatus, State};
 
 /// Below this position, Previous moves to the previous track.
 /// At or above it, Previous restarts the current track.
@@ -156,6 +156,36 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.notices.push(message);
             vec![]
         }
+        Action::TrackLikeToggled(track) => toggle_track_like(state, track),
+        Action::TrackAddedToPlaylist { playlist, track } => {
+            add_track_to_playlist(state, playlist, track)
+        }
+        Action::TrackRemovedFromPlaylist { playlist, item_id } => {
+            remove_track_from_playlist(state, playlist, item_id)
+        }
+        Action::PlaylistCreateRequested(title) => request_playlist_create(state, title),
+        Action::CreatePlaylistDialogOpened(then_add) => {
+            state.dialog = Some(Dialog::CreatePlaylist {
+                title_draft: String::new(),
+                then_add,
+            });
+            vec![]
+        }
+        Action::CreatePlaylistDraftChanged(draft) => {
+            set_create_playlist_draft(state, draft);
+            vec![]
+        }
+        Action::DialogDismissed => {
+            state.dialog = None;
+            vec![]
+        }
+        Action::PlaylistItemAdded {
+            playlist,
+            track,
+            result,
+        } => finish_playlist_item_add(state, playlist, track, result),
+        Action::PlaylistCreated(result) => finish_playlist_create(state, result),
+        Action::LibraryWriteFinished { what, result } => finish_library_write(state, what, result),
         Action::Player(event) => apply_player_event(state, event),
     }
 }
@@ -1014,6 +1044,230 @@ fn should_hover_prefetch(
     hovered: &TrackId,
 ) -> bool {
     current != Some(hovered) && last_hover_prefetch != Some(hovered)
+}
+
+/// Whether `id` is a member of the liked-songs list, cached or fresh.
+/// Also used by the row and player-bar views, so the like button and
+/// the row's context menu agree with the reducer about what "liked"
+/// means.
+pub fn is_liked(liked: &Loadable<Vec<Track>>, id: &TrackId) -> bool {
+    liked
+        .loaded()
+        .is_some_and(|tracks| tracks.iter().any(|track| &track.id == id))
+}
+
+/// `playlists`, with the playlist named `id` having its track count
+/// raised or lowered by `delta`. A playlist with no known count stays
+/// unknown: there is nothing to adjust. The count never drops below
+/// zero.
+fn with_count_delta(playlists: Vec<Playlist>, id: &PlaylistId, delta: i64) -> Vec<Playlist> {
+    playlists
+        .into_iter()
+        .map(|playlist| match (&playlist.id == id, playlist.track_count) {
+            (true, Some(count)) => Playlist {
+                track_count: Some((count as i64 + delta).max(0) as usize),
+                ..playlist
+            },
+            _ => playlist,
+        })
+        .collect()
+}
+
+/// `tracks`, with the row whose playlist item id is `item_id` dropped.
+fn without_item(tracks: Vec<Track>, item_id: &str) -> Vec<Track> {
+    tracks
+        .into_iter()
+        .filter(|track| track.playlist_item_id.as_deref() != Some(item_id))
+        .collect()
+}
+
+/// Likes or unlikes a track: an optimistic change to the liked list,
+/// paired with the effect that tells the server. Liked state is the
+/// track's membership in the list, so a like inserts at the front and
+/// an unlike removes it.
+fn toggle_track_like(state: &mut State, track: Track) -> Vec<Effect> {
+    let liked = is_liked(&state.library.liked, &track.id);
+    if let Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) = &mut state.library.liked {
+        if liked {
+            tracks.retain(|shown| shown.id != track.id);
+        } else {
+            tracks.insert(0, track.clone());
+        }
+    }
+    vec![Effect::Api(ApiRequest::RateTrack {
+        id: track.id,
+        liked: !liked,
+    })]
+}
+
+/// Raises the playlist's shown track count and asks the server to add
+/// the track. `PlaylistItemAdded` applies the confirmed row once the
+/// server answers.
+fn add_track_to_playlist(state: &mut State, playlist: PlaylistId, track: Track) -> Vec<Effect> {
+    adjust_playlist_count(state, &playlist, 1);
+    vec![Effect::Api(ApiRequest::AddToPlaylist { playlist, track })]
+}
+
+/// Applies the server's answer to an add request. Success appends the
+/// confirmed row to the open playlist, when that playlist is still the
+/// one on screen. Failure reports the problem and reverts the count
+/// `add_track_to_playlist` raised.
+fn finish_playlist_item_add(
+    state: &mut State,
+    playlist: PlaylistId,
+    track: Track,
+    result: Result<String, String>,
+) -> Vec<Effect> {
+    match result {
+        Ok(item_id) => {
+            if state.page == Page::Playlist(playlist) {
+                append_to_open_playlist(state, track, item_id);
+            }
+        }
+        Err(message) => {
+            adjust_playlist_count(state, &playlist, -1);
+            state.notices.push(message);
+        }
+    }
+    vec![]
+}
+
+fn append_to_open_playlist(state: &mut State, track: Track, item_id: String) {
+    if let Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) =
+        &mut state.library.open_playlist
+    {
+        tracks.push(Track {
+            playlist_item_id: Some(item_id),
+            ..track
+        });
+    }
+}
+
+/// Drops the row from the open playlist, lowers the playlist's shown
+/// count, and asks the server to remove it.
+fn remove_track_from_playlist(
+    state: &mut State,
+    playlist: PlaylistId,
+    item_id: String,
+) -> Vec<Effect> {
+    if let Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) =
+        &mut state.library.open_playlist
+    {
+        *tracks = without_item(std::mem::take(tracks), &item_id);
+    }
+    adjust_playlist_count(state, &playlist, -1);
+    vec![Effect::Api(ApiRequest::RemoveFromPlaylist {
+        playlist,
+        item_id,
+    })]
+}
+
+/// Applies `with_count_delta` to the playlists slot, when it holds
+/// data. A slot that is still loading, or has none, has nothing to
+/// adjust.
+fn adjust_playlist_count(state: &mut State, id: &PlaylistId, delta: i64) {
+    if let Loadable::Loaded(playlists) | Loadable::Refreshing(playlists) =
+        &mut state.library.playlists
+    {
+        *playlists = with_count_delta(std::mem::take(playlists), id, delta);
+    }
+}
+
+/// The create-playlist dialog's Create button. An empty title is
+/// ignored, so an accidental Enter on an untouched field does
+/// nothing. Otherwise the dialog closes and the track it remembered,
+/// if any, waits in `pending_playlist_track` for `finish_playlist_create`.
+fn request_playlist_create(state: &mut State, title: String) -> Vec<Effect> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return vec![];
+    }
+    state.pending_playlist_track = dialog_then_add(state.dialog.take());
+    vec![Effect::Api(ApiRequest::CreatePlaylist(title))]
+}
+
+fn dialog_then_add(dialog: Option<Dialog>) -> Option<Track> {
+    match dialog {
+        Some(Dialog::CreatePlaylist { then_add, .. }) => then_add,
+        None => None,
+    }
+}
+
+fn set_create_playlist_draft(state: &mut State, draft: String) {
+    if let Some(Dialog::CreatePlaylist { title_draft, .. }) = &mut state.dialog {
+        *title_draft = draft;
+    }
+}
+
+/// Applies the server's answer to a create request: inserts the new
+/// playlist at the front of the library list, or reports the failure.
+/// A remembered track from `pending_playlist_track` chains straight
+/// into an add, the same way a row's "Add to playlist" click would.
+fn finish_playlist_create(state: &mut State, result: Result<Playlist, String>) -> Vec<Effect> {
+    let then_add = state.pending_playlist_track.take();
+    match result {
+        Ok(playlist) => apply_playlist_created(state, playlist, then_add),
+        Err(message) => {
+            state.notices.push(message);
+            vec![]
+        }
+    }
+}
+
+fn apply_playlist_created(
+    state: &mut State,
+    playlist: Playlist,
+    then_add: Option<Track>,
+) -> Vec<Effect> {
+    insert_playlist(state, playlist.clone());
+    let mut effects = vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+        playlists_snapshot(state),
+    ))];
+    if let Some(track) = then_add {
+        effects.extend(add_track_to_playlist(state, playlist.id, track));
+    }
+    effects
+}
+
+/// Inserts `playlist` at the front of the playlists slot. A slot with
+/// no data yet starts fresh with just this playlist in it.
+fn insert_playlist(state: &mut State, playlist: Playlist) {
+    match &mut state.library.playlists {
+        Loadable::Loaded(playlists) | Loadable::Refreshing(playlists) => {
+            playlists.insert(0, playlist);
+        }
+        slot => *slot = Loadable::Loaded(vec![playlist]),
+    }
+}
+
+fn playlists_snapshot(state: &State) -> Vec<Playlist> {
+    state
+        .library
+        .playlists
+        .loaded()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A failed rate or playlist-item write reports the problem and
+/// refetches the affected list, so the optimistic change reverts to
+/// the truth. A success needs no further action.
+fn finish_library_write(
+    state: &mut State,
+    what: LibraryWrite,
+    result: Result<(), String>,
+) -> Vec<Effect> {
+    let Err(message) = result else {
+        return vec![];
+    };
+    state.notices.push(message);
+    match what {
+        LibraryWrite::Liked => vec![Effect::Api(ApiRequest::FetchLiked)],
+        LibraryWrite::Playlist(id) => vec![
+            Effect::Api(ApiRequest::FetchPlaylistTracks(id)),
+            Effect::Api(ApiRequest::FetchPlaylists),
+        ],
+    }
 }
 
 fn set_loadable<T>(slot: &mut Loadable<T>, result: Result<T, String>) {
@@ -2405,5 +2659,388 @@ mod tests {
         );
         let effects = apply(&mut state, Action::PlaylistCoversLoaded(vec![]));
         assert_eq!(effects, vec![]);
+    }
+
+    fn counted_playlist(id: &str, track_count: Option<usize>) -> Playlist {
+        Playlist {
+            id: PlaylistId(id.to_string()),
+            title: id.to_string(),
+            track_count,
+            thumbnail_url: None,
+        }
+    }
+
+    fn track_in_playlist(id: &str, item_id: &str) -> Track {
+        Track {
+            playlist_item_id: Some(item_id.to_string()),
+            ..track(id)
+        }
+    }
+
+    // -- is_liked, with_count_delta, without_item --
+
+    #[test]
+    fn is_liked_reads_membership_from_a_loaded_or_refreshing_slot() {
+        let id = TrackId("a".into());
+        assert!(!is_liked(&Loadable::NotAsked, &id));
+        assert!(!is_liked(&Loadable::Loaded(vec![track("b")]), &id));
+        assert!(is_liked(&Loadable::Loaded(vec![track("a")]), &id));
+        assert!(is_liked(&Loadable::Refreshing(vec![track("a")]), &id));
+    }
+
+    #[test]
+    fn with_count_delta_raises_and_lowers_a_known_count_only() {
+        let playlists = vec![
+            counted_playlist("p1", Some(3)),
+            counted_playlist("p2", None),
+        ];
+        let raised = with_count_delta(playlists.clone(), &PlaylistId("p1".into()), 1);
+        assert_eq!(raised[0].track_count, Some(4));
+        let lowered = with_count_delta(playlists.clone(), &PlaylistId("p1".into()), -1);
+        assert_eq!(lowered[0].track_count, Some(2));
+        let unknown = with_count_delta(playlists, &PlaylistId("p2".into()), 1);
+        assert_eq!(unknown[1].track_count, None);
+    }
+
+    #[test]
+    fn with_count_delta_never_drops_below_zero() {
+        let playlists = vec![counted_playlist("p1", Some(0))];
+        let result = with_count_delta(playlists, &PlaylistId("p1".into()), -1);
+        assert_eq!(result[0].track_count, Some(0));
+    }
+
+    #[test]
+    fn without_item_drops_only_the_matching_row() {
+        let tracks = vec![track_in_playlist("a", "i1"), track_in_playlist("b", "i2")];
+        let result = without_item(tracks, "i1");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, TrackId("b".into()));
+    }
+
+    // -- TrackLikeToggled --
+
+    #[test]
+    fn liking_an_unliked_track_inserts_it_and_rates_it() {
+        let mut state = State::default();
+        state.library.liked = Loadable::Loaded(vec![track("existing")]);
+        let effects = apply(&mut state, Action::TrackLikeToggled(track("new")));
+        let Loadable::Loaded(liked) = &state.library.liked else {
+            panic!("expected the liked slot to stay loaded");
+        };
+        assert_eq!(liked[0].id, TrackId("new".into()));
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::RateTrack {
+                id: TrackId("new".into()),
+                liked: true
+            })]
+        );
+    }
+
+    #[test]
+    fn unliking_a_liked_track_removes_it_and_rates_it() {
+        let mut state = State::default();
+        state.library.liked = Loadable::Loaded(vec![track("a"), track("b")]);
+        let effects = apply(&mut state, Action::TrackLikeToggled(track("a")));
+        let Loadable::Loaded(liked) = &state.library.liked else {
+            panic!("expected the liked slot to stay loaded");
+        };
+        assert_eq!(liked.len(), 1);
+        assert_eq!(liked[0].id, TrackId("b".into()));
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::RateTrack {
+                id: TrackId("a".into()),
+                liked: false
+            })]
+        );
+    }
+
+    // -- TrackAddedToPlaylist / PlaylistItemAdded --
+
+    #[test]
+    fn adding_a_track_raises_the_count_and_requests_the_write() {
+        let mut state = State::default();
+        state.library.playlists = Loadable::Loaded(vec![counted_playlist("p1", Some(2))]);
+        let effects = apply(
+            &mut state,
+            Action::TrackAddedToPlaylist {
+                playlist: PlaylistId("p1".into()),
+                track: track("a"),
+            },
+        );
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to stay loaded");
+        };
+        assert_eq!(playlists[0].track_count, Some(3));
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::AddToPlaylist {
+                playlist: PlaylistId("p1".into()),
+                track: track("a"),
+            })]
+        );
+    }
+
+    #[test]
+    fn a_confirmed_add_appends_the_row_to_the_open_playlist() {
+        let mut state = State::default();
+        state.page = Page::Playlist(PlaylistId("p1".into()));
+        state.library.open_playlist = Loadable::Loaded(vec![]);
+        apply(
+            &mut state,
+            Action::PlaylistItemAdded {
+                playlist: PlaylistId("p1".into()),
+                track: track("a"),
+                result: Ok("item1".into()),
+            },
+        );
+        let Loadable::Loaded(tracks) = &state.library.open_playlist else {
+            panic!("expected the open playlist to stay loaded");
+        };
+        assert_eq!(tracks[0].playlist_item_id, Some("item1".into()));
+    }
+
+    #[test]
+    fn a_confirmed_add_is_ignored_once_the_user_left_the_playlist() {
+        let mut state = State::default();
+        state.page = Page::Library;
+        state.library.open_playlist = Loadable::Loaded(vec![]);
+        apply(
+            &mut state,
+            Action::PlaylistItemAdded {
+                playlist: PlaylistId("p1".into()),
+                track: track("a"),
+                result: Ok("item1".into()),
+            },
+        );
+        let Loadable::Loaded(tracks) = &state.library.open_playlist else {
+            panic!("expected the open playlist to stay loaded");
+        };
+        assert!(tracks.is_empty());
+    }
+
+    #[test]
+    fn a_failed_add_reverts_the_count_and_posts_a_notice() {
+        let mut state = State::default();
+        state.library.playlists = Loadable::Loaded(vec![counted_playlist("p1", Some(3))]);
+        apply(
+            &mut state,
+            Action::PlaylistItemAdded {
+                playlist: PlaylistId("p1".into()),
+                track: track("a"),
+                result: Err("nope".into()),
+            },
+        );
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to stay loaded");
+        };
+        assert_eq!(playlists[0].track_count, Some(2));
+        assert_eq!(state.notices, vec!["nope".to_string()]);
+    }
+
+    // -- TrackRemovedFromPlaylist --
+
+    #[test]
+    fn removing_a_track_drops_the_row_lowers_the_count_and_requests_the_write() {
+        let mut state = State::default();
+        state.library.playlists = Loadable::Loaded(vec![counted_playlist("p1", Some(2))]);
+        state.library.open_playlist = Loadable::Loaded(vec![
+            track_in_playlist("a", "i1"),
+            track_in_playlist("b", "i2"),
+        ]);
+        let effects = apply(
+            &mut state,
+            Action::TrackRemovedFromPlaylist {
+                playlist: PlaylistId("p1".into()),
+                item_id: "i1".into(),
+            },
+        );
+        let Loadable::Loaded(tracks) = &state.library.open_playlist else {
+            panic!("expected the open playlist to stay loaded");
+        };
+        assert_eq!(tracks.len(), 1);
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to stay loaded");
+        };
+        assert_eq!(playlists[0].track_count, Some(1));
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::RemoveFromPlaylist {
+                playlist: PlaylistId("p1".into()),
+                item_id: "i1".into(),
+            })]
+        );
+    }
+
+    // -- PlaylistCreateRequested / PlaylistCreated --
+
+    #[test]
+    fn an_empty_playlist_title_is_ignored() {
+        let mut state = State::default();
+        state.dialog = Some(Dialog::CreatePlaylist {
+            title_draft: "  ".into(),
+            then_add: None,
+        });
+        let effects = apply(&mut state, Action::PlaylistCreateRequested("  ".into()));
+        assert_eq!(effects, vec![]);
+        assert!(state.dialog.is_some());
+    }
+
+    #[test]
+    fn creating_a_playlist_closes_the_dialog_and_requests_it() {
+        let mut state = State::default();
+        state.dialog = Some(Dialog::CreatePlaylist {
+            title_draft: "Chill".into(),
+            then_add: None,
+        });
+        let effects = apply(&mut state, Action::PlaylistCreateRequested("Chill".into()));
+        assert_eq!(state.dialog, None);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::CreatePlaylist("Chill".into()))]
+        );
+    }
+
+    #[test]
+    fn a_created_playlist_is_inserted_at_the_front_and_cached() {
+        let mut state = State::default();
+        state.library.playlists = Loadable::Loaded(vec![counted_playlist("old", Some(1))]);
+        let effects = apply(
+            &mut state,
+            Action::PlaylistCreated(Ok(counted_playlist("new", Some(0)))),
+        );
+        let Loadable::Loaded(playlists) = &state.library.playlists else {
+            panic!("expected the playlists slot to stay loaded");
+        };
+        assert_eq!(playlists[0].id, PlaylistId("new".into()));
+        assert_eq!(
+            effects,
+            vec![Effect::SaveLibraryCache(LibraryCacheWrite::Playlists(
+                vec![
+                    counted_playlist("new", Some(0)),
+                    counted_playlist("old", Some(1)),
+                ]
+            ))]
+        );
+    }
+
+    #[test]
+    fn creating_a_playlist_with_a_remembered_track_chains_the_add() {
+        let mut state = State::default();
+        state.dialog = Some(Dialog::CreatePlaylist {
+            title_draft: "Chill".into(),
+            then_add: Some(track("a")),
+        });
+        apply(&mut state, Action::PlaylistCreateRequested("Chill".into()));
+        let effects = apply(
+            &mut state,
+            Action::PlaylistCreated(Ok(counted_playlist("new", Some(0)))),
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Api(ApiRequest::AddToPlaylist { .. })))
+        );
+    }
+
+    #[test]
+    fn a_failed_create_posts_a_notice() {
+        let mut state = State::default();
+        let effects = apply(&mut state, Action::PlaylistCreated(Err("nope".into())));
+        assert_eq!(effects, vec![]);
+        assert_eq!(state.notices, vec!["nope".to_string()]);
+    }
+
+    // -- CreatePlaylistDialogOpened / CreatePlaylistDraftChanged / DialogDismissed --
+
+    #[test]
+    fn opening_the_dialog_remembers_the_track_that_asked_for_it() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::CreatePlaylistDialogOpened(Some(track("a"))),
+        );
+        assert_eq!(
+            state.dialog,
+            Some(Dialog::CreatePlaylist {
+                title_draft: String::new(),
+                then_add: Some(track("a")),
+            })
+        );
+    }
+
+    #[test]
+    fn typing_in_the_dialog_updates_its_draft() {
+        let mut state = State::default();
+        apply(&mut state, Action::CreatePlaylistDialogOpened(None));
+        apply(
+            &mut state,
+            Action::CreatePlaylistDraftChanged("Chill".into()),
+        );
+        assert_eq!(
+            state.dialog,
+            Some(Dialog::CreatePlaylist {
+                title_draft: "Chill".into(),
+                then_add: None,
+            })
+        );
+    }
+
+    #[test]
+    fn dismissing_the_dialog_closes_it() {
+        let mut state = State::default();
+        apply(&mut state, Action::CreatePlaylistDialogOpened(None));
+        apply(&mut state, Action::DialogDismissed);
+        assert_eq!(state.dialog, None);
+    }
+
+    // -- LibraryWriteFinished --
+
+    #[test]
+    fn a_successful_write_does_nothing() {
+        let mut state = State::default();
+        let effects = apply(
+            &mut state,
+            Action::LibraryWriteFinished {
+                what: LibraryWrite::Liked,
+                result: Ok(()),
+            },
+        );
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_failed_liked_write_posts_a_notice_and_refetches_liked() {
+        let mut state = State::default();
+        let effects = apply(
+            &mut state,
+            Action::LibraryWriteFinished {
+                what: LibraryWrite::Liked,
+                result: Err("nope".into()),
+            },
+        );
+        assert_eq!(state.notices, vec!["nope".to_string()]);
+        assert_eq!(effects, vec![Effect::Api(ApiRequest::FetchLiked)]);
+    }
+
+    #[test]
+    fn a_failed_playlist_write_refetches_its_tracks_and_the_playlists() {
+        let mut state = State::default();
+        let effects = apply(
+            &mut state,
+            Action::LibraryWriteFinished {
+                what: LibraryWrite::Playlist(PlaylistId("p1".into())),
+                result: Err("nope".into()),
+            },
+        );
+        assert_eq!(state.notices, vec!["nope".to_string()]);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Api(ApiRequest::FetchPlaylistTracks(PlaylistId("p1".into()))),
+                Effect::Api(ApiRequest::FetchPlaylists),
+            ]
+        );
     }
 }

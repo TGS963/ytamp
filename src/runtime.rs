@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::api::Api;
 use crate::auth;
-use crate::core::action::Action;
+use crate::core::action::{Action, LibraryWrite};
 use crate::core::effect::{ApiRequest, Effect, LibraryCacheWrite};
 use crate::core::model::PlaylistId;
 use crate::library_cache;
@@ -329,6 +329,31 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
             let covers = api.playlist_covers(&ids).await;
             deliver(Action::PlaylistCoversLoaded(covers));
         }
+        ApiRequest::RateTrack { id, liked } => {
+            let result = api.rate_track(&id, liked).await;
+            deliver(Action::LibraryWriteFinished {
+                what: LibraryWrite::Liked,
+                result,
+            });
+        }
+        ApiRequest::AddToPlaylist { playlist, track } => {
+            let result = api.add_to_playlist(&playlist, &track.id).await;
+            deliver(Action::PlaylistItemAdded {
+                playlist,
+                track,
+                result,
+            });
+        }
+        ApiRequest::RemoveFromPlaylist { playlist, item_id } => {
+            let result = api.remove_from_playlist(&playlist, &item_id).await;
+            deliver(Action::LibraryWriteFinished {
+                what: LibraryWrite::Playlist(playlist),
+                result,
+            });
+        }
+        ApiRequest::CreatePlaylist(title) => {
+            deliver(Action::PlaylistCreated(api.create_playlist(&title).await));
+        }
     }
 }
 
@@ -375,5 +400,19 @@ fn request_failure(request: ApiRequest, message: String) -> Action {
         ApiRequest::FetchAlbum(id) => Action::AlbumLoaded(id, Err(message)),
         ApiRequest::FetchRadio(id) => Action::RadioLoaded(id, Err(message)),
         ApiRequest::FetchPlaylistCovers(_) => Action::PlaylistCoversLoaded(vec![]),
+        ApiRequest::RateTrack { .. } => Action::LibraryWriteFinished {
+            what: LibraryWrite::Liked,
+            result: Err(message),
+        },
+        ApiRequest::AddToPlaylist { playlist, track } => Action::PlaylistItemAdded {
+            playlist,
+            track,
+            result: Err(message),
+        },
+        ApiRequest::RemoveFromPlaylist { playlist, .. } => Action::LibraryWriteFinished {
+            what: LibraryWrite::Playlist(playlist),
+            result: Err(message),
+        },
+        ApiRequest::CreatePlaylist(_) => Action::PlaylistCreated(Err(message)),
     }
 }

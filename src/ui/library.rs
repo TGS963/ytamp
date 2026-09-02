@@ -5,19 +5,25 @@ use crate::core::model::Playlist;
 use crate::core::state::{Loadable, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
-use super::rows;
+use super::rows::{self, RowContext};
 
 /// How many playlist rows show before the playlists panel scrolls
 /// internally. Caps the panel so liked songs, drawn below it, still gets
 /// room on the page.
 const PLAYLISTS_VISIBLE_ROWS: f32 = 6.0;
 
-pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+pub fn view(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     ui.label(theme.label(TextRole::Title, "Library"));
     ui.add_space(theme.metric(MetricRole::GapLarge));
     playlists_section(ui, state, theme, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
-    liked_section(ui, state, theme, out);
+    liked_section(ui, state, theme, context, out);
 }
 
 fn playlists_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
@@ -73,7 +79,13 @@ fn playlist_label(playlist: &Playlist) -> String {
     }
 }
 
-fn liked_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+fn liked_section(
+    ui: &mut egui::Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
     ui.label(theme.label(TextRole::Heading, "Liked songs"));
     match &state.library.liked {
         Loadable::NotAsked | Loadable::Loading => {
@@ -92,6 +104,7 @@ fn liked_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut 
                 tracks,
                 state.library.liked_loading_more,
                 theme,
+                context,
                 out,
             );
         }
