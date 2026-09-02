@@ -5925,6 +5925,7 @@ dependencies = [
  "egui_extras",
  "env_logger",
  "fastrand",
+ "flate2",
  "image",
  "log",
  "reqwest 0.13.4",

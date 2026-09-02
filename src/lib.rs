@@ -11,6 +11,7 @@ pub mod library_cache;
 pub mod media_keys;
 pub mod player;
 pub mod runtime;
+pub mod skin;
 pub mod stream;
 pub mod theme;
 pub mod ui;
