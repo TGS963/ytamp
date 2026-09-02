@@ -1,5 +1,14 @@
 # Artist pages, album pages, and autoplay
 
+## Status
+
+All three phases are done and reviewed: `1ba5de4` and `3a53f24`
+(API layer), `d69cb1c` (pages, history, back), `3c5dfe5`
+(autoplay). Known follow-ups: prefetch the radio when the last queue
+track starts, so the first radio track does not start cold. ytmapi-rs
+0.3.3 cannot parse some artist headers and the "Upcoming Album" type.
+Those pages show a readable error until the crate updates.
+
 ## Goal
 
 The user opens an artist or an album from search, from a track's
