@@ -27,6 +27,10 @@ pub use view::{SliderEvent, View};
 /// the position and the blink move without a pointer event to wake it.
 const PLAYING_REPAINT: Duration = Duration::from_millis(250);
 
+/// How often the window repaints while the marquee scrolls: the
+/// marquee's own step interval, so no step is ever skipped.
+const MARQUEE_REPAINT: Duration = Duration::from_millis(220);
+
 /// The skin data and window-local look the core never sees: the
 /// loaded skin, its textures on the graphics card, and the two toggles
 /// Winamp kept out of its own settings file.
@@ -41,6 +45,14 @@ pub struct WinampShell {
     pub time_remaining: bool,
     /// The window rolled up to its title bar.
     pub shade: bool,
+    /// The marquee's window onto its current text: what the text was
+    /// last frame, how far it has scrolled, and when it last stepped.
+    marquee_text: String,
+    marquee_cursor: usize,
+    marquee_last_step: f64,
+    /// The last notice shown in the marquee, and when it started, so
+    /// a new one shows once for a few seconds and then steps aside.
+    shown_notice: Option<(String, f64)>,
 }
 
 impl Default for WinampShell {
@@ -51,6 +63,10 @@ impl Default for WinampShell {
             texture_ctx: None,
             time_remaining: false,
             shade: false,
+            marquee_text: String::new(),
+            marquee_cursor: 0,
+            marquee_last_step: 0.0,
+            shown_notice: None,
         }
     }
 }
@@ -58,6 +74,15 @@ impl Default for WinampShell {
 impl WinampShell {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Puts a skin on. Its textures are dropped, so the next frame
+    /// rebuilds them from the new bitmaps. `App::reduce` calls this
+    /// directly on `Action::SkinLoaded(Ok(_))`, since the decoded
+    /// skin never passes through `State`.
+    pub fn wear(&mut self, skin: Arc<Skin>) {
+        self.skin = skin;
+        self.textures.clear();
     }
 
     /// The skin's sheets as textures for `ctx`, made now if they are
@@ -89,6 +114,79 @@ impl WinampShell {
             .map(|(sheet, handle)| (*sheet, handle.id()))
             .collect()
     }
+
+    /// The marquee's window onto `text` at `now`: the text itself
+    /// when it fits, otherwise 31 characters that step one character
+    /// at a time. A text change restarts the scroll from the top.
+    fn marquee(&mut self, text: &str, now: f64) -> String {
+        if text != self.marquee_text {
+            self.marquee_text = text.to_string();
+            self.marquee_cursor = 0;
+            self.marquee_last_step = now;
+        }
+        if !marquee_scrolls(&self.marquee_text) {
+            return self.marquee_text.clone();
+        }
+        let steps = marquee_steps_since(now, self.marquee_last_step);
+        self.marquee_cursor = self.marquee_cursor.wrapping_add(steps);
+        self.marquee_last_step += steps as f64 * MARQUEE_STEP_SECS;
+        marquee_window(&self.marquee_text, self.marquee_cursor)
+    }
+
+    /// The notice to show in the marquee, if a new one has arrived or
+    /// one shown recently is still within its few seconds on screen.
+    fn current_notice(&mut self, notices: &[String], now: f64) -> Option<String> {
+        let latest = notices.last().map(String::as_str);
+        match (&self.shown_notice, latest) {
+            (Some((shown, _)), Some(latest)) if shown == latest => {}
+            (_, Some(latest)) => self.shown_notice = Some((latest.to_string(), now)),
+            (_, None) => {}
+        }
+        let (text, started) = self.shown_notice.as_ref()?;
+        (now - started < NOTICE_DURATION_SECS).then(|| text.clone())
+    }
+}
+
+/// How many characters the marquee shows at once: thirty whole ones
+/// and the edge of a thirty-first, the same window classic Winamp
+/// used.
+const MARQUEE_CHARS: usize = 31;
+/// Text this long fits the marquee without scrolling.
+const MARQUEE_FITS: usize = 30;
+/// How long the marquee waits between one-character steps.
+const MARQUEE_STEP_SECS: f64 = 0.220;
+/// What separates the end of a scrolling text from its start again.
+const MARQUEE_GAP: &str = "  ***  ";
+/// How long a fresh notice holds the marquee before the usual text
+/// returns.
+const NOTICE_DURATION_SECS: f64 = 3.0;
+
+/// Whether `text` is too long for the marquee to show whole, and so
+/// needs to scroll.
+fn marquee_scrolls(text: &str) -> bool {
+    text.chars().count() > MARQUEE_FITS
+}
+
+/// The 31-character window onto `text` starting at `cursor`, wrapping
+/// through the gap that marks the loop back to the start. `text`
+/// shorter than the marquee shows whole, at any cursor.
+fn marquee_window(text: &str, cursor: usize) -> String {
+    if !marquee_scrolls(text) {
+        return text.to_string();
+    }
+    let strip: Vec<char> = format!("{text}{MARQUEE_GAP}").chars().collect();
+    (0..MARQUEE_CHARS)
+        .map(|index| strip[(cursor + index) % strip.len()])
+        .collect()
+}
+
+/// How many 220 ms steps have passed since the marquee last moved.
+/// Zero when the clock has not advanced, or has gone backwards.
+fn marquee_steps_since(now: f64, last_step: f64) -> usize {
+    if now <= last_step {
+        return 0;
+    }
+    ((now - last_step) / MARQUEE_STEP_SECS) as usize
 }
 
 /// Logical points per skin pixel: `scale` screen pixels, converted to
@@ -112,10 +210,75 @@ pub fn window_height(shade: bool) -> u32 {
     }
 }
 
+/// The `.wsz` and `.zip` files dropped on this window this frame, each
+/// as the action that installs it. `App` calls this for both the main
+/// window and the skin window, since a skin can land on either.
+pub fn dropped_skins(ctx: &egui::Context) -> Vec<Action> {
+    ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .filter(|path| is_skin_file(path))
+            .map(Action::SkinFileDropped)
+            .collect()
+    })
+}
+
+/// Whether a dropped file could be a Winamp skin, by its name.
+fn is_skin_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("wsz") || extension.eq_ignore_ascii_case("zip")
+        })
+}
+
 /// The window's size in logical points, for `show_viewport_immediate`.
 pub fn window_size_points(shade: bool, scale: u8, pixels_per_point: f32) -> egui::Vec2 {
     let unit = unit(scale, pixels_per_point);
     egui::vec2(layout::WINDOW_WIDTH as f32, window_height(shade) as f32) * unit
+}
+
+/// How long a rejected resize waits before it retries, so a platform
+/// that refuses the size is not asked again every frame.
+const RESIZE_RETRY: f64 = 1.0;
+
+/// Nudges an already-open window to `wanted`. The viewport builder's
+/// own size only takes on the window's creation, so a later scale
+/// change needs this: `App` still passes the fresh size to the
+/// builder too, for the window's first frame.
+///
+/// Ported from fastpotify (MIT, Copyright (c) 2026 Carmine Paolino),
+/// src/ui/winamp/mod.rs, `fit_window` (lines 97-116).
+fn fit_window(ctx: &egui::Context, wanted: egui::Vec2) {
+    let current = ctx.viewport_rect().size();
+    if (current - wanted).abs().max_elem() < 1.0 {
+        return;
+    }
+    let asked_id = egui::Id::new("winamp-fit-asked");
+    let last_ask: Option<f64> = ctx.data(|data| data.get_temp(asked_id));
+    let now = ctx.input(|input| input.time);
+    if last_ask.is_some_and(|last_ask| now - last_ask < RESIZE_RETRY) {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_temp(asked_id, now));
+    ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(wanted));
+    ctx.send_viewport_cmd(ViewportCommand::MaxInnerSize(wanted));
+    ctx.send_viewport_cmd(ViewportCommand::InnerSize(wanted));
+}
+
+/// Keeps the window's always-on-top state matched to the setting,
+/// since the viewport builder's own version of this only takes on the
+/// window's creation.
+fn apply_on_top(ctx: &egui::Context, on_top: bool) {
+    let level = if on_top {
+        egui::WindowLevel::AlwaysOnTop
+    } else {
+        egui::WindowLevel::Normal
+    };
+    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(level));
 }
 
 /// Draws the whole window and reads its controls, adding any action a
@@ -123,6 +286,11 @@ pub fn window_size_points(shade: bool, scale: u8, pixels_per_point: f32) -> egui
 pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
     let unit = unit(state.winamp.scale, ctx.pixels_per_point());
+    fit_window(
+        &ctx,
+        window_size_points(shell.shade, state.winamp.scale, ctx.pixels_per_point()),
+    );
+    apply_on_top(&ctx, state.winamp.on_top);
     let origin = ui.max_rect().min;
     let focused = ctx
         .input(|input| input.viewport().focused)
@@ -163,19 +331,20 @@ fn full_window(
         sprites::MAIN_BACKGROUND,
         Area::new(0, 0, layout::WINDOW_WIDTH, layout::WINDOW_HEIGHT),
     );
-    title_bar(view, ctx, shell, out, focused);
+    title_bar(view, ctx, state, shell, out, focused);
     status_indicator(view, state);
     channel_lamps(view, state);
     time_display(view, state, shell, time);
-    marquee(view, state);
     rates(view, state);
-    volume_slider(view, state, out);
+    let volume_event = volume_slider(view, state, out);
     balance_slider(view);
-    position_slider(view, state, out);
+    let position_event = position_slider(view, state, out);
+    marquee(view, state, shell, time, volume_event, position_event);
     windows_buttons(view);
     play_pause_stop(view, state, out);
     simple_transport(view, out);
     shuffle_repeat(view, state, out);
+    clutter_bar(view, state, out);
 }
 
 /// The window rolled up to its title bar: the time, a little seek
@@ -220,11 +389,12 @@ fn shade_bar(
     shade_position(view, state, out);
 }
 
-/// Reads and reacts to the title bar's drag, double-click, and close
-/// and shade buttons.
+/// Reads and reacts to the title bar's drag, double-click, right-click
+/// menu, and close and shade buttons.
 fn title_bar(
     view: &mut View,
     ctx: &egui::Context,
+    state: &State,
     shell: &mut WinampShell,
     out: &mut Vec<Action>,
     focused: bool,
@@ -235,7 +405,9 @@ fn title_bar(
         sprites::TITLE_BAR_INACTIVE
     };
     view.sprite(bar, layout::TITLE_BAR);
-    drag_and_shade(view, ctx, shell, "title", layout::TITLE_BAR);
+    let title = drag_and_shade(view, ctx, shell, "title", layout::TITLE_BAR);
+    let unit = view.unit;
+    options_menu(egui::Popup::context_menu(&title), view.skin, state, unit, out);
     if close_button(view).clicked() {
         out.push(Action::WinampToggled);
     }
@@ -245,8 +417,15 @@ fn title_bar(
 }
 
 /// The title bar's own drag-to-move and double-click-to-shade
-/// behaviour, shared with the shade bar.
-fn drag_and_shade(view: &mut View, ctx: &egui::Context, shell: &mut WinampShell, id: &str, area: Area) {
+/// behaviour, shared with the shade bar. Returns the area's response,
+/// so a caller can hang a right-click menu off it.
+fn drag_and_shade(
+    view: &mut View,
+    ctx: &egui::Context,
+    shell: &mut WinampShell,
+    id: &str,
+    area: Area,
+) -> egui::Response {
     let response = view.interact(area, id, Sense::click_and_drag());
     if response.drag_started() {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
@@ -254,6 +433,7 @@ fn drag_and_shade(view: &mut View, ctx: &egui::Context, shell: &mut WinampShell,
     if response.double_clicked() {
         shell.shade = !shell.shade;
     }
+    response
 }
 
 fn close_button(view: &mut View) -> egui::Response {
@@ -418,14 +598,84 @@ fn shown_time(state: &State, shell: &WinampShell) -> Duration {
     shown_duration(state.playback.position, duration, remaining)
 }
 
-/// "artist - title", or the app's name with nothing playing.
-fn marquee(view: &mut View, state: &State) {
-    let text = match state.playback.queue.current() {
-        Some(track) if track.artists.is_empty() => track.title.clone(),
-        Some(track) => format!("{} - {}", track.artist_names(), track.title),
-        None => "ytamp".to_string(),
+/// "artist - title (m:ss)", or the app's name with nothing playing.
+fn track_marquee_text(state: &State) -> String {
+    let Some(track) = state.playback.queue.current() else {
+        return "ytamp".to_string();
     };
-    view.text(&text, layout::MARQUEE);
+    let name = if track.artists.is_empty() {
+        track.title.clone()
+    } else {
+        format!("{} - {}", track.artist_names(), track.title)
+    };
+    match state.playback.track_duration {
+        Some(duration) if !duration.is_zero() => {
+            format!("{name} ({})", format_minutes_seconds(duration))
+        }
+        _ => name,
+    }
+}
+
+/// The value a slider drag or click reported this frame, if any.
+fn slider_active_value(event: SliderEvent) -> Option<f32> {
+    match event {
+        SliderEvent::Dragging(value) | SliderEvent::Committed(value) => Some(value),
+        SliderEvent::None => None,
+    }
+}
+
+/// What the marquee says: `VOLUME: NN%` while the volume drags,
+/// `SEEK TO: m:ss/m:ss` while the seek bar drags, a fresh notice once,
+/// else the track line.
+fn marquee_priority_text(
+    track_line: &str,
+    volume: Option<f32>,
+    seek: Option<(Duration, Duration)>,
+    notice: Option<&str>,
+) -> String {
+    if let Some(volume) = volume {
+        return format!("VOLUME: {}%", (volume * 100.0).round() as u32);
+    }
+    if let Some((target, duration)) = seek {
+        return format!(
+            "SEEK TO: {}/{}",
+            format_minutes_seconds(target),
+            format_minutes_seconds(duration)
+        );
+    }
+    if let Some(notice) = notice {
+        return notice.to_string();
+    }
+    track_line.to_string()
+}
+
+/// Draws the marquee: works out what it should say this frame, steps
+/// its scroll, and asks for another frame soon if it is still moving.
+fn marquee(
+    view: &mut View,
+    state: &State,
+    shell: &mut WinampShell,
+    time: f64,
+    volume_event: SliderEvent,
+    position_event: SliderEvent,
+) {
+    let duration = state.playback.track_duration.unwrap_or(Duration::ZERO);
+    let seek = slider_active_value(position_event)
+        .filter(|_| !duration.is_zero())
+        .map(|fraction| (duration.mul_f32(fraction), duration));
+    let notice = shell.current_notice(&state.notices, time);
+    let track_line = track_marquee_text(state);
+    let text = marquee_priority_text(
+        &track_line,
+        slider_active_value(volume_event),
+        seek,
+        notice.as_deref(),
+    );
+    let shown = shell.marquee(&text, time);
+    if marquee_scrolls(&text) {
+        view.ui.ctx().request_repaint_after(MARQUEE_REPAINT);
+    }
+    view.text(&shown, layout::MARQUEE);
 }
 
 /// The bitrate (a stand-in, since ytamp streams at whatever YouTube
@@ -450,7 +700,7 @@ fn slider_fraction(event: SliderEvent, resting: f32) -> f32 {
     }
 }
 
-fn volume_slider(view: &mut View, state: &State, out: &mut Vec<Action>) {
+fn volume_slider(view: &mut View, state: &State, out: &mut Vec<Action>) -> SliderEvent {
     let (response, event) = view.slider(layout::VOLUME, "volume", 14);
     if let SliderEvent::Dragging(value) | SliderEvent::Committed(value) = event {
         out.push(Action::VolumeSet(value));
@@ -465,6 +715,7 @@ fn volume_slider(view: &mut View, state: &State, out: &mut Vec<Action>) {
     };
     let thumb_x = layout::VOLUME.x + (fraction * layout::VOLUME_TRAVEL as f32).round() as u32;
     view.sprite_at(thumb, thumb_x, layout::VOLUME.y + 1);
+    event
 }
 
 /// The balance slider, always centred: ytamp's engine has no balance
@@ -475,11 +726,11 @@ fn balance_slider(view: &mut View) {
     view.sprite_at(sprites::BALANCE_THUMB, thumb_x, layout::BALANCE.y + 1);
 }
 
-fn position_slider(view: &mut View, state: &State, out: &mut Vec<Action>) {
+fn position_slider(view: &mut View, state: &State, out: &mut Vec<Action>) -> SliderEvent {
     view.sprite(sprites::POSITION_TRACK, layout::POSITION);
     let duration = state.playback.track_duration.unwrap_or(Duration::ZERO);
     if duration.is_zero() || state.playback.status == PlayStatus::Stopped {
-        return;
+        return SliderEvent::None;
     }
     let (response, event) = view.slider(layout::POSITION, "position", 29);
     if let SliderEvent::Committed(value) = event {
@@ -494,6 +745,7 @@ fn position_slider(view: &mut View, state: &State, out: &mut Vec<Action>) {
     };
     let thumb_x = layout::POSITION.x + (fraction * layout::POSITION_TRAVEL as f32).round() as u32;
     view.sprite_at(thumb, thumb_x, layout::POSITION.y);
+    event
 }
 
 /// The seek bar's fraction along its travel: 0 at the start of the
@@ -668,6 +920,161 @@ fn shuffle_repeat(view: &mut View, state: &State, out: &mut Vec<Action>) {
     }
 }
 
+/// The O button: the only lit lamp of Winamp's clutter strip ytamp
+/// draws, since the equalizer and visualizer have no function yet.
+/// Lights while held, and opens the same menu a right-click on the
+/// title bar does.
+fn clutter_bar(view: &mut View, state: &State, out: &mut Vec<Action>) {
+    view.sprite(sprites::CLUTTER_BAR, layout::CLUTTER_BAR);
+    let options = view
+        .interact(layout::CLUTTER_O, "clutter-o", Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if options.is_pointer_button_down_on() {
+        view.sprite(sprites::CLUTTER_O_LIT, layout::CLUTTER_O);
+    }
+    let unit = view.unit;
+    options_menu(egui::Popup::menu(&options), view.skin, state, unit, out);
+}
+
+/// The menu behind a right-click on the title bar and the O button:
+/// the window's scale, always-on-top, the skin picker, and the way
+/// back to the classic look.
+fn options_menu(popup: egui::Popup<'_>, skin: &Skin, state: &State, unit: f32, out: &mut Vec<Action>) {
+    menu(popup, skin, unit, |ui| {
+        ui.set_min_width(menu_font(unit) * 11.0);
+        if let Some(action) = scale_menu_row(ui, state.winamp.scale) {
+            out.push(action);
+        }
+        let mut on_top = state.winamp.on_top;
+        if ui.checkbox(&mut on_top, "Always on top").clicked() {
+            out.push(Action::WinampOnTopToggled);
+        }
+        ui.separator();
+        if let Some(action) = skin_menu_rows(ui, &state.winamp.skin, &state.winamp.available_skins)
+        {
+            out.push(action);
+        }
+        if ui.button("Open skins folder").clicked() {
+            crate::skins_dir::open_folder();
+        }
+        ui.separator();
+        if ui.button("Close Winamp mode").clicked() {
+            out.push(Action::WinampToggled);
+        }
+    });
+}
+
+/// The 1x through 4x radio row.
+fn scale_menu_row(ui: &mut Ui, current: u8) -> Option<Action> {
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label("Size");
+        for candidate in 1..=4u8 {
+            let picked = ui
+                .selectable_label(candidate == current, format!("{candidate}x"))
+                .clicked();
+            if picked {
+                chosen = Some(Action::WinampScaleSet(candidate));
+            }
+        }
+    });
+    chosen
+}
+
+/// The built-in skin and every skin in the folder, as a radio list.
+fn skin_menu_rows(ui: &mut Ui, current: &Option<String>, names: &[String]) -> Option<Action> {
+    let mut chosen = None;
+    if ui.selectable_label(current.is_none(), "Built-in skin").clicked() {
+        chosen = Some(Action::SkinChosen(None));
+    }
+    for name in names {
+        let selected = current.as_deref() == Some(name.as_str());
+        if ui.selectable_label(selected, name).clicked() {
+            chosen = Some(Action::SkinChosen(Some(name.clone())));
+        }
+    }
+    chosen
+}
+
+/// A menu styled from the skin's playlist colours, the nearest thing
+/// a classic skin says about text on a background. A long list, such
+/// as many installed skins, scrolls inside the window rather than
+/// running off the screen.
+///
+/// Ported from fastpotify (MIT, Copyright (c) 2026 Carmine Paolino),
+/// src/ui/winamp/mod.rs, `menu` (lines 745-800).
+fn menu<R>(
+    popup: egui::Popup<'_>,
+    skin: &Skin,
+    unit: f32,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<egui::InnerResponse<R>> {
+    let rgb = |[r, g, b]: [u8; 3]| egui::Color32::from_rgb(r, g, b);
+    let text = rgb(skin.playlist.normal);
+    let current = rgb(skin.playlist.current);
+    let background = rgb(skin.playlist.normal_background);
+    let selected = rgb(skin.playlist.selected_background);
+    let font = menu_font(unit);
+    let margin = unit.max(1.0).round();
+    let style = move |style: &mut egui::Style| {
+        for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            style
+                .text_styles
+                .insert(text_style, egui::FontId::proportional(font));
+        }
+        style.spacing.item_spacing = egui::vec2(4.0, 1.0);
+        style.spacing.button_padding = egui::vec2(6.0, 1.0);
+        // A row is its text and padding, not egui's default 18 points.
+        style.spacing.interact_size = egui::vec2(font * 2.0, font + 2.0);
+        style.spacing.menu_margin = egui::Margin::same(margin as i8);
+        let visuals = &mut style.visuals;
+        visuals.window_fill = background;
+        visuals.panel_fill = background;
+        visuals.window_stroke = egui::Stroke::new(1.0, text.gamma_multiply(0.5));
+        visuals.window_corner_radius = egui::CornerRadius::ZERO;
+        visuals.menu_corner_radius = egui::CornerRadius::ZERO;
+        visuals.window_shadow = egui::Shadow::NONE;
+        visuals.popup_shadow = egui::Shadow::NONE;
+        visuals.override_text_color = None;
+        visuals.selection.bg_fill = selected;
+        visuals.selection.stroke = egui::Stroke::new(1.0, current);
+        let widgets = &mut visuals.widgets;
+        for state in [&mut widgets.noninteractive, &mut widgets.inactive] {
+            state.fg_stroke.color = text;
+            state.weak_bg_fill = background;
+            state.bg_fill = background;
+            state.bg_stroke = egui::Stroke::NONE;
+        }
+        for state in [&mut widgets.hovered, &mut widgets.active, &mut widgets.open] {
+            state.fg_stroke.color = current;
+            state.weak_bg_fill = selected;
+            state.bg_fill = selected;
+            state.bg_stroke = egui::Stroke::NONE;
+            state.expansion = 0.0;
+            state.corner_radius = egui::CornerRadius::ZERO;
+        }
+    };
+    popup.style(style).show(|ui| {
+        egui::ScrollArea::vertical()
+            .max_height(menu_limit(ui))
+            .show(ui, contents)
+            .inner
+    })
+}
+
+/// The type size of a menu at this scale.
+fn menu_font(unit: f32) -> f32 {
+    (5.0 * unit).clamp(9.0, 14.0)
+}
+
+/// How tall a menu's contents may be before they scroll: the window
+/// less the menu's own frame, so egui can always find it a place
+/// inside.
+fn menu_limit(ui: &Ui) -> f32 {
+    let frame = ui.spacing().menu_margin.sum().y + 6.0;
+    (ui.ctx().content_rect().height() - frame).max(menu_font(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,5 +1150,135 @@ mod tests {
     fn shade_time_text_shows_a_minus_only_when_counting_down() {
         assert_eq!(shade_time_text(Duration::from_secs(65), false), " 1:05");
         assert_eq!(shade_time_text(Duration::from_secs(65), true), "-1:05");
+    }
+
+    #[test]
+    fn a_dropped_file_is_a_skin_by_its_extension_only() {
+        assert!(is_skin_file(std::path::Path::new("/tmp/Zaxon.wsz")));
+        assert!(is_skin_file(std::path::Path::new("/tmp/Zaxon.WSZ")));
+        assert!(is_skin_file(std::path::Path::new("/tmp/Zaxon.zip")));
+        assert!(!is_skin_file(std::path::Path::new("/tmp/readme.txt")));
+        assert!(!is_skin_file(std::path::Path::new("/tmp/no-extension")));
+    }
+
+    #[test]
+    fn short_text_never_scrolls_and_long_text_does() {
+        assert!(!marquee_scrolls("ytamp"));
+        assert!(!marquee_scrolls(&"x".repeat(30)));
+        assert!(marquee_scrolls(&"x".repeat(31)));
+    }
+
+    #[test]
+    fn a_short_marquee_window_is_the_text_itself() {
+        assert_eq!(marquee_window("ytamp", 0), "ytamp");
+        assert_eq!(marquee_window("ytamp", 5), "ytamp");
+    }
+
+    #[test]
+    fn a_long_marquee_window_shows_thirty_one_characters_and_wraps_through_the_gap() {
+        let text = "Radiohead - Everything In Its Right Place";
+        let first = marquee_window(text, 0);
+        assert_eq!(first.chars().count(), MARQUEE_CHARS);
+        assert!(text.starts_with(&first));
+
+        let strip_len = text.chars().count() + MARQUEE_GAP.chars().count();
+        let wrapped = marquee_window(text, strip_len);
+        assert_eq!(wrapped, first);
+    }
+
+    #[test]
+    fn marquee_steps_advance_every_220_milliseconds() {
+        assert_eq!(marquee_steps_since(0.1, 0.0), 0);
+        assert_eq!(marquee_steps_since(0.22, 0.0), 1);
+        assert_eq!(marquee_steps_since(0.65, 0.0), 2);
+        // The clock going backwards, or standing still, steps nothing.
+        assert_eq!(marquee_steps_since(0.0, 0.5), 0);
+    }
+
+    #[test]
+    fn the_track_line_names_the_song_and_its_length_or_the_app_with_nothing_playing() {
+        let mut state = State::default();
+        assert_eq!(track_marquee_text(&state), "ytamp");
+
+        let track = crate::core::model::Track {
+            id: crate::core::model::TrackId("t1".into()),
+            title: "Everything In Its Right Place".into(),
+            artists: vec![crate::core::model::ArtistRef {
+                name: "Radiohead".into(),
+                id: None,
+            }],
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail_url: None,
+        };
+        state
+            .playback
+            .queue
+            .play_context(vec![track], 0, &mut |_| 0);
+        state.playback.track_duration = Some(Duration::from_secs(251));
+        assert_eq!(
+            track_marquee_text(&state),
+            "Radiohead - Everything In Its Right Place (4:11)"
+        );
+    }
+
+    #[test]
+    fn the_marquee_priority_puts_a_live_slider_before_the_track_line() {
+        let track_line = "Radiohead - Everything In Its Right Place (4:11)";
+        assert_eq!(
+            marquee_priority_text(track_line, Some(0.5), None, None),
+            "VOLUME: 50%"
+        );
+        assert_eq!(
+            marquee_priority_text(
+                track_line,
+                None,
+                Some((Duration::from_secs(65), Duration::from_secs(251))),
+                None
+            ),
+            "SEEK TO: 1:05/4:11"
+        );
+        assert_eq!(
+            marquee_priority_text(track_line, None, None, Some("Sign-in failed")),
+            "Sign-in failed"
+        );
+        assert_eq!(
+            marquee_priority_text(track_line, None, None, None),
+            track_line
+        );
+    }
+
+    #[test]
+    fn a_shell_shows_a_fresh_notice_for_a_few_seconds_then_steps_aside() {
+        let mut shell = WinampShell::new();
+        assert_eq!(shell.current_notice(&[], 0.0), None);
+
+        let notices = ["a notice".to_string()];
+        assert_eq!(
+            shell.current_notice(&notices, 0.0),
+            Some("a notice".to_string())
+        );
+        assert_eq!(
+            shell.current_notice(&notices, 2.9),
+            Some("a notice".to_string())
+        );
+        assert_eq!(shell.current_notice(&notices, 3.1), None);
+    }
+
+    #[test]
+    fn a_shells_marquee_restarts_from_the_top_when_the_text_changes() {
+        let mut shell = WinampShell::new();
+        let long = "Radiohead - Everything In Its Right Place (4:11)";
+        let first = shell.marquee(long, 0.0);
+        assert_eq!(first.chars().count(), MARQUEE_CHARS);
+        assert!(long.starts_with(&first));
+        // Not yet a full step.
+        assert_eq!(shell.marquee(long, 0.1), first);
+        let stepped = shell.marquee(long, 0.22);
+        assert!(long[1..].starts_with(&stepped));
+        // A new title starts over from its own beginning.
+        let other = "Someone Else - A Different Song Entirely (3:00)";
+        assert!(other.starts_with(&shell.marquee(other, 0.5)));
     }
 }

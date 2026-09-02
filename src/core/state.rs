@@ -168,6 +168,10 @@ pub struct WinampSettings {
     /// The skin file name in the skins folder, or `None` for the
     /// built-in skin.
     pub skin: Option<String>,
+    /// The skins folder's contents, as last listed. Not saved: a
+    /// fresh listing runs whenever the window opens.
+    #[serde(skip)]
+    pub available_skins: Vec<String>,
 }
 
 impl Default for WinampSettings {
@@ -177,6 +181,7 @@ impl Default for WinampSettings {
             scale: 2,
             on_top: false,
             skin: None,
+            available_skins: Vec::new(),
         }
     }
 }

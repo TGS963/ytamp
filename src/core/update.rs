@@ -109,16 +109,28 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.queue_open = !state.queue_open;
             vec![]
         }
-        Action::WinampToggled => {
-            state.winamp.open = !state.winamp.open;
-            vec![]
-        }
+        Action::WinampToggled => toggle_winamp(state),
         Action::WinampScaleSet(scale) => {
             state.winamp.scale = scale.clamp(1, 4);
             vec![]
         }
         Action::WinampOnTopToggled => {
             state.winamp.on_top = !state.winamp.on_top;
+            vec![]
+        }
+        Action::SkinChosen(skin) => wear_skin(state, skin),
+        Action::SkinFileDropped(path) => vec![Effect::InstallSkin(path)],
+        // Shell-only: `App::reduce` intercepts `SkinLoaded` before it
+        // reaches here, so this arm never runs. It exists only to keep
+        // the match exhaustive.
+        Action::SkinLoaded(_) => vec![],
+        Action::SkinInstalled(Ok(stem)) => wear_skin(state, Some(stem)),
+        Action::SkinInstalled(Err(message)) => {
+            state.notices.push(message);
+            vec![]
+        }
+        Action::SkinListRefreshed(names) => {
+            state.winamp.available_skins = names;
             vec![]
         }
         Action::NoticeDismissed(index) => {
@@ -668,6 +680,28 @@ fn restart_current(state: &mut State) -> Vec<Effect> {
     load_track(state, Some(track))
 }
 
+/// Opens or closes the Winamp skin window. Opening it loads the worn
+/// skin and refreshes the skins folder listing, so both are fresh
+/// whether this is the first open or a later one.
+fn toggle_winamp(state: &mut State) -> Vec<Effect> {
+    state.winamp.open = !state.winamp.open;
+    if !state.winamp.open {
+        return vec![];
+    }
+    vec![
+        Effect::LoadSkin(state.winamp.skin.clone()),
+        Effect::RefreshSkinList,
+    ]
+}
+
+/// Wears a skin: records the choice and loads it. `SkinChosen` and a
+/// successful `SkinInstalled` both end up here, since installing a
+/// skin means wearing it.
+fn wear_skin(state: &mut State, skin: Option<String>) -> Vec<Effect> {
+    state.winamp.skin = skin.clone();
+    vec![Effect::LoadSkin(skin)]
+}
+
 fn restore_session(state: &mut State, session: crate::core::session::SavedSession) -> Vec<Effect> {
     state.playback.position = session.position();
     state.playback.queue = session.queue;
@@ -680,9 +714,11 @@ fn restore_session(state: &mut State, session: crate::core::session::SavedSessio
         .queue
         .current()
         .and_then(|track| track.duration);
-    vec![Effect::Player(PlayerCommand::SetVolume(
-        state.playback.volume,
-    ))]
+    vec![
+        Effect::Player(PlayerCommand::SetVolume(state.playback.volume)),
+        Effect::LoadSkin(state.winamp.skin.clone()),
+        Effect::RefreshSkinList,
+    ]
 }
 
 fn go_previous(state: &mut State) -> Vec<Effect> {
@@ -1991,6 +2027,70 @@ mod tests {
         assert!(state.winamp.open);
         apply(&mut state, Action::WinampToggled);
         assert!(!state.winamp.open);
+    }
+
+    #[test]
+    fn opening_the_winamp_window_loads_the_worn_skin_and_lists_the_folder() {
+        let mut state = State::default();
+        state.winamp.skin = Some("Zaxon".to_string());
+        let effects = apply(&mut state, Action::WinampToggled);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::LoadSkin(Some("Zaxon".to_string())),
+                Effect::RefreshSkinList
+            ]
+        );
+        let effects = apply(&mut state, Action::WinampToggled);
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn choosing_a_skin_records_it_and_loads_it() {
+        let mut state = State::default();
+        let effects = apply(&mut state, Action::SkinChosen(Some("Base".to_string())));
+        assert_eq!(state.winamp.skin, Some("Base".to_string()));
+        assert_eq!(effects, vec![Effect::LoadSkin(Some("Base".to_string()))]);
+
+        let effects = apply(&mut state, Action::SkinChosen(None));
+        assert_eq!(state.winamp.skin, None);
+        assert_eq!(effects, vec![Effect::LoadSkin(None)]);
+    }
+
+    #[test]
+    fn a_dropped_skin_file_is_installed() {
+        let mut state = State::default();
+        let path = std::path::PathBuf::from("/tmp/Zaxon.wsz");
+        let effects = apply(&mut state, Action::SkinFileDropped(path.clone()));
+        assert_eq!(effects, vec![Effect::InstallSkin(path)]);
+    }
+
+    #[test]
+    fn an_installed_skin_is_worn_and_a_failure_is_a_notice() {
+        let mut state = State::default();
+        let effects = apply(&mut state, Action::SkinInstalled(Ok("Zaxon".to_string())));
+        assert_eq!(state.winamp.skin, Some("Zaxon".to_string()));
+        assert_eq!(
+            effects,
+            vec![Effect::LoadSkin(Some("Zaxon".to_string()))]
+        );
+
+        let effects = apply(&mut state, Action::SkinInstalled(Err("bad file".into())));
+        assert_eq!(state.notices, vec!["bad file".to_string()]);
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn the_skin_list_refresh_replaces_the_available_skins() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::SkinListRefreshed(vec!["Base".to_string(), "Zaxon".to_string()]),
+        );
+        assert_eq!(
+            state.winamp.available_skins,
+            vec!["Base".to_string(), "Zaxon".to_string()]
+        );
     }
 
     #[test]

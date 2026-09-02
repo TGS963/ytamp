@@ -4,6 +4,7 @@
 //! action and asking the UI for a repaint. Player commands are still a
 //! stub until the player engine lands.
 
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 
@@ -14,6 +15,8 @@ use crate::core::effect::{ApiRequest, Effect, LibraryCacheWrite};
 use crate::core::model::PlaylistId;
 use crate::library_cache;
 use crate::player::PlayerHandle;
+use crate::skin::Skin;
+use crate::skins_dir;
 use crate::stream::ResolverChain;
 
 type ApiSlot = Arc<RwLock<Option<Api>>>;
@@ -63,7 +66,35 @@ impl EffectRuntime {
             Effect::LoadPlaylistTracksCache(id) => self.load_playlist_tracks_cache(id),
             Effect::SaveLibraryCache(write) => self.save_library_cache(write),
             Effect::ClearLibraryCache => self.clear_library_cache(),
+            Effect::LoadSkin(name) => self.load_skin(name),
+            Effect::InstallSkin(path) => self.install_skin(path),
+            Effect::RefreshSkinList => self.refresh_skin_list(),
         }
+    }
+
+    /// Decodes a skin on the blocking pool and delivers it. `App`
+    /// routes the result straight to the shell, never to the reducer.
+    fn load_skin(&self, name: Option<String>) {
+        let deliver = self.delivery();
+        self.tokio.spawn_blocking(move || {
+            deliver(Action::SkinLoaded(load_named_skin(name)));
+        });
+    }
+
+    /// Copies a dropped skin into the skins folder on the blocking
+    /// pool and delivers the result.
+    fn install_skin(&self, path: PathBuf) {
+        let deliver = self.delivery();
+        self.tokio.spawn_blocking(move || {
+            deliver(Action::SkinInstalled(skins_dir::install(&path)));
+        });
+    }
+
+    /// Lists the skins folder again on the blocking pool.
+    fn refresh_skin_list(&self) {
+        let deliver = self.delivery();
+        self.tokio
+            .spawn_blocking(move || deliver(Action::SkinListRefreshed(skins_dir::list_skins())));
     }
 
     fn run_api_request(&self, request: ApiRequest) {
@@ -139,6 +170,19 @@ impl EffectRuntime {
     fn delivery(&self) -> impl Fn(Action) + Send + 'static {
         delivery(self.actions.clone(), self.request_repaint.clone())
     }
+}
+
+/// The built-in skin for `None`, or the named skin from the skins
+/// folder. A skin that has gone missing since it was listed, or that
+/// fails to decode, is reported as an error rather than silently
+/// falling back, so the listener learns their skin is gone.
+fn load_named_skin(name: Option<String>) -> Result<Arc<Skin>, String> {
+    let Some(name) = name else {
+        return Ok(Skin::builtin());
+    };
+    let path = skins_dir::skin_path(&name)
+        .ok_or_else(|| format!("the skin \"{name}\" is no longer in the skins folder"))?;
+    Skin::load(&path).map(Arc::new).map_err(|error| error.to_string())
 }
 
 /// Session setup for the audio sources runs in the background at

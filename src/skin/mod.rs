@@ -103,6 +103,7 @@ impl Bitmap {
 /// The files a skin is read from, keyed by lower-case file name.
 type Files = HashMap<String, Vec<u8>>;
 
+#[derive(Debug)]
 pub struct Skin {
     /// The file or folder name, for showing which skin is on.
     pub name: String,

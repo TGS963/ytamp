@@ -3,6 +3,8 @@
 //! Views return actions. The effect runtime and the player send result
 //! actions back. The reducer in `update.rs` consumes all of them.
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::model::{
@@ -10,6 +12,7 @@ use super::model::{
     Track, TrackId,
 };
 use super::state::Page;
+use crate::skin::Skin;
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -61,6 +64,24 @@ pub enum Action {
     /// Sets the skin window's scale, clamped to 1 through 4.
     WinampScaleSet(u8),
     WinampOnTopToggled,
+    /// Wears the built-in skin (`None`) or a named one from the skins
+    /// folder.
+    SkinChosen(Option<String>),
+    /// A `.wsz` or `.zip` file dropped on a window, to install and
+    /// wear.
+    SkinFileDropped(PathBuf),
+
+    // From the effect runtime, Winamp skins.
+    /// The decoded skin lives only in `WinampShell`, never in
+    /// `State`: `App::reduce` hands this to the shell before the
+    /// reducer sees it. A failure becomes a plain `NoticePosted`
+    /// instead.
+    SkinLoaded(Result<Arc<Skin>, String>),
+    /// A dropped skin finished copying into the skins folder. On
+    /// success the reducer wears it; on failure it posts a notice.
+    SkinInstalled(Result<String, String>),
+    /// The skins folder's contents, freshly listed.
+    SkinListRefreshed(Vec<String>),
 
     // From the shell at startup.
     StoredAuthFound(crate::core::effect::AuthMethod),

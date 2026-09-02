@@ -3,6 +3,7 @@
 //! The reducer returns effects. The runtime executes them and sends
 //! result actions back. This keeps the reducer honest and testable.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,14 @@ pub enum Effect {
     /// `ClearCredentials`, so no stale library survives for the next
     /// account.
     ClearLibraryCache,
+    /// Decodes a skin on the blocking pool: the built-in skin for
+    /// `None`, or the named skin from the skins folder.
+    LoadSkin(Option<String>),
+    /// Copies a dropped skin file into the skins folder, on the
+    /// blocking pool.
+    InstallSkin(PathBuf),
+    /// Lists the skins folder again, on the blocking pool.
+    RefreshSkinList,
 }
 
 /// One fresh network result to persist to the library cache.

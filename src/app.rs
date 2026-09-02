@@ -71,6 +71,7 @@ impl App {
                     .show(ui, |ui| {
                         ui::winamp::show(ui, state, winamp, &mut actions);
                     });
+                actions.extend(ui::winamp::dropped_skins(ui.ctx()));
                 if ui.ctx().input(|input| input.viewport().close_requested()) {
                     actions.push(Action::WinampToggled);
                 }
@@ -84,13 +85,31 @@ impl App {
     }
 
     fn reduce(&mut self, actions: Vec<Action>) {
-        let rng = &mut self.rng;
-        let mut random_below = |n: usize| rng.usize(0..n.max(1));
         for action in actions {
+            let Some(action) = self.deliver_to_shell(action) else {
+                continue;
+            };
+            let rng = &mut self.rng;
+            let mut random_below = |n: usize| rng.usize(0..n.max(1));
             let effects = update(&mut self.state, action, &mut random_below);
             for effect in effects {
                 self.runtime.run(effect);
             }
+        }
+    }
+
+    /// `SkinLoaded` never reaches the reducer: the decoded skin lives
+    /// only in the shell, never in `State`. A successful load wears
+    /// the skin here and stops; a failure becomes a plain notice,
+    /// which the reducer already knows how to show.
+    fn deliver_to_shell(&mut self, action: Action) -> Option<Action> {
+        match action {
+            Action::SkinLoaded(Ok(skin)) => {
+                self.winamp.wear(skin);
+                None
+            }
+            Action::SkinLoaded(Err(message)) => Some(Action::NoticePosted(message)),
+            other => Some(other),
         }
     }
 }
@@ -112,6 +131,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut actions: Vec<Action> = self.incoming.try_iter().collect();
         actions.extend(ui::view(ui, &self.state, self.theme.as_ref()));
+        actions.extend(ui::winamp::dropped_skins(ui.ctx()));
         let ctx = ui.ctx().clone();
         if self.state.winamp.open {
             actions.extend(self.winamp_window(&ctx));

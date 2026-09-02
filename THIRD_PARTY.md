@@ -41,6 +41,11 @@ Each file below carries a header comment that names this notice.
 - `src/skin/mod.rs`, ported from `src/skin/mod.rs` of fastpotify
 - `examples/default_skin.rs`, ported from `examples/default_skin.rs` of
   fastpotify
+- `src/ui/winamp/view.rs`, ported from `src/ui/winamp/mod.rs` of
+  fastpotify (the `View` blitter)
+- `src/ui/winamp/mod.rs`, ported in part from `src/ui/winamp/mod.rs`
+  and `src/winamp.rs` of fastpotify (sprite drawing, the marquee, and
+  the skin picker menu)
 
 ### Bundled skin
 

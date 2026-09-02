@@ -13,6 +13,7 @@ use crate::skin::layout::Area;
 use crate::skin::{Sheet, Skin, Sprite, font};
 
 /// What a drag on a slider did this frame.
+#[derive(Clone, Copy)]
 pub enum SliderEvent {
     None,
     /// The thumb is somewhere between its ends, not yet let go.
