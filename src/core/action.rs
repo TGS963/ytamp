@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use super::model::{Playlist, PlaylistId, SearchResults, Track};
+use super::model::{
+    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track,
+};
 use super::state::Page;
 
 #[derive(Clone, Debug)]
@@ -25,6 +27,10 @@ pub enum Action {
     SearchInputChanged(String),
     SearchSubmitted,
     PlaylistOpened(PlaylistId),
+    ArtistOpened(ArtistId),
+    AlbumOpened(AlbumId),
+    /// Returns to the page Back left, popping `State.history`.
+    BackPressed,
     ContextPlayed {
         tracks: Vec<Track>,
         start: usize,
@@ -54,6 +60,8 @@ pub enum Action {
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),
     LikedLoaded(Result<Vec<Track>, String>),
     PlaylistTracksLoaded(PlaylistId, Result<Vec<Track>, String>),
+    ArtistLoaded(ArtistId, Result<ArtistPage, String>),
+    AlbumLoaded(AlbumId, Result<AlbumPage, String>),
     /// One page of the liked-songs list. `finished` marks the last
     /// page of the stream.
     LikedPageLoaded {

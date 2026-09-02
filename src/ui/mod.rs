@@ -1,6 +1,8 @@
 //! Pure views. They read the state, draw, and return actions.
 //! They never mutate the state and never talk to the network.
 
+mod album;
+mod artist;
 mod library;
 mod player_bar;
 mod playlist;
@@ -38,11 +40,12 @@ fn keyboard_shortcuts(ui: &Ui, out: &mut Vec<Action>) {
     if ui.ctx().egui_wants_keyboard_input() {
         return;
     }
-    let shortcuts: [(egui::Key, fn() -> Action); 4] = [
+    let shortcuts: [(egui::Key, fn() -> Action); 5] = [
         (egui::Key::Space, || Action::PlayToggled),
         (egui::Key::ArrowRight, || Action::NextPressed),
         (egui::Key::ArrowLeft, || Action::PreviousPressed),
         (egui::Key::Q, || Action::QueuePanelToggled),
+        (egui::Key::Backspace, || Action::BackPressed),
     ];
     ui.input(|input| {
         for (key, action) in shortcuts {
@@ -137,12 +140,30 @@ fn page(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     let frame = egui::Frame::central_panel(ui.style()).fill(theme.color(ColorRole::PageBackground));
     egui::CentralPanel::default_margins().frame(frame).show(ui, |ui| {
         ui.add_space(theme.metric(MetricRole::PagePadding));
+        back_button(ui, state, theme, out);
         match &state.page {
             Page::SignIn | Page::Search => search::view(ui, state, theme, out),
             Page::Library => library::view(ui, state, theme, out),
             Page::Playlist(_) => playlist::view(ui, state, theme, out),
+            Page::Artist(_) => artist::view(ui, state, theme, out),
+            Page::Album(_) => album::view(ui, state, theme, out),
         }
     });
+}
+
+/// A Back link above the page content, shown only while there is
+/// somewhere to go back to.
+fn back_button(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    if state.history.is_empty() {
+        return;
+    }
+    if ui
+        .add(egui::Label::new(theme.secondary_label(TextRole::Body, "< Back")).sense(egui::Sense::click()))
+        .clicked()
+    {
+        out.push(Action::BackPressed);
+    }
+    ui.add_space(theme.metric(MetricRole::GapSmall));
 }
 
 fn notices(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {

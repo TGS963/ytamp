@@ -228,6 +228,9 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
     artwork(ui, theme, track.thumbnail_url.as_deref(), art_size);
     ui.label(theme.label(TextRole::Body, &track.title));
     ui.label(theme.secondary_label(TextRole::Caption, track.artists.join(", ")));
+    if let Some(album_action) = album_label(ui, track, theme) {
+        action = Some(album_action);
+    }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if let Some(duration) = track.duration {
             ui.label(theme.secondary_label(TextRole::Caption, format_duration(duration)));
@@ -237,6 +240,17 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
         }
     });
     action
+}
+
+/// The track's album name, clickable when the track carries an album
+/// id. A click opens that album, in place of the row's own play
+/// action, the same way the queue button overrides it.
+fn album_label(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Action> {
+    let album_id = track.album_id.clone()?;
+    let name = track.album.as_deref().unwrap_or("Album");
+    let label = theme.secondary_label(TextRole::Caption, name);
+    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+    response.clicked().then_some(Action::AlbumOpened(album_id))
 }
 
 pub fn format_duration(duration: Duration) -> String {

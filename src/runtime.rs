@@ -269,6 +269,14 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
         }
         ApiRequest::FetchLiked => stream_liked(api, deliver).await,
         ApiRequest::FetchPlaylistTracks(id) => stream_playlist_tracks(api, id, deliver).await,
+        ApiRequest::FetchArtist(id) => {
+            let result = api.artist(&id).await;
+            deliver(Action::ArtistLoaded(id, result));
+        }
+        ApiRequest::FetchAlbum(id) => {
+            let result = api.album(&id).await;
+            deliver(Action::AlbumLoaded(id, result));
+        }
     }
 }
 
@@ -311,5 +319,7 @@ fn request_failure(request: ApiRequest, message: String) -> Action {
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(Err(message)),
         ApiRequest::FetchLiked => Action::LikedLoaded(Err(message)),
         ApiRequest::FetchPlaylistTracks(id) => Action::PlaylistTracksLoaded(id, Err(message)),
+        ApiRequest::FetchArtist(id) => Action::ArtistLoaded(id, Err(message)),
+        ApiRequest::FetchAlbum(id) => Action::AlbumLoaded(id, Err(message)),
     }
 }

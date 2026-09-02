@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use super::model::{Playlist, PlaylistId, SearchResults, Track, TrackId};
+use super::model::{
+    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track, TrackId,
+};
 use super::queue::Queue;
 
 /// A value that arrives over the network.
@@ -46,6 +48,8 @@ pub enum Page {
     Search,
     Library,
     Playlist(PlaylistId),
+    Artist(ArtistId),
+    Album(AlbumId),
 }
 
 /// What the user is entering on the sign-in page.
@@ -86,6 +90,14 @@ pub struct LibraryState {
     /// Pages that have arrived while `open_playlist` still shows
     /// cached data, held here until the stream finishes.
     pub incoming_playlist: Vec<Track>,
+}
+
+/// The artist and album pages the user has opened, each loaded on its
+/// own so a visit to one never disturbs the other's cached page.
+#[derive(Clone, Debug, Default)]
+pub struct BrowseState {
+    pub artist: Loadable<ArtistPage>,
+    pub album: Loadable<AlbumPage>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,8 +146,13 @@ pub struct State {
     pub page: Page,
     pub search: SearchState,
     pub library: LibraryState,
+    pub browse: BrowseState,
     pub playback: PlaybackState,
     pub queue_open: bool,
+    /// Pages the user navigated away from, most recent last. Back
+    /// pops the top entry. Sidebar navigation clears it, so Back never
+    /// crosses a deliberate jump to a different section.
+    pub history: Vec<Page>,
     /// User-visible problem reports, newest last.
     pub notices: Vec<String>,
 }

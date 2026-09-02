@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use super::action::{Action, PlayerEvent};
 use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
-use super::model::{Playlist, PlaylistId, Track, TrackId};
+use super::model::{
+    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, Track, TrackId,
+};
 use super::queue::RandomBelow;
 use super::state::{AuthState, Loadable, Page, PlayStatus, State};
 
@@ -53,9 +55,14 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             vec![]
         }
         Action::PlaylistOpened(id) => open_playlist(state, id),
+        Action::ArtistOpened(id) => open_artist(state, id),
+        Action::AlbumOpened(id) => open_album(state, id),
+        Action::BackPressed => go_back(state),
         Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
         Action::LikedLoaded(result) => finish_liked_load(state, result),
         Action::PlaylistTracksLoaded(id, result) => finish_playlist_load(state, id, result),
+        Action::ArtistLoaded(id, result) => finish_artist_load(state, id, result),
+        Action::AlbumLoaded(id, result) => finish_album_load(state, id, result),
         Action::LikedPageLoaded { tracks, finished } => {
             finish_liked_page(state, tracks, finished)
         }
@@ -116,7 +123,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
     }
 }
 
+/// A sidebar jump to a whole section. Clears `history`: Back must
+/// never cross a deliberate jump like this one.
 fn navigate(state: &mut State, page: Page) -> Vec<Effect> {
+    state.history.clear();
     let effects = match page {
         Page::Library => fetch_missing_library(state),
         _ => vec![],
@@ -237,18 +247,133 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
     vec![Effect::Api(ApiRequest::Search { query })]
 }
 
-/// Opens a playlist page and starts its two loads. Resets the paging
-/// state, so a page still in flight for a playlist the user just left
-/// can never leak into the one just opened.
+/// Opens a playlist page and starts its two loads. A playlist already
+/// open stays open, with no repeat fetch and no history entry.
 fn open_playlist(state: &mut State, id: PlaylistId) -> Vec<Effect> {
+    let target = Page::Playlist(id.clone());
+    if state.page == target {
+        return vec![];
+    }
+    push_history(state);
+    state.page = target;
+    start_playlist_load(state, id)
+}
+
+/// Resets the playlist's paging state and starts its two loads. Shared
+/// by `open_playlist` and by Back restoring a playlist page, so a page
+/// still in flight for a playlist the user just left can never leak
+/// into the one now shown.
+fn start_playlist_load(state: &mut State, id: PlaylistId) -> Vec<Effect> {
     state.library.open_playlist = Loadable::Loading;
     state.library.open_playlist_loading_more = false;
     state.library.incoming_playlist.clear();
-    state.page = Page::Playlist(id.clone());
     vec![
         Effect::Api(ApiRequest::FetchPlaylistTracks(id.clone())),
         Effect::LoadPlaylistTracksCache(id),
     ]
+}
+
+/// Opens an artist page and starts its load. An artist page already
+/// open stays open, with no repeat fetch and no history entry.
+fn open_artist(state: &mut State, id: ArtistId) -> Vec<Effect> {
+    let target = Page::Artist(id.clone());
+    if state.page == target {
+        return vec![];
+    }
+    push_history(state);
+    state.page = target;
+    state.browse.artist = Loadable::Loading;
+    vec![Effect::Api(ApiRequest::FetchArtist(id))]
+}
+
+/// Opens an album page and starts its load, the same way as
+/// `open_artist`.
+fn open_album(state: &mut State, id: AlbumId) -> Vec<Effect> {
+    let target = Page::Album(id.clone());
+    if state.page == target {
+        return vec![];
+    }
+    push_history(state);
+    state.page = target;
+    state.browse.album = Loadable::Loading;
+    vec![Effect::Api(ApiRequest::FetchAlbum(id))]
+}
+
+/// Records the page the user is leaving, so Back can return to it.
+fn push_history(state: &mut State) {
+    state.history.push(state.page.clone());
+}
+
+/// Returns to the page Back left. Does nothing with an empty history.
+/// A playlist page always re-fetches its tracks, the simplest correct
+/// rule since the track list carries no id of its own to check. An
+/// artist or album page re-fetches only when its slot does not
+/// already hold that same page.
+fn go_back(state: &mut State) -> Vec<Effect> {
+    let Some(previous) = state.history.pop() else {
+        return vec![];
+    };
+    state.page = previous.clone();
+    match previous {
+        Page::Playlist(id) => start_playlist_load(state, id),
+        Page::Artist(id) => reopen_artist(state, id),
+        Page::Album(id) => reopen_album(state, id),
+        Page::SignIn | Page::Search | Page::Library => vec![],
+    }
+}
+
+fn reopen_artist(state: &mut State, id: ArtistId) -> Vec<Effect> {
+    if slot_holds(&state.browse.artist, |page| page.id == id) {
+        return vec![];
+    }
+    state.browse.artist = Loadable::Loading;
+    vec![Effect::Api(ApiRequest::FetchArtist(id))]
+}
+
+fn reopen_album(state: &mut State, id: AlbumId) -> Vec<Effect> {
+    if slot_holds(&state.browse.album, |page| page.album.id == id) {
+        return vec![];
+    }
+    state.browse.album = Loadable::Loading;
+    vec![Effect::Api(ApiRequest::FetchAlbum(id))]
+}
+
+/// Whether `slot` already holds a value that `holds` accepts. Used to
+/// decide whether Back needs a fresh fetch for the page it restores.
+fn slot_holds<T>(slot: &Loadable<T>, holds: impl Fn(&T) -> bool) -> bool {
+    match slot {
+        Loadable::Loaded(value) | Loadable::Refreshing(value) => holds(value),
+        _ => false,
+    }
+}
+
+/// Applies a loaded or failed artist page. Ignores a result for an
+/// artist page the user has already left, the same guard as
+/// `finish_playlist_load`.
+fn finish_artist_load(
+    state: &mut State,
+    id: ArtistId,
+    result: Result<ArtistPage, String>,
+) -> Vec<Effect> {
+    if state.page != Page::Artist(id) {
+        return vec![];
+    }
+    set_loadable(&mut state.browse.artist, result);
+    vec![]
+}
+
+/// Applies a loaded or failed album page, the same way as
+/// `finish_artist_load`.
+fn finish_album_load(
+    state: &mut State,
+    id: AlbumId,
+    result: Result<AlbumPage, String>,
+) -> Vec<Effect> {
+    if state.page != Page::Album(id) {
+        return vec![];
+    }
+    set_loadable(&mut state.browse.album, result);
+    vec![]
 }
 
 /// Applies a fresh track list and schedules it for the cache.
@@ -806,6 +931,152 @@ mod tests {
             Action::PlaylistTracksCacheLoaded(PlaylistId("p1".into()), vec![track("cached")]),
         );
         assert_eq!(state.library.open_playlist, Loadable::Loading);
+    }
+
+    fn artist_page(id: &str) -> ArtistPage {
+        ArtistPage {
+            id: ArtistId(id.to_string()),
+            name: id.to_string(),
+            thumbnail_url: None,
+            top_songs: vec![],
+            albums: vec![],
+            singles: vec![],
+        }
+    }
+
+    fn album(id: &str) -> crate::core::model::Album {
+        crate::core::model::Album {
+            id: AlbumId(id.to_string()),
+            title: id.to_string(),
+            artists: vec![],
+            year: None,
+            thumbnail_url: None,
+        }
+    }
+
+    fn album_page(id: &str) -> AlbumPage {
+        AlbumPage {
+            album: album(id),
+            tracks: vec![],
+        }
+    }
+
+    #[test]
+    fn opening_an_artist_pushes_history_and_fetches() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        let effects = apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        assert_eq!(state.page, Page::Artist(ArtistId("ar1".into())));
+        assert_eq!(state.history, vec![Page::Search]);
+        assert_eq!(state.browse.artist, Loadable::Loading);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::FetchArtist(ArtistId("ar1".into())))]
+        );
+    }
+
+    #[test]
+    fn opening_the_same_artist_twice_is_a_no_op() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        let effects = apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        assert_eq!(effects, vec![]);
+        assert_eq!(state.history, vec![Page::Search]);
+    }
+
+    #[test]
+    fn back_pops_and_restores_a_playlist() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
+        apply(
+            &mut state,
+            Action::PlaylistTracksLoaded(PlaylistId("p1".into()), Ok(vec![track("a")])),
+        );
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        let effects = apply(&mut state, Action::BackPressed);
+        assert_eq!(state.page, Page::Playlist(PlaylistId("p1".into())));
+        assert_eq!(state.history, vec![Page::Search]);
+        assert_eq!(state.library.open_playlist, Loadable::Loading);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Api(ApiRequest::FetchPlaylistTracks(PlaylistId("p1".into()))),
+                Effect::LoadPlaylistTracksCache(PlaylistId("p1".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn back_onto_a_loaded_album_does_not_refetch() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::AlbumOpened(AlbumId("al1".into())));
+        apply(
+            &mut state,
+            Action::AlbumLoaded(AlbumId("al1".into()), Ok(album_page("al1"))),
+        );
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        let effects = apply(&mut state, Action::BackPressed);
+        assert_eq!(state.page, Page::Album(AlbumId("al1".into())));
+        assert_eq!(effects, vec![]);
+        assert_eq!(state.browse.album, Loadable::Loaded(album_page("al1")));
+    }
+
+    #[test]
+    fn back_with_an_empty_history_does_nothing() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        let effects = apply(&mut state, Action::BackPressed);
+        assert_eq!(state.page, Page::Search);
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn a_stale_artist_result_is_ignored() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        apply(&mut state, Action::NavigatedTo(Page::Search));
+        apply(
+            &mut state,
+            Action::ArtistLoaded(ArtistId("ar1".into()), Ok(artist_page("ar1"))),
+        );
+        assert_eq!(state.browse.artist, Loadable::Loading);
+    }
+
+    #[test]
+    fn a_failed_album_load_sets_failed() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::AlbumOpened(AlbumId("al1".into())));
+        apply(
+            &mut state,
+            Action::AlbumLoaded(AlbumId("al1".into()), Err("no album".into())),
+        );
+        assert_eq!(state.browse.album, Loadable::Failed("no album".into()));
+    }
+
+    #[test]
+    fn sidebar_navigation_clears_history() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        assert_eq!(state.history, vec![Page::Search]);
+        apply(&mut state, Action::NavigatedTo(Page::Library));
+        assert_eq!(state.history, vec![]);
+    }
+
+    #[test]
+    fn sign_out_resets_browse_and_history() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
+        apply(&mut state, Action::SignOutRequested);
+        assert_eq!(state.page, Page::SignIn);
+        assert_eq!(state.history, vec![]);
+        assert_eq!(state.browse.artist, Loadable::NotAsked);
     }
 
     #[test]

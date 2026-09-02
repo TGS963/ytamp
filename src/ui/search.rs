@@ -1,7 +1,7 @@
 //! The search page: one query box, results grouped by type.
 
 use crate::core::action::Action;
-use crate::core::model::SearchResults;
+use crate::core::model::{Album, Artist, SearchResults};
 use crate::core::state::{Loadable, State};
 use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 
@@ -54,8 +54,8 @@ fn results_view(
         .id_salt("search_results")
         .show(ui, |ui| {
             songs_section(ui, results, theme, out);
-            albums_section(ui, results, theme);
-            artists_section(ui, results, theme);
+            albums_section(ui, results, theme, out);
+            artists_section(ui, results, theme, out);
         });
 }
 
@@ -73,25 +73,57 @@ fn songs_section(
     rows::track_list_capped(ui, "search_songs", &results.songs, max_height, theme, out);
 }
 
-fn albums_section(ui: &mut egui::Ui, results: &SearchResults, theme: &dyn Theme) {
+fn albums_section(
+    ui: &mut egui::Ui,
+    results: &SearchResults,
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+) {
     if results.albums.is_empty() {
         return;
     }
     ui.add_space(theme.metric(MetricRole::GapLarge));
     ui.label(theme.label(TextRole::Heading, "Albums"));
     for album in &results.albums {
-        let line = format!("{} — {}", album.title, album.artists.join(", "));
-        ui.label(theme.secondary_label(TextRole::Body, line));
+        album_row(ui, album, theme, out);
     }
 }
 
-fn artists_section(ui: &mut egui::Ui, results: &SearchResults, theme: &dyn Theme) {
+fn album_row(ui: &mut egui::Ui, album: &Album, theme: &dyn Theme, out: &mut Vec<Action>) {
+    let response = rows::row_frame(ui, theme, |ui| {
+        let art_size = theme.metric(MetricRole::RowArtSize);
+        rows::artwork(ui, theme, album.thumbnail_url.as_deref(), art_size);
+        ui.label(theme.label(TextRole::Body, &album.title));
+        ui.label(theme.secondary_label(TextRole::Caption, album.artists.join(", ")));
+    });
+    if response.clicked() {
+        out.push(Action::AlbumOpened(album.id.clone()));
+    }
+}
+
+fn artists_section(
+    ui: &mut egui::Ui,
+    results: &SearchResults,
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+) {
     if results.artists.is_empty() {
         return;
     }
     ui.add_space(theme.metric(MetricRole::GapLarge));
     ui.label(theme.label(TextRole::Heading, "Artists"));
     for artist in &results.artists {
-        ui.label(theme.secondary_label(TextRole::Body, &artist.name));
+        artist_row(ui, artist, theme, out);
+    }
+}
+
+fn artist_row(ui: &mut egui::Ui, artist: &Artist, theme: &dyn Theme, out: &mut Vec<Action>) {
+    let response = rows::row_frame(ui, theme, |ui| {
+        let art_size = theme.metric(MetricRole::RowArtSize);
+        rows::artwork(ui, theme, artist.thumbnail_url.as_deref(), art_size);
+        ui.label(theme.label(TextRole::Body, &artist.name));
+    });
+    if response.clicked() {
+        out.push(Action::ArtistOpened(artist.id.clone()));
     }
 }
