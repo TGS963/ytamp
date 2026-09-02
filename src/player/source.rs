@@ -7,7 +7,7 @@
 //! `Source` side never blocks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -46,6 +46,7 @@ enum DecoderCommand {
 pub struct DecoderHandle {
     samples: Receiver<f32>,
     commands: SyncSender<DecoderCommand>,
+    progress: Arc<Progress>,
 }
 
 impl DecoderHandle {
@@ -54,7 +55,7 @@ impl DecoderHandle {
     /// The position handle reports from real decoded samples, so a
     /// stall filled with silence does not move the position.
     pub fn into_source(self, ready: ReadyInfo) -> (StreamingSource, PositionHandle) {
-        let progress = Arc::new(Progress::default());
+        let progress = self.progress;
         let position = PositionHandle {
             progress: progress.clone(),
             samples_per_second: u64::from(ready.channels.get())
@@ -78,6 +79,8 @@ impl DecoderHandle {
 struct Progress {
     real_samples: AtomicU64,
     base_nanos: AtomicU64,
+    /// True once the decoder ran out of samples. A seek clears it.
+    ended: AtomicBool,
 }
 
 pub struct PositionHandle {
@@ -117,13 +120,16 @@ pub fn spawn_decoder(
 ) -> DecoderHandle {
     let (sample_tx, sample_rx) = sync_channel(SAMPLE_CHANNEL_CAPACITY);
     let (command_tx, command_rx) = sync_channel(COMMAND_CHANNEL_CAPACITY);
+    let progress = Arc::new(Progress::default());
+    let thread_progress = progress.clone();
     thread::Builder::new()
         .name("decoder".to_string())
-        .spawn(move || run_decoder(buffer, report, sample_tx, command_rx))
+        .spawn(move || run_decoder(buffer, report, sample_tx, command_rx, thread_progress))
         .expect("the decoder thread failed to start");
     DecoderHandle {
         samples: sample_rx,
         commands: command_tx,
+        progress,
     }
 }
 
@@ -137,6 +143,7 @@ fn run_decoder(
     report: impl FnOnce(Result<ReadyInfo, String>),
     samples: SyncSender<f32>,
     commands: Receiver<DecoderCommand>,
+    progress: Arc<Progress>,
 ) {
     let decoder = match build_streaming_decoder(&buffer) {
         Ok(decoder) => decoder,
@@ -151,7 +158,7 @@ fn run_decoder(
         total_duration: decoder.total_duration(),
     }));
     let mut state = DecodeState::new(decoder, buffer);
-    decode_until_done(&mut state, &samples, &commands);
+    decode_until_done(&mut state, &samples, &commands, &progress);
 }
 
 /// A decoder that reads the stream front to back, with no seeking.
@@ -266,13 +273,12 @@ fn decode_until_done(
     state: &mut DecodeState,
     samples: &SyncSender<f32>,
     commands: &Receiver<DecoderCommand>,
+    progress: &Progress,
 ) {
     loop {
         match commands.try_recv() {
             Ok(DecoderCommand::Seek(position)) => {
-                if let Err(error) = state.seek(position) {
-                    log::warn!("seek failed: {error}");
-                }
+                apply_seek(state, position);
                 continue;
             }
             Ok(DecoderCommand::Stop) => return,
@@ -280,11 +286,39 @@ fn decode_until_done(
             Err(TryRecvError::Empty) => {}
         }
         let Some(sample) = state.next_sample() else {
-            return;
+            if !wait_for_seek_after_end(state, commands, progress) {
+                return;
+            }
+            continue;
         };
         if samples.send(sample).is_err() {
             return;
         }
+    }
+}
+
+fn apply_seek(state: &mut DecodeState, position: Duration) {
+    if let Err(error) = state.seek(position) {
+        log::warn!("seek failed: {error}");
+    }
+}
+
+/// The samples ran out. The thread stays alive for a seek, because
+/// a seek back near the end must still work. Returns true when a seek
+/// arrived and decoding continues, false when the source let go.
+fn wait_for_seek_after_end(
+    state: &mut DecodeState,
+    commands: &Receiver<DecoderCommand>,
+    progress: &Progress,
+) -> bool {
+    progress.ended.store(true, Ordering::Release);
+    match commands.recv() {
+        Ok(DecoderCommand::Seek(position)) => {
+            progress.ended.store(false, Ordering::Release);
+            apply_seek(state, position);
+            true
+        }
+        Ok(DecoderCommand::Stop) | Err(_) => false,
     }
 }
 
@@ -308,7 +342,8 @@ impl Iterator for StreamingSource {
         if received.is_ok() {
             self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
         }
-        decide_next_sample(received)
+        let ended = self.progress.ended.load(Ordering::Acquire);
+        decide_next_sample(received, ended)
     }
 }
 
@@ -317,9 +352,13 @@ impl Iterator for StreamingSource {
 /// sample passes through, an empty channel plays silence (the decoder
 /// is alive but has not decoded far enough yet), and a disconnected
 /// channel ends the track.
-fn decide_next_sample(received: Result<f32, TryRecvError>) -> Option<f32> {
+/// What `next` returns. A ready sample passes through. An empty
+/// channel plays silence while the decoder still works, and ends the
+/// track once the decoder reported the end of the samples.
+fn decide_next_sample(received: Result<f32, TryRecvError>, ended: bool) -> Option<f32> {
     match received {
         Ok(sample) => Some(sample),
+        Err(TryRecvError::Empty) if ended => None,
         Err(TryRecvError::Empty) => Some(0.0),
         Err(TryRecvError::Disconnected) => None,
     }
@@ -395,17 +434,22 @@ mod tests {
 
     #[test]
     fn decide_next_sample_passes_through_a_ready_sample() {
-        assert_eq!(decide_next_sample(Ok(0.5)), Some(0.5));
+        assert_eq!(decide_next_sample(Ok(0.5), false), Some(0.5));
     }
 
     #[test]
     fn decide_next_sample_plays_silence_while_the_decoder_is_alive() {
-        assert_eq!(decide_next_sample(Err(TryRecvError::Empty)), Some(0.0));
+        assert_eq!(decide_next_sample(Err(TryRecvError::Empty), false), Some(0.0));
+    }
+
+    #[test]
+    fn decide_next_sample_ends_the_track_after_the_last_sample() {
+        assert_eq!(decide_next_sample(Err(TryRecvError::Empty), true), None);
     }
 
     #[test]
     fn decide_next_sample_ends_the_track_when_the_decoder_is_gone() {
-        assert_eq!(decide_next_sample(Err(TryRecvError::Disconnected)), None);
+        assert_eq!(decide_next_sample(Err(TryRecvError::Disconnected), false), None);
     }
 
     /// A minimal RIFF/WAVE header for 16-bit PCM, plus `sample_count`
@@ -484,12 +528,14 @@ mod tests {
         assert_eq!(info.channels.get(), 1);
         assert_eq!(info.sample_rate.get(), 8_000);
 
-        let (source, _position) = handle.into_source(info);
+        let (mut source, _position) = handle.into_source(info);
         let mut decoded = 0;
-        loop {
-            match source.samples.recv_timeout(Duration::from_secs(5)) {
-                Ok(_) => decoded += 1,
-                Err(_) => break,
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match source.next() {
+                Some(sample) if sample != 0.0 => decoded += 1,
+                Some(_) => thread::sleep(Duration::from_millis(1)),
+                None => break,
             }
         }
         assert_eq!(decoded, sample_count as usize);
