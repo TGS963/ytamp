@@ -23,6 +23,8 @@ pub struct Track {
     pub title: String,
     pub artists: Vec<String>,
     pub album: Option<String>,
+    /// Absent in sessions saved before the field existed.
+    #[serde(default)]
     pub album_id: Option<AlbumId>,
     pub duration: Option<Duration>,
     pub thumbnail_url: Option<String>,

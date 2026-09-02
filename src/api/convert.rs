@@ -137,9 +137,11 @@ fn split_song_album(album: Option<ParsedSongAlbum>) -> (Option<String>, Option<A
 /// artist response, so those fields stay empty.
 pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
     let releases = artist.top_releases;
+    let name = artist.name;
+    let album_of = |album: AlbumResult| artist_album_result(album, &name);
     ArtistPage {
         id,
-        name: artist.name,
+        name: name.clone(),
         thumbnail_url: largest_thumbnail(&artist.thumbnails),
         top_songs: releases
             .songs
@@ -147,11 +149,11 @@ pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
             .unwrap_or_default(),
         albums: releases
             .albums
-            .map(|albums| albums.results.into_iter().map(artist_album_result).collect())
+            .map(|albums| albums.results.into_iter().map(album_of).collect())
             .unwrap_or_default(),
         singles: releases
             .singles
-            .map(|singles| singles.results.into_iter().map(artist_album_result).collect())
+            .map(|singles| singles.results.into_iter().map(album_of).collect())
             .unwrap_or_default(),
     }
 }
@@ -168,11 +170,13 @@ fn artist_song_to_track(song: ArtistSong) -> Track {
     }
 }
 
-fn artist_album_result(album: AlbumResult) -> Album {
+/// An album on an artist page names no artist of its own: the page's
+/// artist is the artist.
+fn artist_album_result(album: AlbumResult, artist_name: &str) -> Album {
     Album {
         id: AlbumId(album.album_id.get_raw().to_string()),
         title: album.title,
-        artists: vec![],
+        artists: vec![artist_name.to_string()],
         year: Some(album.year),
         thumbnail_url: largest_thumbnail(&album.thumbnails),
     }
@@ -214,10 +218,16 @@ fn album_song_to_track(song: AlbumSong) -> Track {
 /// as its own pure step because `GetAlbum` and `AlbumSong` are
 /// `#[non_exhaustive]` in ytmapi-rs, so a unit test builds `Track` and
 /// `Album` values directly instead of the ytmapi-rs response types.
+/// Album songs carry no artists, no art, and no album of their own.
+/// Each track takes them from the album.
 fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
     tracks
         .into_iter()
         .map(|track| Track {
+            artists: match track.artists.is_empty() {
+                true => album.artists.clone(),
+                false => track.artists,
+            },
             album: Some(album.title.clone()),
             album_id: Some(album.id.clone()),
             thumbnail_url: album.thumbnail_url.clone(),
@@ -327,6 +337,7 @@ mod tests {
         assert_eq!(stamped[0].album, Some("Origins".into()));
         assert_eq!(stamped[0].album_id, Some(AlbumId("album-1".into())));
         assert_eq!(stamped[0].thumbnail_url, Some("art-url".into()));
+        assert_eq!(stamped[0].artists, vec!["Artist".to_string()]);
     }
 
     #[test]
