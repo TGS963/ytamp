@@ -70,6 +70,7 @@ impl DecoderHandle {
             total_duration: ready.total_duration,
             progress,
             tap: AudioTap::shared(),
+            tap_batch: TapBatch::default(),
         };
         (source, position)
     }
@@ -337,6 +338,41 @@ pub struct StreamingSource {
     /// Where every real sample this source plays also goes, for the
     /// Winamp skin's visualiser. See `crate::vis::AudioTap`.
     tap: Arc<AudioTap>,
+    /// Mono frames not yet handed to the tap. `next` runs in the audio
+    /// callback, so the tap lock is taken once per batch, not once
+    /// per sample.
+    tap_batch: TapBatch,
+}
+
+/// Downmixes interleaved samples to mono frames and collects them
+/// into a small batch. Pure state, no lock.
+#[derive(Default)]
+struct TapBatch {
+    frame_sum: f32,
+    frame_len: u32,
+    pending: Vec<f32>,
+}
+
+const TAP_BATCH_FRAMES: usize = 64;
+
+impl TapBatch {
+    /// Adds one interleaved sample. Returns the finished batch when it
+    /// reaches `TAP_BATCH_FRAMES` mono frames.
+    fn push(&mut self, sample: f32, channels: u32) -> Option<&[f32]> {
+        self.frame_sum += sample;
+        self.frame_len += 1;
+        if self.frame_len < channels {
+            return None;
+        }
+        self.pending.push(self.frame_sum / channels as f32);
+        self.frame_sum = 0.0;
+        self.frame_len = 0;
+        (self.pending.len() >= TAP_BATCH_FRAMES).then_some(self.pending.as_slice())
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
 }
 
 impl Iterator for StreamingSource {
@@ -346,10 +382,20 @@ impl Iterator for StreamingSource {
         let received = self.samples.try_recv();
         if let Ok(sample) = received {
             self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
-            self.tap.push(sample, u32::from(self.channels.get()));
+            self.tap_sample(sample);
         }
         let ended = self.progress.ended.load(Ordering::Acquire);
         decide_next_sample(received, ended)
+    }
+}
+
+impl StreamingSource {
+    fn tap_sample(&mut self, sample: f32) {
+        let channels = u32::from(self.channels.get()).max(1);
+        if let Some(batch) = self.tap_batch.push(sample, channels) {
+            self.tap.push_mono(batch);
+            self.tap_batch.clear();
+        }
     }
 }
 
@@ -436,6 +482,19 @@ mod tests {
         assert_eq!(played_duration(96_000, 96_000), Duration::from_secs(1));
         assert_eq!(played_duration(48_000, 96_000), Duration::from_millis(500));
         assert_eq!(played_duration(5, 0), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_tap_batch_downmixes_and_fills_after_sixty_four_frames() {
+        let mut batch = TapBatch::default();
+        for frame in 0..TAP_BATCH_FRAMES - 1 {
+            assert!(batch.push(1.0, 2).is_none(), "frame {frame} half");
+            assert!(batch.push(0.0, 2).is_none(), "frame {frame} full");
+        }
+        assert!(batch.push(1.0, 2).is_none());
+        let full = batch.push(0.0, 2).expect("the batch fills on the last frame");
+        assert_eq!(full.len(), TAP_BATCH_FRAMES);
+        assert!(full.iter().all(|mono| (*mono - 0.5).abs() < 1e-6));
     }
 
     #[test]

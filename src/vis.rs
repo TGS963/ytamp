@@ -103,6 +103,19 @@ impl AudioTap {
         push_frame(&mut ring, sample, channels.max(1));
     }
 
+    /// Adds a batch of mono samples under one lock. The audio callback
+    /// calls this every few dozen frames instead of once per sample,
+    /// so it takes the lock about a thousand times a second at most.
+    pub fn push_mono(&self, samples: &[f32]) {
+        let mut ring = self.ring.lock().unwrap_or_else(|poison| poison.into_inner());
+        for sample in samples {
+            if ring.samples.len() == KEPT {
+                ring.samples.pop_front();
+            }
+            ring.samples.push_back(*sample);
+        }
+    }
+
     /// The `count` samples ending `lag` samples before the newest,
     /// with silence where there are fewer than that.
     pub fn window(&self, count: usize, lag: usize) -> Vec<f32> {
