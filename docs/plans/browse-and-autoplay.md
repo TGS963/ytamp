@@ -93,6 +93,33 @@ user turns autoplay off.
   result after the user started another context is ignored (guard on
   the requesting track id).
 
+### Phase D: artist links in every row
+
+Tracks carry artist names only, so a row cannot open an artist. The
+user expects a click on an artist name or an album name in any row
+to open that page.
+
+- Model: `ArtistRef { name: String, id: Option<ArtistId> }`.
+  `Track.artists: Vec<ArtistRef>`. Old cache and session data hold
+  plain strings: deserialize both shapes through an untagged helper
+  enum, so an old session still restores. Bump `CACHE_VERSION`.
+  `Track::artist_names() -> String` joins the names for display.
+- Sources. `ParsedSongArtist { name, id: Option<ArtistChannelID> }`
+  gives ids for playlist items and artist top songs. The official
+  Data API gives `videoOwnerChannelId` and `videoOwnerChannelTitle`.
+  A channel id resolves to an artist page through `GetArtistQuery`
+  (checked with the probe on a real channel). Strip a trailing
+  " - Topic" from the title for display. Search songs, videos, and
+  radio tracks give a name only.
+- Rows and the player bar: each artist name is a clickable label.
+  With an id it emits `ArtistOpened(id)`. Without an id it emits
+  `ArtistSearchRequested(name)`: the reducer fills the search input,
+  pushes history, opens the Search page, and emits the search.
+  The album name and the album art in the player bar open the album
+  when the track has an album id.
+- The artist page keeps its failure text when a channel id is a
+  label channel and not an artist.
+
 ## Phases and reviews
 
 | Phase | Scope | Files |
@@ -100,5 +127,6 @@ user turns autoplay off.
 | A | Models, API methods, conversions, probe | `src/api/*`, `src/core/model.rs`, `src/library_cache.rs`, `examples/` |
 | B | Pages, navigation, history, views | `src/core/*`, `src/ui/*`, `src/runtime.rs` |
 | C | Autoplay | `src/core/*`, `src/ui/player_bar.rs`, `src/core/session.rs` |
+| D | Artist links in every row | `src/core/model.rs`, `src/api/*`, `src/ui/rows.rs`, `src/ui/player_bar.rs`, `src/media_keys.rs` |
 
 Each phase gets an adversarial review before the next starts.
