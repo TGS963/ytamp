@@ -58,16 +58,16 @@ fn resized_googleusercontent(url: &str, px: u32) -> String {
 }
 
 /// An `i.ytimg.com/vi/<id>/<name>.jpg` URL, resized by naming the
-/// still that best matches `px`: `mqdefault` up to 320px, `hqdefault`
-/// up to 480px, else `sddefault`.
+/// still that best matches `px`: `mqdefault` up to 320px, else
+/// `hqdefault`. Larger stills do not exist for every video, and a
+/// missing image leaves a blank square.
 fn resized_ytimg(url: &str, px: u32) -> String {
     let Some(cut) = url.rfind('/') else {
         return url.to_string();
     };
     let still = match px {
         0..=320 => "mqdefault.jpg",
-        321..=480 => "hqdefault.jpg",
-        _ => "sddefault.jpg",
+        _ => "hqdefault.jpg",
     };
     format!("{}/{still}", &url[..cut])
 }
@@ -155,7 +155,7 @@ mod tests {
         );
         assert_eq!(
             sized(url, 600),
-            "https://i.ytimg.com/vi/abc123/sddefault.jpg"
+            "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
         );
     }
 
