@@ -558,24 +558,22 @@ fn stop_click(playing: bool) -> [Option<Action>; 2] {
 }
 
 /// Play, pause, and stop: the three buttons whose meaning depends on
-/// whether the queue is already playing.
+/// whether the queue is already playing. The buttons never latch, as
+/// in Winamp. Only a held pointer shows the pressed sprite, and the
+/// lamp next to the time shows the state.
 fn play_pause_stop(view: &mut View, state: &State, out: &mut Vec<Action>) {
     let playing = state.playback.status == PlayStatus::Playing;
-    let stopped = state.playback.status == PlayStatus::Stopped;
-    let play_sprite = if playing { sprites::PLAY_PRESSED } else { sprites::PLAY };
-    let pause_sprite = if playing { sprites::PAUSE_PRESSED } else { sprites::PAUSE };
-    let stop_sprite = if stopped { sprites::STOP_PRESSED } else { sprites::STOP };
     push_if_clicked(
-        view.button(layout::PLAY, play_sprite, sprites::PLAY_PRESSED, "play"),
+        view.button(layout::PLAY, sprites::PLAY, sprites::PLAY_PRESSED, "play"),
         out,
         play_click(playing),
     );
     push_if_clicked(
-        view.button(layout::PAUSE, pause_sprite, sprites::PAUSE_PRESSED, "pause"),
+        view.button(layout::PAUSE, sprites::PAUSE, sprites::PAUSE_PRESSED, "pause"),
         out,
         pause_click(playing),
     );
-    let stop = view.button(layout::STOP, stop_sprite, sprites::STOP_PRESSED, "stop");
+    let stop = view.button(layout::STOP, sprites::STOP, sprites::STOP_PRESSED, "stop");
     if stop.clicked() {
         out.extend(stop_click(playing).into_iter().flatten());
     }
