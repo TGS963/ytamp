@@ -9,7 +9,7 @@ use std::time::Duration;
 use super::action::{Action, PlayerEvent};
 use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
 use super::model::{
-    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, Track, TrackId,
+    AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId, Track, TrackId,
 };
 use super::queue::{Queue, RandomBelow};
 use super::state::{AuthState, Loadable, Page, PlayStatus, State};
@@ -57,6 +57,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::PlaylistOpened(id) => open_playlist(state, id),
         Action::ArtistOpened(id) => open_artist(state, id),
         Action::ArtistSearchRequested(name) => search_by_artist_name(state, name),
+        Action::ArtistLinkOpened(artist) => open_artist_link(state, artist),
         Action::AlbumOpened(id) => open_album(state, id),
         Action::BackPressed => go_back(state),
         Action::PlaylistsLoaded(result) => finish_playlists_load(state, result),
@@ -65,9 +66,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::ArtistLoaded(id, result) => finish_artist_load(state, id, result),
         Action::AlbumLoaded(id, result) => finish_album_load(state, id, result),
         Action::RadioLoaded(id, result) => finish_radio_load(state, id, result),
-        Action::LikedPageLoaded { tracks, finished } => {
-            finish_liked_page(state, tracks, finished)
-        }
+        Action::LikedPageLoaded { tracks, finished } => finish_liked_page(state, tracks, finished),
         Action::PlaylistTracksPageLoaded {
             id,
             tracks,
@@ -256,10 +255,30 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
 /// A click on an artist row with no id: runs a name search in place
 /// of opening the artist page directly.
 fn search_by_artist_name(state: &mut State, name: String) -> Vec<Effect> {
-    state.search.input = name;
     push_history(state);
+    show_search_for(state, name)
+}
+
+/// Opens the Search page with `name` as the query, in place of the
+/// current page. The caller decides whether the history grows.
+fn show_search_for(state: &mut State, name: String) -> Vec<Effect> {
+    state.search.input = name;
     state.page = Page::Search;
     submit_search(state)
+}
+
+/// An artist link carries a name and maybe an id. With an id the
+/// artist page opens, and the name waits as the fallback for a
+/// channel that turns out not to be an artist.
+fn open_artist_link(state: &mut State, artist: ArtistRef) -> Vec<Effect> {
+    let Some(id) = artist.id else {
+        return search_by_artist_name(state, artist.name);
+    };
+    let effects = open_artist(state, id);
+    if !effects.is_empty() {
+        state.browse.artist_fallback = Some(artist.name);
+    }
+    effects
 }
 
 /// Opens a playlist page and starts its two loads. A playlist already
@@ -373,8 +392,26 @@ fn finish_artist_load(
     if state.page != Page::Artist(id) {
         return vec![];
     }
-    set_loadable(&mut state.browse.artist, result);
-    vec![]
+    let fallback = state.browse.artist_fallback.take();
+    match (result, fallback) {
+        (Err(message), Some(name)) => fall_back_to_search(state, name, message),
+        (result, _) => {
+            set_loadable(&mut state.browse.artist, result);
+            vec![]
+        }
+    }
+}
+
+/// A channel with no artist page shows the search for its name in
+/// place of an error page. The Search page replaces the artist page,
+/// so Back still returns to where the click happened.
+fn fall_back_to_search(state: &mut State, name: String, message: String) -> Vec<Effect> {
+    log::info!("no artist page for {name}: {message}");
+    state.notices.push(format!(
+        "No artist page for {name}. Showing search results."
+    ));
+    state.browse.artist = Loadable::NotAsked;
+    show_search_for(state, name)
 }
 
 /// Applies a loaded or failed album page, the same way as
@@ -557,7 +594,11 @@ fn apply_library_cache(
 /// Applies a playlist's cached track list, honoring the same
 /// still-loading rule as `apply_library_cache`. Ignores a cache hit
 /// for a playlist the user has already left.
-fn apply_playlist_tracks_cache(state: &mut State, id: PlaylistId, tracks: Vec<Track>) -> Vec<Effect> {
+fn apply_playlist_tracks_cache(
+    state: &mut State,
+    id: PlaylistId,
+    tracks: Vec<Track>,
+) -> Vec<Effect> {
     if state.page == Page::Playlist(id) {
         apply_cached_if_loading(&mut state.library.open_playlist, Some(tracks));
     }
@@ -1434,6 +1475,77 @@ mod tests {
         let mut restored = State::default();
         apply(&mut restored, Action::SessionRestored(saved));
         assert!(!restored.playback.autoplay);
+    }
+
+    #[test]
+    fn an_artist_link_with_an_id_opens_the_page_and_keeps_the_name() {
+        let mut state = State::default();
+        state.page = Page::Library;
+        let artist = ArtistRef {
+            name: "Nitrogen".into(),
+            id: Some(ArtistId("UC1".into())),
+        };
+        let effects = apply(&mut state, Action::ArtistLinkOpened(artist));
+        assert_eq!(state.page, Page::Artist(ArtistId("UC1".into())));
+        assert_eq!(state.browse.artist_fallback, Some("Nitrogen".to_string()));
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::FetchArtist(ArtistId("UC1".into())))]
+        );
+    }
+
+    #[test]
+    fn an_artist_link_without_an_id_searches_the_name() {
+        let mut state = State::default();
+        state.page = Page::Library;
+        let artist = ArtistRef::named("Nitrogen");
+        let effects = apply(&mut state, Action::ArtistLinkOpened(artist));
+        assert_eq!(state.page, Page::Search);
+        assert_eq!(state.search.input, "Nitrogen");
+        assert_eq!(state.history, vec![Page::Library]);
+        assert_eq!(effects.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_artist_page_from_a_link_falls_back_to_search() {
+        let mut state = State::default();
+        state.page = Page::Library;
+        let id = ArtistId("UC1".into());
+        apply(
+            &mut state,
+            Action::ArtistLinkOpened(ArtistRef {
+                name: "Nitrogen".into(),
+                id: Some(id.clone()),
+            }),
+        );
+        let effects = apply(
+            &mut state,
+            Action::ArtistLoaded(id, Err("no header".into())),
+        );
+        assert_eq!(state.page, Page::Search);
+        assert_eq!(state.search.input, "Nitrogen");
+        assert_eq!(state.history, vec![Page::Library]);
+        assert_eq!(state.browse.artist_fallback, None);
+        assert_eq!(state.notices.len(), 1);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::Search {
+                query: "Nitrogen".to_string()
+            })]
+        );
+    }
+
+    #[test]
+    fn a_failed_artist_page_without_a_link_name_shows_the_failure() {
+        let mut state = State::default();
+        state.page = Page::Search;
+        let id = ArtistId("UC1".into());
+        apply(&mut state, Action::ArtistOpened(id.clone()));
+        apply(
+            &mut state,
+            Action::ArtistLoaded(id, Err("no header".into())),
+        );
+        assert_eq!(state.browse.artist, Loadable::Failed("no header".into()));
     }
 
     #[test]

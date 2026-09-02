@@ -455,7 +455,9 @@ mod tests {
         let (ready, handle) = wait_for_ready(buffer);
         let info = ready.expect("a well-formed WAV decodes");
         let (mut source, position) = handle.into_source(info);
-        source.try_seek(Duration::from_millis(500)).expect("seek is accepted");
+        source
+            .try_seek(Duration::from_millis(500))
+            .expect("seek is accepted");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut real = 0u64;
@@ -466,7 +468,10 @@ mod tests {
                 None => break,
             }
         }
-        assert!((3_900..=4_100).contains(&real), "played {real} samples after the seek");
+        assert!(
+            (3_900..=4_100).contains(&real),
+            "played {real} samples after the seek"
+        );
         assert!(position.position() >= Duration::from_millis(900));
     }
 

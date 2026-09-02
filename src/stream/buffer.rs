@@ -381,12 +381,21 @@ impl BufferReader {
         let (mutex, _) = &*self.shared;
         let inner = mutex.lock().expect("buffer mutex poisoned");
         end_from_state(inner.bytes.len() as u64, inner.expected_len, &inner.status).ok_or_else(
-            || io::Error::new(io::ErrorKind::Unsupported, "the stream end is not known yet"),
+            || {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the stream end is not known yet",
+                )
+            },
         )
     }
 }
 
-fn end_from_state(downloaded: u64, expected_len: Option<u64>, status: &BufferStatus) -> Option<u64> {
+fn end_from_state(
+    downloaded: u64,
+    expected_len: Option<u64>,
+    status: &BufferStatus,
+) -> Option<u64> {
     match status {
         BufferStatus::Complete => Some(downloaded),
         _ => expected_len,
@@ -453,7 +462,9 @@ mod tests {
         let buffer = AudioBuffer::new(Some(10));
         let writer = buffer.writer();
         let mut reader = buffer.reader();
-        reader.seek(SeekFrom::Start(5)).expect("seek is not bounded by downloaded bytes");
+        reader
+            .seek(SeekFrom::Start(5))
+            .expect("seek is not bounded by downloaded bytes");
 
         let pusher = thread::spawn(move || {
             thread::sleep(Duration::from_millis(30));
@@ -462,7 +473,9 @@ mod tests {
         });
 
         let mut out = [0u8; 5];
-        reader.read_exact(&mut out).expect("read succeeds once bytes arrive");
+        reader
+            .read_exact(&mut out)
+            .expect("read succeeds once bytes arrive");
         assert_eq!(&out, b"56789");
         pusher.join().expect("writer thread panicked");
     }

@@ -45,10 +45,7 @@ impl ArtistRef {
 #[serde(untagged)]
 enum ArtistRefRepr {
     Name(String),
-    Full {
-        name: String,
-        id: Option<ArtistId>,
-    },
+    Full { name: String, id: Option<ArtistId> },
 }
 
 impl From<ArtistRefRepr> for ArtistRef {

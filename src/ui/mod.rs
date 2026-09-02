@@ -138,17 +138,19 @@ fn nav_item(
 
 fn page(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     let frame = egui::Frame::central_panel(ui.style()).fill(theme.color(ColorRole::PageBackground));
-    egui::CentralPanel::default_margins().frame(frame).show(ui, |ui| {
-        ui.add_space(theme.metric(MetricRole::PagePadding));
-        back_button(ui, state, theme, out);
-        match &state.page {
-            Page::SignIn | Page::Search => search::view(ui, state, theme, out),
-            Page::Library => library::view(ui, state, theme, out),
-            Page::Playlist(_) => playlist::view(ui, state, theme, out),
-            Page::Artist(_) => artist::view(ui, state, theme, out),
-            Page::Album(_) => album::view(ui, state, theme, out),
-        }
-    });
+    egui::CentralPanel::default_margins()
+        .frame(frame)
+        .show(ui, |ui| {
+            ui.add_space(theme.metric(MetricRole::PagePadding));
+            back_button(ui, state, theme, out);
+            match &state.page {
+                Page::SignIn | Page::Search => search::view(ui, state, theme, out),
+                Page::Library => library::view(ui, state, theme, out),
+                Page::Playlist(_) => playlist::view(ui, state, theme, out),
+                Page::Artist(_) => artist::view(ui, state, theme, out),
+                Page::Album(_) => album::view(ui, state, theme, out),
+            }
+        });
 }
 
 /// A Back link above the page content, shown only while there is
@@ -158,7 +160,10 @@ fn back_button(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Acti
         return;
     }
     if ui
-        .add(egui::Label::new(theme.secondary_label(TextRole::Body, "< Back")).sense(egui::Sense::click()))
+        .add(
+            egui::Label::new(theme.secondary_label(TextRole::Body, "< Back"))
+                .sense(egui::Sense::click()),
+        )
         .clicked()
     {
         out.push(Action::BackPressed);

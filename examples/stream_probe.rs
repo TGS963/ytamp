@@ -21,7 +21,9 @@ const SAMPLE_WINDOW: Duration = Duration::from_secs(2);
 #[tokio::main]
 async fn main() {
     env_logger::Builder::new().parse_filters("warn").init();
-    let video_id = std::env::args().nth(1).unwrap_or_else(|| "dQw4w9WgXcQ".to_string());
+    let video_id = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "dQw4w9WgXcQ".to_string());
     let start = Instant::now();
 
     let resolvers = Arc::new(ResolverChain::with_default_resolvers());
@@ -76,7 +78,9 @@ async fn wait_for_first_byte(buffer: &AudioBuffer, start: Instant) -> Duration {
             return start.elapsed();
         }
         if let BufferStatus::Failed(message) = buffer.status() {
-            fail(&format!("the download failed before any byte arrived: {message}"));
+            fail(&format!(
+                "the download failed before any byte arrived: {message}"
+            ));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }

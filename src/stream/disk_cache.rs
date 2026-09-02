@@ -50,7 +50,11 @@ pub async fn fetch_audio(
 /// Starts a buffer, runs the resolver chain into it on a background
 /// task, and returns the buffer right away. Once the chain ends, a
 /// completed buffer's bytes are written to disk.
-fn spawn_download(resolvers: Arc<ResolverChain>, http: reqwest::Client, video_id: String) -> AudioBuffer {
+fn spawn_download(
+    resolvers: Arc<ResolverChain>,
+    http: reqwest::Client,
+    video_id: String,
+) -> AudioBuffer {
     let buffer = AudioBuffer::new(None);
     let writer = buffer.writer();
     let task_buffer = buffer.clone();

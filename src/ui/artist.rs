@@ -55,7 +55,14 @@ fn top_songs_section(
     }
     ui.label(theme.label(TextRole::Heading, "Top songs"));
     let max_height = theme.metric(MetricRole::RowHeight) * TOP_SONGS_VISIBLE_ROWS;
-    rows::track_list_capped(ui, "artist_top_songs", &page.top_songs, max_height, theme, out);
+    rows::track_list_capped(
+        ui,
+        "artist_top_songs",
+        &page.top_songs,
+        max_height,
+        theme,
+        out,
+    );
     ui.add_space(theme.metric(MetricRole::GapLarge));
 }
 

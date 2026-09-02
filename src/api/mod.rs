@@ -111,14 +111,9 @@ impl Api {
     /// hands out one page at a time as the network answers; the
     /// browser session has no paged endpoint, so it fetches the whole
     /// list first and delivers it as one finished page.
-    pub async fn liked_songs(
-        &self,
-        on_page: impl FnMut(Vec<Track>, bool),
-    ) -> Result<(), String> {
+    pub async fn liked_songs(&self, on_page: impl FnMut(Vec<Track>, bool)) -> Result<(), String> {
         match &*self.session {
-            Session::Browser(_) => {
-                deliver_whole_list(self.browser_liked_songs().await, on_page)
-            }
+            Session::Browser(_) => deliver_whole_list(self.browser_liked_songs().await, on_page),
             Session::OAuth { data, .. } => data.liked_songs(on_page).await,
         }
     }

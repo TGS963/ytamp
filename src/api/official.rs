@@ -54,10 +54,7 @@ impl DataApi {
 
     /// Streams the liked-songs list to `on_page`, one page of up to 50
     /// tracks at a time. The final call carries `finished: true`.
-    pub async fn liked_songs(
-        &self,
-        on_page: impl FnMut(Vec<Track>, bool),
-    ) -> Result<(), String> {
+    pub async fn liked_songs(&self, on_page: impl FnMut(Vec<Track>, bool)) -> Result<(), String> {
         self.tracks_of(LIKED_VIDEOS_PLAYLIST, LIKED_PAGE_CAP, on_page)
             .await
     }

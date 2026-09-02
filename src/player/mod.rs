@@ -106,7 +106,9 @@ impl PrefetchCache {
     const CAPACITY: usize = 4;
 
     fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     fn contains(&self, video_id: &str) -> bool {
@@ -385,7 +387,9 @@ impl Engine {
             return;
         }
         if self.prefetch_in_flight >= MAX_PREFETCH_IN_FLIGHT {
-            log::debug!("dropping prefetch for {video_id}: {MAX_PREFETCH_IN_FLIGHT} already in flight");
+            log::debug!(
+                "dropping prefetch for {video_id}: {MAX_PREFETCH_IN_FLIGHT} already in flight"
+            );
             return;
         }
         self.start_prefetch(video_id);
@@ -466,7 +470,9 @@ impl Engine {
         if !output.player.is_paused()
             && let Some(position) = &self.position
         {
-            (self.deliver)(Action::Player(PlayerEvent::PositionChanged(position.position())));
+            (self.deliver)(Action::Player(PlayerEvent::PositionChanged(
+                position.position(),
+            )));
         }
     }
 }

@@ -314,7 +314,10 @@ mod tests {
             AudioBuffer::new(None).writer(),
             b"",
         );
-        assert_eq!(result.unwrap_err(), "reading yt-dlp output failed: broken pipe");
+        assert_eq!(
+            result.unwrap_err(),
+            "reading yt-dlp output failed: broken pipe"
+        );
     }
 
     #[test]
@@ -325,7 +328,10 @@ mod tests {
 
     #[test]
     fn extractor_args_omits_fast_path_fields_without_a_token() {
-        assert_eq!(extractor_args(None), "youtube:skip=hls,dash,translated_subs");
+        assert_eq!(
+            extractor_args(None),
+            "youtube:skip=hls,dash,translated_subs"
+        );
     }
 
     #[test]

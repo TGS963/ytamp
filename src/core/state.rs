@@ -98,6 +98,10 @@ pub struct LibraryState {
 pub struct BrowseState {
     pub artist: Loadable<ArtistPage>,
     pub album: Loadable<AlbumPage>,
+    /// The name behind the artist link the user clicked. A channel id
+    /// from the library is not always an artist, so a failed page
+    /// falls back to a search for this name.
+    pub artist_fallback: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

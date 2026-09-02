@@ -163,7 +163,11 @@ impl ResolverChain {
     ) -> Result<(), String> {
         let mut failures = Vec::new();
         let mut skipped: Vec<&TrackedSource> = Vec::new();
-        for tracked in self.sources.iter().filter(|tracked| !tracked.breaker.is_open()) {
+        for tracked in self
+            .sources
+            .iter()
+            .filter(|tracked| !tracked.breaker.is_open())
+        {
             let outcome = tracked
                 .source
                 .fetch_audio(http, video_id, writer.share())
@@ -184,7 +188,6 @@ impl ResolverChain {
         writer.fail(joined.clone());
         Err(joined)
     }
-
 }
 
 /// A source failure counts toward its breaker only when a later source
@@ -342,10 +345,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_source_trips_only_when_a_later_source_delivers() {
-        let chain = ResolverChain::with_sources(vec![
-            failing_source("broken"),
-            working_source("working"),
-        ]);
+        let chain =
+            ResolverChain::with_sources(vec![failing_source("broken"), working_source("working")]);
         for _ in 0..3 {
             run_chain(&chain).await;
         }
@@ -355,10 +356,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_video_no_source_delivers_never_trips_a_breaker() {
-        let chain = ResolverChain::with_sources(vec![
-            failing_source("first"),
-            failing_source("last"),
-        ]);
+        let chain =
+            ResolverChain::with_sources(vec![failing_source("first"), failing_source("last")]);
         for _ in 0..5 {
             run_chain(&chain).await;
         }
@@ -395,7 +394,10 @@ mod tests {
 
     #[test]
     fn join_failures_names_every_source_when_some_ran() {
-        let failures = vec!["rustypipe: boom".to_string(), "yt-dlp: also boom".to_string()];
+        let failures = vec![
+            "rustypipe: boom".to_string(),
+            "yt-dlp: also boom".to_string(),
+        ];
         let message = join_failures(&failures);
         assert!(message.contains("rustypipe: boom"));
         assert!(message.contains("yt-dlp: also boom"));

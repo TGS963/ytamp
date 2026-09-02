@@ -158,7 +158,13 @@ pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
         thumbnail_url: largest_thumbnail(&artist.thumbnails),
         top_songs: releases
             .songs
-            .map(|songs| songs.results.into_iter().map(artist_song_to_track).collect())
+            .map(|songs| {
+                songs
+                    .results
+                    .into_iter()
+                    .map(artist_song_to_track)
+                    .collect()
+            })
             .unwrap_or_default(),
         albums: releases
             .albums
@@ -201,7 +207,11 @@ pub fn album_page(album: GetAlbum, id: AlbumId) -> AlbumPage {
     let page_album = Album {
         id: id.clone(),
         title: album.title,
-        artists: album.artists.into_iter().map(|artist| artist.name).collect(),
+        artists: album
+            .artists
+            .into_iter()
+            .map(|artist| artist.name)
+            .collect(),
         year: Some(album.year),
         thumbnail_url: largest_thumbnail(&album.thumbnails),
     };
@@ -238,7 +248,12 @@ fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
         .into_iter()
         .map(|track| Track {
             artists: match track.artists.is_empty() {
-                true => album.artists.iter().cloned().map(ArtistRef::named).collect(),
+                true => album
+                    .artists
+                    .iter()
+                    .cloned()
+                    .map(ArtistRef::named)
+                    .collect(),
                 false => track.artists,
             },
             album: Some(album.title.clone()),

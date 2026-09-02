@@ -77,8 +77,7 @@ fn track_list_area(
 /// or when the url is `None`, the placeholder alone shows. The square
 /// claims its space either way, so no row ever shifts.
 pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>, size: f32) {
-    let (rect, _response) =
-        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let radius = theme.metric(MetricRole::CornerRadius);
     ui.painter()
         .rect_filled(rect, radius, theme.color(ColorRole::ArtPlaceholder));
@@ -104,8 +103,10 @@ pub fn row_frame(
     content: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let height = theme.metric(MetricRole::RowHeight);
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
     if response.hovered() {
         let radius = theme.metric(MetricRole::CornerRadius);
         ui.painter()
@@ -169,7 +170,8 @@ fn hover_prefetch_action(
     match dwell_decision(response.hovered(), start, now, delay) {
         DwellDecision::Start => {
             ui.ctx().data_mut(|data| data.insert_temp(id, now));
-            ui.ctx().request_repaint_after(Duration::from_secs_f64(delay));
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(delay));
             None
         }
         DwellDecision::Wait { remaining } => {
@@ -196,7 +198,9 @@ fn hover_prefetch_action(
 #[derive(Debug, PartialEq)]
 enum DwellDecision {
     Start,
-    Wait { remaining: Duration },
+    Wait {
+        remaining: Duration,
+    },
     Emit,
     /// The row emitted already during this hover.
     Done,
@@ -263,18 +267,14 @@ pub(crate) fn artist_labels(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme)
     action
 }
 
-/// One artist's clickable label: `ArtistOpened` with a channel id,
-/// `ArtistSearchRequested` by name otherwise.
+/// One artist's clickable label. The reducer decides between the
+/// artist page and a search, so the row only reports the click.
 fn artist_label(ui: &mut egui::Ui, artist: &ArtistRef, theme: &dyn Theme) -> Option<Action> {
     let label = theme.secondary_label(TextRole::Caption, &artist.name);
     let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-    if !response.clicked() {
-        return None;
-    }
-    Some(match artist.id.clone() {
-        Some(id) => Action::ArtistOpened(id),
-        None => Action::ArtistSearchRequested(artist.name.clone()),
-    })
+    response
+        .clicked()
+        .then(|| Action::ArtistLinkOpened(artist.clone()))
 }
 
 /// The track's album name, clickable when the track carries an album
@@ -326,18 +326,30 @@ mod tests {
 
     #[test]
     fn a_hover_at_the_delay_emits() {
-        assert_eq!(dwell_decision(true, Some(10.0), 10.4, 0.4), DwellDecision::Emit);
+        assert_eq!(
+            dwell_decision(true, Some(10.0), 10.4, 0.4),
+            DwellDecision::Emit
+        );
     }
 
     #[test]
     fn a_row_that_emitted_stays_quiet_until_the_pointer_leaves() {
-        assert_eq!(dwell_decision(true, Some(EMITTED), 99.0, 0.4), DwellDecision::Done);
-        assert_eq!(dwell_decision(false, Some(EMITTED), 99.0, 0.4), DwellDecision::Reset);
+        assert_eq!(
+            dwell_decision(true, Some(EMITTED), 99.0, 0.4),
+            DwellDecision::Done
+        );
+        assert_eq!(
+            dwell_decision(false, Some(EMITTED), 99.0, 0.4),
+            DwellDecision::Reset
+        );
     }
 
     #[test]
     fn a_hover_past_the_delay_still_emits() {
-        assert_eq!(dwell_decision(true, Some(10.0), 20.0, 0.4), DwellDecision::Emit);
+        assert_eq!(
+            dwell_decision(true, Some(10.0), 20.0, 0.4),
+            DwellDecision::Emit
+        );
     }
 
     #[test]

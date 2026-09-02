@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use super::model::{
-    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track, TrackId,
+    AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId, SearchResults,
+    Track, TrackId,
 };
 use super::state::Page;
 
@@ -31,6 +32,9 @@ pub enum Action {
     /// A click on an artist name with no channel id: searches for
     /// the artist by name instead of opening a page directly.
     ArtistSearchRequested(String),
+    /// An artist name in a track row or the player bar. With an id it
+    /// opens the artist page, otherwise it searches for the name.
+    ArtistLinkOpened(ArtistRef),
     AlbumOpened(AlbumId),
     /// Returns to the page Back left, popping `State.history`.
     BackPressed,

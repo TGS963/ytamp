@@ -107,11 +107,17 @@ fn write_snapshot<T: Serialize>(dir: &Path, path: &Path, data: T) {
         data,
     };
     let Ok(json) = serde_json::to_string(&snapshot) else {
-        log::warn!("library cache snapshot for {} did not serialize", path.display());
+        log::warn!(
+            "library cache snapshot for {} did not serialize",
+            path.display()
+        );
         return;
     };
     if let Err(error) = write_atomic(dir, path, json.as_bytes()) {
-        log::warn!("could not write library cache at {}: {error}", path.display());
+        log::warn!(
+            "could not write library cache at {}: {error}",
+            path.display()
+        );
     }
 }
 
