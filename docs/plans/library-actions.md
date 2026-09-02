@@ -1,5 +1,13 @@
 # Library actions
 
+## Status
+
+Both phases are done and reviewed: `46bf8c4` (API layer, write
+probe), `a4a4aee` (menu, heart, dialog, optimistic reducer), plus a
+review fix for the refetch after a failed write. Deferred: the
+Winamp playlist REM menu for a playlist page, rename and delete of a
+playlist from the UI.
+
 ## Goal
 
 The user likes and unlikes a track, adds a track to a playlist,
