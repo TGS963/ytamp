@@ -87,6 +87,13 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::PlayToggled => toggle_play(state),
         Action::NextPressed => advance_or_start_radio(state, |state| state.playback.queue.next()),
         Action::PreviousPressed => go_previous(state),
+        Action::QueueJumped(index) => {
+            load_or_stop(state, |state| state.playback.queue.jump_to(index))
+        }
+        Action::QueueCleared => {
+            state.playback.queue.clear_user_queue();
+            prefetch_next(state)
+        }
         Action::SeekRequested(position) => {
             state.playback.position = position;
             vec![Effect::Player(PlayerCommand::Seek(position))]
@@ -2127,5 +2134,59 @@ mod tests {
         );
         assert_eq!(state.playback.channels, 2);
         assert_eq!(state.playback.sample_rate, 44_100);
+    }
+
+    #[test]
+    fn queue_jumped_loads_the_track_at_that_upcoming_index() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b"), track("c")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::QueueJumped(1));
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Load(track("c")))]
+        );
+        assert_eq!(state.playback.status, PlayStatus::Loading);
+    }
+
+    #[test]
+    fn queue_jumped_past_the_end_stops_playback() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::QueueJumped(5));
+        assert_eq!(effects, vec![Effect::Player(PlayerCommand::Stop)]);
+        assert_eq!(state.playback.status, PlayStatus::Stopped);
+    }
+
+    #[test]
+    fn queue_cleared_drops_only_the_explicitly_queued_tracks() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b")],
+                start: 0,
+            },
+        );
+        apply(&mut state, Action::TrackQueued(track("q")));
+        apply(&mut state, Action::QueueCleared);
+        let upcoming: Vec<&str> = state
+            .playback
+            .queue
+            .upcoming()
+            .map(|track| track.id.0.as_str())
+            .collect();
+        assert_eq!(upcoming, vec!["b"]);
     }
 }

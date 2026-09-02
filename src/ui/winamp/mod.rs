@@ -7,9 +7,11 @@
 //! and the shell, draws, and returns the actions the listener asked
 //! for, the same shape as every other view in `ui`.
 
+mod pixel_text;
+mod playlist;
 mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +55,25 @@ pub struct WinampShell {
     /// The last notice shown in the marquee, and when it started, so
     /// a new one shows once for a few seconds and then steps aside.
     shown_notice: Option<(String, f64)>,
+    /// Whether the playlist window is attached below the main one.
+    pub playlist_open: bool,
+    /// The playlist window's height in skin pixels, one of
+    /// `PLAYLIST_MIN_HEIGHT` plus a multiple of `PLAYLIST_RESIZE_STEP`.
+    pub playlist_height: u32,
+    /// The playlist window rolled up to its title bar.
+    pub playlist_shade: bool,
+    /// How many rows the list has scrolled past.
+    pub playlist_scroll: usize,
+    /// The selected rows, by their index in the drawn list (the
+    /// current track, then `upcoming()`).
+    playlist_selection: HashSet<usize>,
+    /// A drag's leftover wheel and grip motion, carried to the next
+    /// frame so a slow drag still steps once it adds up.
+    playlist_wheel: f32,
+    playlist_resize: f32,
+    /// The playlist's own text cache: track rows drawn with the
+    /// bundled face, not the skin's bitmap font.
+    playlist_text: pixel_text::PixelText,
 }
 
 impl Default for WinampShell {
@@ -67,6 +88,14 @@ impl Default for WinampShell {
             marquee_cursor: 0,
             marquee_last_step: 0.0,
             shown_notice: None,
+            playlist_open: false,
+            playlist_height: layout::PLAYLIST_MIN_HEIGHT,
+            playlist_shade: false,
+            playlist_scroll: 0,
+            playlist_selection: HashSet::new(),
+            playlist_wheel: 0.0,
+            playlist_resize: 0.0,
+            playlist_text: pixel_text::PixelText::default(),
         }
     }
 }
@@ -91,6 +120,8 @@ impl WinampShell {
     fn textures(&mut self, ctx: &egui::Context) -> HashMap<Sheet, egui::TextureId> {
         if self.texture_ctx.as_ref() != Some(ctx) {
             self.textures.clear();
+            // The playlist's own textures belong to the same context.
+            self.playlist_text.clear();
             self.texture_ctx = Some(ctx.clone());
         }
         for sheet in Sheet::ALL {
@@ -145,6 +176,36 @@ impl WinampShell {
         let (text, started) = self.shown_notice.as_ref()?;
         (now - started < NOTICE_DURATION_SECS).then(|| text.clone())
     }
+
+    /// The whole stack's height in skin pixels: the main window, plus
+    /// the playlist window under it while it is open.
+    pub fn stack_height(&self) -> u32 {
+        stack_height(
+            self.shade,
+            self.playlist_open,
+            self.playlist_shade,
+            self.playlist_height,
+        )
+    }
+}
+
+/// The stack's height in skin pixels, pure so the arithmetic is
+/// testable on its own.
+fn stack_height(
+    shade: bool,
+    playlist_open: bool,
+    playlist_shade: bool,
+    playlist_height: u32,
+) -> u32 {
+    let mut height = window_height(shade);
+    if playlist_open {
+        height += if playlist_shade {
+            layout::PLAYLIST_SHADE_HEIGHT
+        } else {
+            playlist_height.clamp(layout::PLAYLIST_MIN_HEIGHT, layout::PLAYLIST_MAX_HEIGHT)
+        };
+    }
+    height
 }
 
 /// How many characters the marquee shows at once: thirty whole ones
@@ -235,10 +296,11 @@ fn is_skin_file(path: &std::path::Path) -> bool {
         })
 }
 
-/// The window's size in logical points, for `show_viewport_immediate`.
-pub fn window_size_points(shade: bool, scale: u8, pixels_per_point: f32) -> egui::Vec2 {
+/// The window's size in logical points, for `show_viewport_immediate`:
+/// the main window, and the playlist window under it while it is open.
+pub fn window_size_points(shell: &WinampShell, scale: u8, pixels_per_point: f32) -> egui::Vec2 {
     let unit = unit(scale, pixels_per_point);
-    egui::vec2(layout::WINDOW_WIDTH as f32, window_height(shade) as f32) * unit
+    egui::vec2(layout::WINDOW_WIDTH as f32, shell.stack_height() as f32) * unit
 }
 
 /// How long a rejected resize waits before it retries, so a platform
@@ -288,16 +350,15 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
     let unit = unit(state.winamp.scale, ctx.pixels_per_point());
     fit_window(
         &ctx,
-        window_size_points(shell.shade, state.winamp.scale, ctx.pixels_per_point()),
+        window_size_points(shell, state.winamp.scale, ctx.pixels_per_point()),
     );
     apply_on_top(&ctx, state.winamp.on_top);
     let origin = ui.max_rect().min;
-    let focused = ctx
-        .input(|input| input.viewport().focused)
-        .unwrap_or(true);
+    let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
     let time = ctx.input(|input| input.time);
     let textures = shell.textures(&ctx);
     let skin = shell.skin.clone();
+    let below_y = window_height(shell.shade);
     let mut view = View {
         ui,
         origin,
@@ -310,8 +371,17 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
     } else {
         full_window(&mut view, &ctx, state, shell, out, focused, time);
     }
-    if state.playback.status == PlayStatus::Playing || state.playback.status == PlayStatus::Paused
-    {
+    if shell.playlist_open {
+        let mut below = View {
+            ui: view.ui,
+            origin: origin + egui::vec2(0.0, below_y as f32 * unit),
+            unit,
+            skin: &skin,
+            textures: &textures,
+        };
+        playlist::show(&mut below, &ctx, state, shell, out, focused);
+    }
+    if state.playback.status == PlayStatus::Playing || state.playback.status == PlayStatus::Paused {
         ctx.request_repaint_after(PLAYING_REPAINT);
     }
 }
@@ -340,7 +410,7 @@ fn full_window(
     balance_slider(view);
     let position_event = position_slider(view, state, out);
     marquee(view, state, shell, time, volume_event, position_event);
-    windows_buttons(view);
+    windows_buttons(view, shell);
     play_pause_stop(view, state, out);
     simple_transport(view, out);
     shuffle_repeat(view, state, out);
@@ -363,7 +433,10 @@ fn shade_bar(
     } else {
         sprites::SHADE_BAR_INACTIVE
     };
-    view.sprite(bar, Area::new(0, 0, layout::WINDOW_WIDTH, layout::SHADE_HEIGHT));
+    view.sprite(
+        bar,
+        Area::new(0, 0, layout::WINDOW_WIDTH, layout::SHADE_HEIGHT),
+    );
     drag_and_shade(view, ctx, shell, "shade-bar", layout::TITLE_BAR);
     if close_button(view).clicked() {
         out.push(Action::WinampToggled);
@@ -377,10 +450,7 @@ fn shade_bar(
         layout::SHADE_TIME.width,
         layout::SHADE_TIME.height,
     );
-    if view
-        .interact(whole, "shade-time", Sense::click())
-        .clicked()
-    {
+    if view.interact(whole, "shade-time", Sense::click()).clicked() {
         shell.time_remaining = !shell.time_remaining;
     }
     let shown = shown_time(state, shell);
@@ -407,7 +477,13 @@ fn title_bar(
     view.sprite(bar, layout::TITLE_BAR);
     let title = drag_and_shade(view, ctx, shell, "title", layout::TITLE_BAR);
     let unit = view.unit;
-    options_menu(egui::Popup::context_menu(&title), view.skin, state, unit, out);
+    options_menu(
+        egui::Popup::context_menu(&title),
+        view.skin,
+        state,
+        unit,
+        out,
+    );
     if close_button(view).clicked() {
         out.push(Action::WinampToggled);
     }
@@ -587,7 +663,7 @@ fn shade_time_text(shown: Duration, remaining: bool) -> String {
     )
 }
 
-fn format_minutes_seconds(duration: Duration) -> String {
+pub(super) fn format_minutes_seconds(duration: Duration) -> String {
     let seconds = duration.as_secs();
     format!("{}:{:02}", (seconds / 60).min(99), seconds % 60)
 }
@@ -686,7 +762,10 @@ fn rates(view: &mut View, state: &State) {
     }
     view.text("128", layout::KBPS);
     if state.playback.sample_rate > 0 {
-        view.text(&(state.playback.sample_rate / 1000).to_string(), layout::KHZ);
+        view.text(
+            &(state.playback.sample_rate / 1000).to_string(),
+            layout::KHZ,
+        );
     }
 }
 
@@ -782,11 +861,22 @@ fn shade_position(view: &mut View, state: &State, out: &mut Vec<Action>) {
     view.sprite_at(thumb, thumb_x, layout::SHADE_POSITION.y);
 }
 
-/// The EQ and PL toggles. Neither has a function yet: the equalizer
-/// and the playlist window are later parts of this plan.
-fn windows_buttons(view: &mut View) {
+/// The EQ and PL toggles. EQ has no function yet: the equalizer is a
+/// later part of this plan. PL opens and closes the playlist window,
+/// shell state only, the same as the shade toggle.
+fn windows_buttons(view: &mut View, shell: &mut WinampShell) {
     view.sprite(sprites::EQ_OFF, layout::EQ_BUTTON);
-    view.sprite(sprites::PLAYLIST_OFF, layout::PLAYLIST_BUTTON);
+    let (normal, pressed) = if shell.playlist_open {
+        (sprites::PLAYLIST_ON, sprites::PLAYLIST_ON_PRESSED)
+    } else {
+        (sprites::PLAYLIST_OFF, sprites::PLAYLIST_OFF_PRESSED)
+    };
+    if view
+        .button(layout::PLAYLIST_BUTTON, normal, pressed, "playlist")
+        .clicked()
+    {
+        shell.playlist_open = !shell.playlist_open;
+    }
 }
 
 /// What a click on Play does: starts the queue, unless it is already
@@ -821,7 +911,12 @@ fn play_pause_stop(view: &mut View, state: &State, out: &mut Vec<Action>) {
         play_click(playing),
     );
     push_if_clicked(
-        view.button(layout::PAUSE, sprites::PAUSE, sprites::PAUSE_PRESSED, "pause"),
+        view.button(
+            layout::PAUSE,
+            sprites::PAUSE,
+            sprites::PAUSE_PRESSED,
+            "pause",
+        ),
         out,
         pause_click(playing),
     );
@@ -859,7 +954,12 @@ fn simple_transport(view: &mut View, out: &mut Vec<Action>) {
         out.push(Action::NextPressed);
     }
     if view
-        .button(layout::EJECT, sprites::EJECT, sprites::EJECT_PRESSED, "eject")
+        .button(
+            layout::EJECT,
+            sprites::EJECT,
+            sprites::EJECT_PRESSED,
+            "eject",
+        )
         .clicked()
     {
         out.push(Action::WinampToggled);
@@ -868,7 +968,13 @@ fn simple_transport(view: &mut View, out: &mut Vec<Action>) {
 
 /// A shade-bar transport button: no bitmap of its own, since the
 /// bar's background already draws it; this only listens for a click.
-fn mini_button(view: &mut View, id: &str, area: Area, out: &mut Vec<Action>, action: Option<Action>) {
+fn mini_button(
+    view: &mut View,
+    id: &str,
+    area: Area,
+    out: &mut Vec<Action>,
+    action: Option<Action>,
+) {
     let response = view.interact(area, id, Sense::click());
     push_if_clicked(response, out, action);
 }
@@ -883,13 +989,31 @@ fn mini_transport(view: &mut View, state: &State, out: &mut Vec<Action>) {
         out,
         Some(Action::PreviousPressed),
     );
-    mini_button(view, "shade-play", layout::SHADE_PLAY, out, play_click(playing));
-    mini_button(view, "shade-pause", layout::SHADE_PAUSE, out, pause_click(playing));
+    mini_button(
+        view,
+        "shade-play",
+        layout::SHADE_PLAY,
+        out,
+        play_click(playing),
+    );
+    mini_button(
+        view,
+        "shade-pause",
+        layout::SHADE_PAUSE,
+        out,
+        pause_click(playing),
+    );
     let stop = view.interact(layout::SHADE_STOP, "shade-stop", Sense::click());
     if stop.clicked() {
         out.extend(stop_click(playing).into_iter().flatten());
     }
-    mini_button(view, "shade-next", layout::SHADE_NEXT, out, Some(Action::NextPressed));
+    mini_button(
+        view,
+        "shade-next",
+        layout::SHADE_NEXT,
+        out,
+        Some(Action::NextPressed),
+    );
     mini_button(
         view,
         "shade-eject",
@@ -906,7 +1030,10 @@ fn shuffle_repeat(view: &mut View, state: &State, out: &mut Vec<Action>) {
     } else {
         (sprites::SHUFFLE_OFF, sprites::SHUFFLE_OFF_PRESSED)
     };
-    if view.button(layout::SHUFFLE, normal, pressed, "shuffle").clicked() {
+    if view
+        .button(layout::SHUFFLE, normal, pressed, "shuffle")
+        .clicked()
+    {
         out.push(Action::ShuffleToggled);
     }
     let repeat_on = state.playback.queue.repeat != RepeatMode::Off;
@@ -915,7 +1042,10 @@ fn shuffle_repeat(view: &mut View, state: &State, out: &mut Vec<Action>) {
     } else {
         (sprites::REPEAT_OFF, sprites::REPEAT_OFF_PRESSED)
     };
-    if view.button(layout::REPEAT, normal, pressed, "repeat").clicked() {
+    if view
+        .button(layout::REPEAT, normal, pressed, "repeat")
+        .clicked()
+    {
         out.push(Action::RepeatCycled);
     }
 }
@@ -939,7 +1069,13 @@ fn clutter_bar(view: &mut View, state: &State, out: &mut Vec<Action>) {
 /// The menu behind a right-click on the title bar and the O button:
 /// the window's scale, always-on-top, the skin picker, and the way
 /// back to the classic look.
-fn options_menu(popup: egui::Popup<'_>, skin: &Skin, state: &State, unit: f32, out: &mut Vec<Action>) {
+fn options_menu(
+    popup: egui::Popup<'_>,
+    skin: &Skin,
+    state: &State,
+    unit: f32,
+    out: &mut Vec<Action>,
+) {
     menu(popup, skin, unit, |ui| {
         ui.set_min_width(menu_font(unit) * 11.0);
         if let Some(action) = scale_menu_row(ui, state.winamp.scale) {
@@ -984,7 +1120,10 @@ fn scale_menu_row(ui: &mut Ui, current: u8) -> Option<Action> {
 /// The built-in skin and every skin in the folder, as a radio list.
 fn skin_menu_rows(ui: &mut Ui, current: &Option<String>, names: &[String]) -> Option<Action> {
     let mut chosen = None;
-    if ui.selectable_label(current.is_none(), "Built-in skin").clicked() {
+    if ui
+        .selectable_label(current.is_none(), "Built-in skin")
+        .clicked()
+    {
         chosen = Some(Action::SkinChosen(None));
     }
     for name in names {
@@ -1003,7 +1142,7 @@ fn skin_menu_rows(ui: &mut Ui, current: &Option<String>, names: &[String]) -> Op
 ///
 /// Ported from fastpotify (MIT, Copyright (c) 2026 Carmine Paolino),
 /// src/ui/winamp/mod.rs, `menu` (lines 745-800).
-fn menu<R>(
+pub(super) fn menu<R>(
     popup: egui::Popup<'_>,
     skin: &Skin,
     unit: f32,
@@ -1093,11 +1232,31 @@ mod tests {
     fn the_window_shrinks_to_the_title_bar_while_shaded() {
         assert_eq!(window_height(false), layout::WINDOW_HEIGHT);
         assert_eq!(window_height(true), layout::SHADE_HEIGHT);
+        let mut shell = WinampShell::new();
+        assert_eq!(window_size_points(&shell, 2, 1.0), egui::vec2(550.0, 232.0));
+        shell.shade = true;
+        assert_eq!(window_size_points(&shell, 1, 1.0), egui::vec2(275.0, 14.0));
+    }
+
+    #[test]
+    fn the_stack_grows_by_the_open_playlists_height() {
         assert_eq!(
-            window_size_points(false, 2, 1.0),
-            egui::vec2(550.0, 232.0)
+            stack_height(false, false, false, 116),
+            layout::WINDOW_HEIGHT
         );
-        assert_eq!(window_size_points(true, 1, 1.0), egui::vec2(275.0, 14.0));
+        assert_eq!(
+            stack_height(false, true, false, 200),
+            layout::WINDOW_HEIGHT + 200
+        );
+        assert_eq!(
+            stack_height(false, true, true, 200),
+            layout::WINDOW_HEIGHT + layout::PLAYLIST_SHADE_HEIGHT
+        );
+        // An out-of-range height clamps to the playlist's own bounds.
+        assert_eq!(
+            stack_height(false, true, false, 10_000),
+            layout::WINDOW_HEIGHT + layout::PLAYLIST_MAX_HEIGHT
+        );
     }
 
     #[test]

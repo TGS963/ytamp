@@ -91,6 +91,53 @@ impl Queue {
         self.user_queue.push_back(track);
     }
 
+    /// Drops every explicitly queued track, leaving the context alone.
+    pub fn clear_user_queue(&mut self) {
+        self.user_queue.clear();
+    }
+
+    /// Jumps straight to the track at `index` in [`Self::upcoming`],
+    /// as if `next` had run enough times to reach it, skipping the
+    /// tracks in between without playing them. Returns the track to
+    /// load, or `None` when `index` is out of range.
+    pub fn jump_to(&mut self, index: usize) -> Option<Track> {
+        if index < self.user_queue.len() {
+            return self.jump_within_user_queue(index);
+        }
+        self.jump_within_context(index - self.user_queue.len())
+    }
+
+    /// Drops the queued tracks before `index` and plays the one at it.
+    fn jump_within_user_queue(&mut self, index: usize) -> Option<Track> {
+        for _ in 0..index {
+            self.user_queue.pop_front();
+        }
+        let track = self.user_queue.pop_front()?;
+        self.current = Some(CurrentTrack {
+            track: track.clone(),
+            source: TrackSource::UserQueue,
+        });
+        Some(track)
+    }
+
+    /// Drops the whole user queue and moves the cursor to the context
+    /// track `offset` positions past the current one.
+    fn jump_within_context(&mut self, offset: usize) -> Option<Track> {
+        self.user_queue.clear();
+        let cursor = self.cursor?;
+        let target = cursor.checked_add(offset)?.checked_add(1)?;
+        if target >= self.order.len() {
+            return None;
+        }
+        self.cursor = Some(target);
+        let track = self.context[self.order[target]].clone();
+        self.current = Some(CurrentTrack {
+            track: track.clone(),
+            source: TrackSource::Context,
+        });
+        Some(track)
+    }
+
     /// Appends tracks to the end of the context and the play order.
     /// A radio result lands here, after the queue has emptied.
     ///
@@ -426,5 +473,44 @@ mod tests {
         queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
         assert!(queue.contains(&TrackId("b".into())));
         assert!(!queue.contains(&TrackId("z".into())));
+    }
+
+    #[test]
+    fn jump_to_reaches_a_queued_track_and_drops_the_ones_before_it() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.queue_track(track("q1"));
+        queue.queue_track(track("q2"));
+        assert_eq!(queue.jump_to(1).unwrap().id.0, "q2");
+        // q1 was skipped, not kept for a later `next`.
+        assert_eq!(queue.next().unwrap().id.0, "b");
+    }
+
+    #[test]
+    fn jump_to_reaches_a_context_track_and_clears_the_user_queue() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b", "c"]), 0, &mut no_random);
+        queue.queue_track(track("q"));
+        assert_eq!(queue.jump_to(2).unwrap().id.0, "c");
+        assert_eq!(current_id(&queue), "c");
+        assert_eq!(queue.upcoming().count(), 0);
+    }
+
+    #[test]
+    fn jump_to_rejects_an_index_past_the_end() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        assert_eq!(queue.jump_to(5), None);
+        assert_eq!(current_id(&queue), "a");
+    }
+
+    #[test]
+    fn clear_user_queue_drops_only_the_queued_tracks() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.queue_track(track("q"));
+        queue.clear_user_queue();
+        let upcoming: Vec<&str> = queue.upcoming().map(|t| t.id.0.as_str()).collect();
+        assert_eq!(upcoming, vec!["b"]);
     }
 }

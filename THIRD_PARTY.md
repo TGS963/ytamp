@@ -46,6 +46,13 @@ Each file below carries a header comment that names this notice.
 - `src/ui/winamp/mod.rs`, ported in part from `src/ui/winamp/mod.rs`
   and `src/winamp.rs` of fastpotify (sprite drawing, the marquee, and
   the skin picker menu)
+- `src/ui/winamp/playlist.rs`, ported from `src/ui/winamp/playlist.rs`
+  of fastpotify (the playlist window)
+- `src/ui/winamp/pixel_text.rs`, ported from
+  `src/ui/winamp/pixel_text.rs` of fastpotify, without its
+  `system_fonts` probe and its bundled emoji face: the playlist shows
+  track titles, not arbitrary Spotify text, so the bundled Inter face
+  alone is enough
 
 ### Bundled skin
 
@@ -55,3 +62,10 @@ ytamp, not the green palette of fastpotify. That generator is a port of
 the fastpotify file of the same name. For this reason, the ported file
 above still carries the MIT notice, even though it now draws a skin that
 belongs to ytamp.
+
+## Inter
+
+`assets/fonts/InterVariable.ttf` draws the Winamp playlist's text
+(`src/ui/winamp/pixel_text.rs`), the same file fastpotify bundles.
+Inter is licensed under the SIL Open Font License 1.1, copied at
+`assets/fonts/OFL.txt`.

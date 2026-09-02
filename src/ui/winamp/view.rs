@@ -75,6 +75,24 @@ impl View<'_> {
         self.sprite_at(sprite, area.x, area.y);
     }
 
+    /// A sprite, clipped to `clip`'s screen rectangle. Used to tile a
+    /// repeating sprite across an area whose far edge cuts a tile
+    /// short, as the playlist window's frame does.
+    pub fn sprite_clipped(&self, sprite: Sprite, x: u32, y: u32, clip: Area) {
+        let clip_rect = self.rect(clip).intersect(self.ui.clip_rect());
+        let painter = self.ui.painter().with_clip_rect(clip_rect);
+        self.paint(&painter, sprite, x, y);
+    }
+
+    /// A block of skin pixels in one flat colour.
+    pub fn fill(&self, x: u32, y: u32, width: u32, height: u32, color: Color32) {
+        let rect = Rect::from_min_size(
+            self.origin + vec2(x as f32, y as f32) * self.unit,
+            vec2(width as f32, height as f32) * self.unit,
+        );
+        self.ui.painter().rect_filled(rect, 0.0, color);
+    }
+
     /// A line of the skin's bitmap font, cut off at the area's edge.
     pub fn text(&self, text: &str, area: Area) {
         let clip = self.rect(area).intersect(self.ui.clip_rect());
@@ -104,6 +122,19 @@ impl View<'_> {
             normal
         };
         self.sprite(sprite, area);
+        response
+    }
+
+    /// A button whose unpressed look is already baked into the
+    /// background it sits on: this only draws `pressed` while held,
+    /// the way the playlist window's close and shade buttons work.
+    pub fn lamp_button(&mut self, area: Area, pressed: Sprite, id: &str) -> Response {
+        let response = self
+            .interact(area, id, Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.is_pointer_button_down_on() {
+            self.sprite(pressed, area);
+        }
         response
     }
 

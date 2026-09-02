@@ -52,6 +52,12 @@ pub enum Action {
     PlayToggled,
     NextPressed,
     PreviousPressed,
+    /// A double click on a Winamp playlist row: plays the track at
+    /// this index in the queue's upcoming list.
+    QueueJumped(usize),
+    /// The Winamp playlist's REM menu: drops every explicitly queued
+    /// track, leaving the context alone.
+    QueueCleared,
     SeekRequested(Duration),
     VolumeSet(f32),
     ShuffleToggled,

@@ -44,7 +44,7 @@ impl App {
     fn winamp_window(&mut self, ctx: &egui::Context) -> Vec<Action> {
         ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Visible(false));
         let size = ui::winamp::window_size_points(
-            self.winamp.shade,
+            &self.winamp,
             self.state.winamp.scale,
             ctx.pixels_per_point(),
         );
