@@ -68,6 +68,11 @@ fn transport(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     if selectable_icon(ui, repeat_icon(repeat), repeat != RepeatMode::Off).clicked() {
         out.push(Action::RepeatCycled);
     }
+    let autoplay_button = selectable_icon(ui, "📻", state.playback.autoplay)
+        .on_hover_text("Autoplay related songs when the queue ends");
+    if autoplay_button.clicked() {
+        out.push(Action::AutoplayToggled);
+    }
 }
 
 fn selectable_icon(ui: &mut egui::Ui, icon: &str, on: bool) -> egui::Response {

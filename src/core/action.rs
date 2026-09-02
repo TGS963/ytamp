@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use super::model::{
-    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track,
+    AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, SearchResults, Track, TrackId,
 };
 use super::state::Page;
 
@@ -46,6 +46,7 @@ pub enum Action {
     VolumeSet(f32),
     ShuffleToggled,
     RepeatCycled,
+    AutoplayToggled,
     QueuePanelToggled,
     NoticeDismissed(usize),
 
@@ -62,6 +63,9 @@ pub enum Action {
     PlaylistTracksLoaded(PlaylistId, Result<Vec<Track>, String>),
     ArtistLoaded(ArtistId, Result<ArtistPage, String>),
     AlbumLoaded(AlbumId, Result<AlbumPage, String>),
+    /// The radio fetched for the track that ended the queue, once
+    /// autoplay ran out of upcoming tracks.
+    RadioLoaded(TrackId, Result<Vec<Track>, String>),
     /// One page of the liked-songs list. `finished` marks the last
     /// page of the stream.
     LikedPageLoaded {

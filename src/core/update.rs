@@ -11,7 +11,7 @@ use super::effect::{ApiRequest, Effect, LibraryCacheWrite, PlayerCommand};
 use super::model::{
     AlbumId, AlbumPage, ArtistId, ArtistPage, Playlist, PlaylistId, Track, TrackId,
 };
-use super::queue::RandomBelow;
+use super::queue::{Queue, RandomBelow};
 use super::state::{AuthState, Loadable, Page, PlayStatus, State};
 
 /// Below this position, Previous moves to the previous track.
@@ -63,6 +63,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::PlaylistTracksLoaded(id, result) => finish_playlist_load(state, id, result),
         Action::ArtistLoaded(id, result) => finish_artist_load(state, id, result),
         Action::AlbumLoaded(id, result) => finish_album_load(state, id, result),
+        Action::RadioLoaded(id, result) => finish_radio_load(state, id, result),
         Action::LikedPageLoaded { tracks, finished } => {
             finish_liked_page(state, tracks, finished)
         }
@@ -84,7 +85,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         }
         Action::TrackHovered(track) => hover_prefetch(state, track),
         Action::PlayToggled => toggle_play(state),
-        Action::NextPressed => load_or_stop(state, |state| state.playback.queue.next()),
+        Action::NextPressed => advance_or_start_radio(state, |state| state.playback.queue.next()),
         Action::PreviousPressed => go_previous(state),
         Action::SeekRequested(position) => {
             state.playback.position = position;
@@ -99,6 +100,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::RepeatCycled => {
             state.playback.queue.repeat = state.playback.queue.repeat.cycled();
             prefetch_next(state)
+        }
+        Action::AutoplayToggled => {
+            state.playback.autoplay = !state.playback.autoplay;
+            vec![]
         }
         Action::QueuePanelToggled => {
             state.queue_open = !state.queue_open;
@@ -566,6 +571,7 @@ fn play_context(
     start: usize,
     random_below: RandomBelow,
 ) -> Vec<Effect> {
+    state.playback.radio_request = None;
     let started = state
         .playback
         .queue
@@ -603,6 +609,7 @@ fn restore_session(state: &mut State, session: crate::core::session::SavedSessio
     state.playback.position = session.position();
     state.playback.queue = session.queue;
     state.playback.volume = session.volume.clamp(0.0, 1.0);
+    state.playback.autoplay = session.autoplay;
     state.playback.status = PlayStatus::Stopped;
     state.playback.track_duration = state
         .playback
@@ -644,7 +651,9 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
             state.playback.position = position;
             vec![]
         }
-        PlayerEvent::TrackEnded => load_or_stop(state, |state| state.playback.queue.on_track_end()),
+        PlayerEvent::TrackEnded => {
+            advance_or_start_radio(state, |state| state.playback.queue.on_track_end())
+        }
         PlayerEvent::Failed(message) => {
             state.playback.status = PlayStatus::Stopped;
             state.notices.push(message);
@@ -657,11 +666,104 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
 /// when the queue is exhausted.
 fn load_or_stop(state: &mut State, step: impl FnOnce(&mut State) -> Option<Track>) -> Vec<Effect> {
     let next = step(state);
-    if next.is_none() && state.playback.status != PlayStatus::Stopped {
-        state.playback.status = PlayStatus::Stopped;
-        return vec![Effect::Player(PlayerCommand::Stop)];
+    if next.is_none() {
+        return stop_playback(state);
     }
     load_track(state, next)
+}
+
+/// Stops playback, unless it has already stopped.
+fn stop_playback(state: &mut State) -> Vec<Effect> {
+    if state.playback.status == PlayStatus::Stopped {
+        return vec![];
+    }
+    state.playback.status = PlayStatus::Stopped;
+    vec![Effect::Player(PlayerCommand::Stop)]
+}
+
+/// What to do once the queue has no more tracks to hand back: stop,
+/// or fetch a radio to keep playing, when autoplay is on and a track
+/// was playing.
+enum NextStep {
+    Load(Track),
+    FetchRadio(TrackId),
+    Stop,
+}
+
+/// Chooses the next step from the queue's answer, the autoplay
+/// setting, and the track that was playing. Pure, so the reducer
+/// logic here is unit-testable without a `State`.
+fn decide_next_step(next: Option<Track>, autoplay: bool, current: Option<&Track>) -> NextStep {
+    match (next, autoplay, current) {
+        (Some(track), _, _) => NextStep::Load(track),
+        (None, true, Some(current)) => NextStep::FetchRadio(current.id.clone()),
+        (None, _, _) => NextStep::Stop,
+    }
+}
+
+/// Advances the queue with `step`. An empty queue with autoplay on
+/// starts a radio fetch from the track that was playing, instead of
+/// stopping at once.
+fn advance_or_start_radio(
+    state: &mut State,
+    step: impl FnOnce(&mut State) -> Option<Track>,
+) -> Vec<Effect> {
+    let current = state.playback.queue.current().cloned();
+    let next = step(state);
+    match decide_next_step(next, state.playback.autoplay, current.as_ref()) {
+        NextStep::Load(track) => load_track(state, Some(track)),
+        NextStep::FetchRadio(id) => start_radio_fetch(state, id),
+        NextStep::Stop => stop_playback(state),
+    }
+}
+
+/// Marks the player as loading and requests a radio for `track_id`,
+/// remembering the request so a late or stale result can be told
+/// apart from a fresh one.
+fn start_radio_fetch(state: &mut State, track_id: TrackId) -> Vec<Effect> {
+    state.playback.status = PlayStatus::Loading;
+    state.playback.radio_request = Some(track_id.clone());
+    vec![Effect::Api(ApiRequest::FetchRadio(track_id))]
+}
+
+/// Applies a radio result once it matches the running request. Drops
+/// tracks already in the queue, then extends and advances, or stops
+/// on an empty or failed radio.
+fn finish_radio_load(
+    state: &mut State,
+    track_id: TrackId,
+    result: Result<Vec<Track>, String>,
+) -> Vec<Effect> {
+    if state.playback.radio_request != Some(track_id) {
+        return vec![];
+    }
+    state.playback.radio_request = None;
+    match result {
+        Ok(tracks) => apply_radio_tracks(state, tracks),
+        Err(message) => {
+            state.notices.push(message);
+            stop_playback(state)
+        }
+    }
+}
+
+/// Adds the radio tracks not already in the queue and plays the
+/// first of them, or stops when none of them are new.
+fn apply_radio_tracks(state: &mut State, tracks: Vec<Track>) -> Vec<Effect> {
+    let new_tracks = tracks_not_in(&state.playback.queue, tracks);
+    if new_tracks.is_empty() {
+        return stop_playback(state);
+    }
+    state.playback.queue.extend_context(new_tracks);
+    load_or_stop(state, |state| state.playback.queue.next())
+}
+
+/// The tracks not already present in `queue`, in their given order.
+fn tracks_not_in(queue: &Queue, tracks: Vec<Track>) -> Vec<Track> {
+    tracks
+        .into_iter()
+        .filter(|track| !queue.contains(&track.id))
+        .collect()
 }
 
 fn load_track(state: &mut State, track: Option<Track>) -> Vec<Effect> {
@@ -1097,8 +1199,9 @@ mod tests {
     }
 
     #[test]
-    fn track_end_at_the_queue_end_stops_the_player() {
+    fn track_end_at_the_queue_end_stops_the_player_with_autoplay_off() {
         let mut state = State::default();
+        state.playback.autoplay = false;
         apply(
             &mut state,
             Action::ContextPlayed {
@@ -1113,6 +1216,218 @@ mod tests {
         let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
         assert_eq!(state.playback.status, PlayStatus::Stopped);
         assert_eq!(effects, vec![Effect::Player(PlayerCommand::Stop)]);
+    }
+
+    #[test]
+    fn track_end_at_the_queue_end_fetches_a_radio_with_autoplay_on() {
+        let mut state = State::default();
+        assert!(state.playback.autoplay);
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        assert_eq!(state.playback.status, PlayStatus::Loading);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::FetchRadio(TrackId("a".into())))]
+        );
+    }
+
+    #[test]
+    fn a_radio_result_appends_dedups_and_loads_the_first_new_track() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        let effects = apply(
+            &mut state,
+            Action::RadioLoaded(
+                TrackId("a".into()),
+                Ok(vec![track("a"), track("b"), track("c")]),
+            ),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::Load(track("b")))]
+        );
+        assert_eq!(state.playback.radio_request, None);
+        assert!(state.playback.queue.contains(&TrackId("c".into())));
+    }
+
+    #[test]
+    fn an_empty_radio_result_stops_playback() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        let effects = apply(
+            &mut state,
+            Action::RadioLoaded(TrackId("a".into()), Ok(vec![track("a")])),
+        );
+        assert_eq!(state.playback.status, PlayStatus::Stopped);
+        assert_eq!(effects, vec![Effect::Player(PlayerCommand::Stop)]);
+    }
+
+    #[test]
+    fn a_failed_radio_stops_playback_with_a_notice() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        let effects = apply(
+            &mut state,
+            Action::RadioLoaded(TrackId("a".into()), Err("offline".into())),
+        );
+        assert_eq!(state.playback.status, PlayStatus::Stopped);
+        assert_eq!(effects, vec![Effect::Player(PlayerCommand::Stop)]);
+        assert_eq!(state.notices, vec!["offline".to_string()]);
+    }
+
+    #[test]
+    fn a_radio_result_for_a_different_request_is_ignored() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        let effects = apply(
+            &mut state,
+            Action::RadioLoaded(TrackId("stale".into()), Ok(vec![track("b")])),
+        );
+        assert_eq!(effects, vec![]);
+        assert_eq!(state.playback.status, PlayStatus::Loading);
+        assert_eq!(state.playback.radio_request, Some(TrackId("a".into())));
+    }
+
+    #[test]
+    fn a_radio_result_after_a_new_context_is_ignored() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted { duration: None }),
+        );
+        apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("x"), track("y")],
+                start: 0,
+            },
+        );
+        let effects = apply(
+            &mut state,
+            Action::RadioLoaded(TrackId("a".into()), Ok(vec![track("b")])),
+        );
+        assert_eq!(effects, vec![]);
+    }
+
+    #[test]
+    fn next_pressed_at_the_queue_end_also_fetches_a_radio() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        let effects = apply(&mut state, Action::NextPressed);
+        assert_eq!(
+            effects,
+            vec![Effect::Api(ApiRequest::FetchRadio(TrackId("a".into())))]
+        );
+    }
+
+    #[test]
+    fn autoplay_toggled_flips_the_flag() {
+        let mut state = State::default();
+        assert!(state.playback.autoplay);
+        apply(&mut state, Action::AutoplayToggled);
+        assert!(!state.playback.autoplay);
+    }
+
+    #[test]
+    fn the_autoplay_setting_survives_a_session_round_trip() {
+        let mut state = State::default();
+        apply(&mut state, Action::AutoplayToggled);
+        let saved = crate::core::session::SavedSession::capture(&state);
+        let mut restored = State::default();
+        apply(&mut restored, Action::SessionRestored(saved));
+        assert!(!restored.playback.autoplay);
+    }
+
+    #[test]
+    fn decide_next_step_loads_when_a_next_track_exists() {
+        let step = decide_next_step(Some(track("b")), true, Some(&track("a")));
+        assert!(matches!(step, NextStep::Load(t) if t.id.0 == "b"));
+    }
+
+    #[test]
+    fn decide_next_step_fetches_radio_at_the_end_with_autoplay_on() {
+        let step = decide_next_step(None, true, Some(&track("a")));
+        assert!(matches!(step, NextStep::FetchRadio(id) if id.0 == "a"));
+    }
+
+    #[test]
+    fn decide_next_step_stops_at_the_end_with_autoplay_off() {
+        let step = decide_next_step(None, false, Some(&track("a")));
+        assert!(matches!(step, NextStep::Stop));
+    }
+
+    #[test]
+    fn decide_next_step_stops_with_no_current_track() {
+        let step = decide_next_step(None, true, None);
+        assert!(matches!(step, NextStep::Stop));
     }
 
     #[test]

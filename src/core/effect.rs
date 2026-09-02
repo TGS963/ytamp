@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{AlbumId, ArtistId, Playlist, PlaylistId, Track};
+use super::model::{AlbumId, ArtistId, Playlist, PlaylistId, Track, TrackId};
 
 /// What a YouTube Music session needs: the Cookie header, the
 /// X-Goog-AuthUser index that picks the account inside the session,
@@ -77,6 +77,9 @@ pub enum ApiRequest {
     FetchPlaylistTracks(PlaylistId),
     FetchArtist(ArtistId),
     FetchAlbum(AlbumId),
+    /// A radio of songs related to a track, for autoplay at the
+    /// queue end.
+    FetchRadio(TrackId),
 }
 
 #[derive(Clone, Debug, PartialEq)]

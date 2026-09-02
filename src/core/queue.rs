@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use super::model::Track;
+use super::model::{Track, TrackId};
 
 /// A source of random indices: `random_below(n)` returns a value in `0..n`.
 ///
@@ -89,6 +89,24 @@ impl Queue {
 
     pub fn queue_track(&mut self, track: Track) {
         self.user_queue.push_back(track);
+    }
+
+    /// Appends tracks to the end of the context and the play order.
+    /// A radio result lands here, after the queue has emptied.
+    ///
+    /// The new tracks join in list order, also when shuffle is on. A
+    /// radio result already comes back in a listenable order, so no
+    /// extra shuffle step runs on top of it.
+    pub fn extend_context(&mut self, tracks: Vec<Track>) {
+        let start = self.context.len();
+        let new_indices = start..start + tracks.len();
+        self.context.extend(tracks);
+        self.order.extend(new_indices);
+    }
+
+    /// True when a track with this id already sits in the context.
+    pub fn contains(&self, id: &TrackId) -> bool {
+        self.context.iter().any(|track| &track.id == id)
     }
 
     /// An explicit skip. Returns the track to load, or `None` when the
@@ -381,5 +399,32 @@ mod tests {
         let mut queue = Queue::default();
         queue.play_context(tracks(&["a"]), 0, &mut no_random);
         assert_eq!(queue.peek_next(), None);
+    }
+
+    #[test]
+    fn extend_context_appends_tracks_after_the_context_end() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.next();
+        queue.extend_context(tracks(&["c", "d"]));
+        let upcoming: Vec<&str> = queue.upcoming().map(|t| t.id.0.as_str()).collect();
+        assert_eq!(upcoming, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn extend_context_lets_next_reach_the_new_tracks() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a"]), 0, &mut no_random);
+        assert_eq!(queue.next(), None);
+        queue.extend_context(tracks(&["b"]));
+        assert_eq!(queue.next().unwrap().id.0, "b");
+    }
+
+    #[test]
+    fn contains_finds_a_track_already_in_the_context() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        assert!(queue.contains(&TrackId("b".into())));
+        assert!(!queue.contains(&TrackId("z".into())));
     }
 }

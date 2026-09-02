@@ -15,6 +15,14 @@ pub struct SavedSession {
     pub queue: Queue,
     pub position_secs: u64,
     pub volume: f32,
+    /// Missing in a session saved before autoplay existed. Such a
+    /// session keeps autoplay on, the default behavior.
+    #[serde(default = "default_autoplay")]
+    pub autoplay: bool,
+}
+
+fn default_autoplay() -> bool {
+    true
 }
 
 impl SavedSession {
@@ -23,6 +31,7 @@ impl SavedSession {
             queue: state.playback.queue.clone(),
             position_secs: state.playback.position.as_secs(),
             volume: state.playback.volume,
+            autoplay: state.playback.autoplay,
         }
     }
 

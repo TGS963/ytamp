@@ -123,6 +123,12 @@ pub struct PlaybackState {
     /// second prefetch request for a row the pointer left and then
     /// entered again.
     pub last_hover_prefetch: Option<TrackId>,
+    /// When true, the player fetches a radio of related songs after
+    /// the queue ends, instead of stopping.
+    pub autoplay: bool,
+    /// The id of the track a running radio fetch started from. Guards
+    /// a late result against a queue the user has since replaced.
+    pub radio_request: Option<TrackId>,
 }
 
 impl Default for PlaybackState {
@@ -135,6 +141,8 @@ impl Default for PlaybackState {
             volume: 1.0,
             resume_position: None,
             last_hover_prefetch: None,
+            autoplay: true,
+            radio_request: None,
         }
     }
 }
