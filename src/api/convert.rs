@@ -5,28 +5,14 @@ use std::time::Duration;
 use ytmapi_rs::common::YoutubeID;
 use ytmapi_rs::parse::{
     AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, LibraryPlaylist, ParsedSongAlbum,
-    ParsedSongArtist, PlaylistItem, SearchResultAlbum, SearchResultArtist, SearchResultSong,
-    SearchResultVideo, WatchPlaylistTrack,
+    ParsedSongArtist, PlaylistItem, SearchResultSong, WatchPlaylistTrack,
 };
 
 use crate::core::model::{
-    Album, AlbumId, AlbumPage, Artist, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId,
-    SearchResults as ModelSearchResults, Track, TrackId,
+    Album, AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId, Track,
+    TrackId,
 };
 use crate::thumbnails::{preferred, track_art, video_thumbnail};
-
-pub fn search_results_from_tracks(
-    songs: Vec<Track>,
-    albums: Vec<SearchResultAlbum>,
-    artists: Vec<SearchResultArtist>,
-) -> ModelSearchResults {
-    ModelSearchResults {
-        songs,
-        albums: albums.into_iter().map(album_result).collect(),
-        artists: artists.into_iter().map(artist_result).collect(),
-        playlists: vec![],
-    }
-}
 
 pub fn song_to_track(song: SearchResultSong) -> Track {
     let (album, album_id) = split_song_album(song.album);
@@ -52,55 +38,12 @@ fn artist_ref(artist: ParsedSongArtist) -> ArtistRef {
     }
 }
 
-fn album_result(album: SearchResultAlbum) -> Album {
-    Album {
-        id: AlbumId(album.album_id.get_raw().to_string()),
-        title: album.title,
-        artists: vec![album.artist],
-        year: Some(album.year),
-        thumbnail_url: preferred(&album.thumbnails),
-    }
-}
-
-fn artist_result(artist: SearchResultArtist) -> Artist {
-    Artist {
-        id: ArtistId(artist.browse_id.get_raw().to_string()),
-        name: artist.artist,
-        thumbnail_url: preferred(&artist.thumbnails),
-    }
-}
-
 pub fn library_playlist(playlist: LibraryPlaylist) -> Playlist {
     Playlist {
         id: PlaylistId(playlist.playlist_id.get_raw().to_string()),
         title: playlist.title,
         track_count: leading_number(&playlist.tracks),
         thumbnail_url: preferred(&playlist.thumbnails),
-    }
-}
-
-/// A video search result as a track: the fallback when the song
-/// search parse breaks. Episodes disappear from the list.
-pub fn video_to_track(video: SearchResultVideo) -> Option<Track> {
-    match video {
-        SearchResultVideo::Video {
-            title,
-            channel_name,
-            video_id,
-            length,
-            thumbnails,
-            ..
-        } => Some(Track {
-            id: TrackId(video_id.get_raw().to_string()),
-            title,
-            artists: vec![ArtistRef::named(channel_name)],
-            album: None,
-            album_id: None,
-            duration: parse_duration(&length),
-            thumbnail_url: track_art(&thumbnails, video_id.get_raw()),
-            playlist_item_id: None,
-        }),
-        SearchResultVideo::VideoEpisode { .. } => None,
     }
 }
 

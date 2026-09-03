@@ -9,6 +9,7 @@
 
 mod convert;
 mod official;
+mod search_parse;
 
 use std::sync::Arc;
 
@@ -18,9 +19,7 @@ use ytmapi_rs::common::{
     AlbumID, ArtistChannelID, LikeStatus, PlaylistID, SetVideoID, VideoID, YoutubeID,
 };
 use ytmapi_rs::query::playlist::{BasicCreatePlaylist, DuplicateHandlingMode, PrivacyStatus};
-use ytmapi_rs::query::search::{
-    AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter, VideosFilter,
-};
+use ytmapi_rs::query::search::{AlbumsFilter, ArtistsFilter, FilteredSearch, SongsFilter};
 use ytmapi_rs::query::{
     AddPlaylistItemsQuery, CreatePlaylistQuery, DeletePlaylistQuery, GetAlbumQuery, GetArtistQuery,
     GetLibraryPlaylistsQuery, GetPlaylistDetailsQuery, GetPlaylistTracksQuery,
@@ -381,8 +380,16 @@ async fn fetch_playlist_cover<A: AuthToken>(
 
 /// Three filtered queries, the way youtui searches. Basic search adds
 /// a top-result card whose parse breaks often; the filtered endpoints
-/// skip it. Songs are the core result: a song failure fails the
-/// search, a failure of the other two degrades to an empty section.
+/// skip it.
+///
+/// Each shelf's raw JSON is read row by row (`search_parse`), so one
+/// odd row (a video mixed into the songs shelf, an audiobook mixed
+/// into the albums shelf) never fails the whole shelf the way
+/// ytmapi-rs's typed parse does. A songs transport error fails the
+/// search; a transport error on albums or artists degrades to an
+/// empty section. The typed parse still runs, only as a fallback, for
+/// the rare case where the tolerant parser finds zero songs in a
+/// shelf that plainly carries rows.
 async fn filtered_search<A: AuthToken>(
     yt: &YtMusic<A>,
     query: &str,
@@ -391,42 +398,50 @@ async fn filtered_search<A: AuthToken>(
     let albums: SearchQuery<'_, FilteredSearch<AlbumsFilter>> = query.into();
     let artists: SearchQuery<'_, FilteredSearch<ArtistsFilter>> = query.into();
     let (songs, albums, artists) = tokio::join!(
-        yt.query::<SearchQuery<'_, FilteredSearch<SongsFilter>>>(&songs),
-        yt.query::<SearchQuery<'_, FilteredSearch<AlbumsFilter>>>(&albums),
-        yt.query::<SearchQuery<'_, FilteredSearch<ArtistsFilter>>>(&artists),
+        yt.json_query::<SearchQuery<'_, FilteredSearch<SongsFilter>>>(&songs),
+        yt.json_query::<SearchQuery<'_, FilteredSearch<AlbumsFilter>>>(&albums),
+        yt.json_query::<SearchQuery<'_, FilteredSearch<ArtistsFilter>>>(&artists),
     );
-    let song_tracks = match songs {
-        Ok(songs) => songs.into_iter().map(convert::song_to_track).collect(),
-        Err(error) => video_fallback_search(yt, query, error).await?,
-    };
-    Ok(convert::search_results_from_tracks(
-        song_tracks,
-        section_or_empty("albums", albums),
-        section_or_empty("artists", artists),
-    ))
+    let songs_json = songs.map_err(readable)?.into_inner();
+    let song_tracks = songs_or_typed_fallback(yt, query, &songs_json).await?;
+    Ok(SearchResults {
+        songs: song_tracks,
+        albums: json_section_or_empty("albums", albums, search_parse::parse_albums),
+        artists: json_section_or_empty("artists", artists, search_parse::parse_artists),
+        playlists: vec![],
+    })
 }
 
-/// One malformed row fails the whole song-search parse in ytmapi-rs.
-/// The videos filter has a simpler shape, so it answers instead, with
-/// channel names in place of artists.
-async fn video_fallback_search<A: AuthToken>(
+/// The tolerant song parse, or the typed ytmapi-rs parse when the
+/// tolerant one finds no songs in a shelf that plainly carries rows.
+/// A shelf with no rows at all is a real empty result, not a parse
+/// failure, so it does not trigger the fallback.
+async fn songs_or_typed_fallback<A: AuthToken>(
     yt: &YtMusic<A>,
     query: &str,
-    song_error: ytmapi_rs::Error,
+    songs_json: &serde_json::Value,
 ) -> Result<Vec<Track>, String> {
+    let tracks = search_parse::parse_songs(songs_json);
+    if !tracks.is_empty() || !search_parse::shelf_has_rows(songs_json) {
+        return Ok(tracks);
+    }
     log::warn!(
-        "song search parse failed, using videos: {}",
-        error_chain(&song_error)
+        "the tolerant song parse found no songs in a non-empty shelf for {query:?}, \
+         falling back to the typed parse"
     );
-    let videos: SearchQuery<'_, FilteredSearch<VideosFilter>> = query.into();
-    let videos = yt
-        .query::<SearchQuery<'_, FilteredSearch<VideosFilter>>>(&videos)
+    typed_song_fallback(yt, query).await
+}
+
+async fn typed_song_fallback<A: AuthToken>(
+    yt: &YtMusic<A>,
+    query: &str,
+) -> Result<Vec<Track>, String> {
+    let songs: SearchQuery<'_, FilteredSearch<SongsFilter>> = query.into();
+    let songs = yt
+        .query::<SearchQuery<'_, FilteredSearch<SongsFilter>>>(&songs)
         .await
         .map_err(readable)?;
-    Ok(videos
-        .into_iter()
-        .filter_map(convert::video_to_track)
-        .collect())
+    Ok(songs.into_iter().map(convert::song_to_track).collect())
 }
 
 async fn browser_session(credentials: &Credentials) -> Result<Session, String> {
@@ -489,12 +504,20 @@ fn insert_header(headers: &mut reqwest::header::HeaderMap, name: &str, value: &s
 }
 
 /// A failed side section of a search becomes an empty list, so a
-/// brittle album or artist parse never blocks the songs.
-fn section_or_empty<T>(name: &str, result: Result<Vec<T>, ytmapi_rs::Error>) -> Vec<T> {
-    result.unwrap_or_else(|error| {
-        log::warn!("search {name} section failed: {}", error_chain(&error));
-        vec![]
-    })
+/// transport error on albums or artists never blocks the songs. A
+/// successful response is read with the tolerant row-by-row parser.
+fn json_section_or_empty<T>(
+    name: &str,
+    result: Result<ytmapi_rs::json::Json, ytmapi_rs::Error>,
+    parse: impl Fn(&serde_json::Value) -> Vec<T>,
+) -> Vec<T> {
+    match result {
+        Ok(json) => parse(&json.into_inner()),
+        Err(error) => {
+            log::warn!("search {name} section failed: {}", error_chain(&error));
+            vec![]
+        }
+    }
 }
 
 /// ytmusicapi's rule: the browse endpoint takes "VL" + the playlist id,

@@ -1,0 +1,116 @@
+{
+  "contents": {
+    "tabbedSearchResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "musicShelfRenderer": {
+                      "contents": [
+                        {
+                          "musicResponsiveListItemRenderer": {
+                            "flexColumns": [
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": { "runs": [ { "text": "Good Song One" } ] }
+                                }
+                              },
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": {
+                                    "runs": [
+                                      {
+                                        "navigationEndpoint": {
+                                          "browseEndpoint": { "browseId": "UCartist1" }
+                                        },
+                                        "text": "Artist One"
+                                      },
+                                      { "text": " • " },
+                                      {
+                                        "navigationEndpoint": {
+                                          "browseEndpoint": { "browseId": "MPREalbum1" }
+                                        },
+                                        "text": "Album One"
+                                      },
+                                      { "text": " • " },
+                                      { "text": "3:21" }
+                                    ]
+                                  }
+                                }
+                              }
+                            ],
+                            "playlistItemData": { "videoId": "video-one" },
+                            "thumbnail": {
+                              "musicThumbnailRenderer": {
+                                "thumbnail": {
+                                  "thumbnails": [
+                                    { "width": 400, "height": 400, "url": "https://example.com/one.jpg" }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemRenderer": {
+                            "flexColumns": [
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": { "runs": [] }
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemRenderer": {
+                            "flexColumns": [
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": { "runs": [ { "text": "Good Song Two" } ] }
+                                }
+                              },
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": {
+                                    "runs": [
+                                      {
+                                        "navigationEndpoint": {
+                                          "browseEndpoint": { "browseId": "UCartist2" }
+                                        },
+                                        "text": "Artist Two"
+                                      },
+                                      { "text": " • " },
+                                      { "text": "2:05" }
+                                    ]
+                                  }
+                                }
+                              }
+                            ],
+                            "playlistItemData": { "videoId": "video-two" },
+                            "thumbnail": {
+                              "musicThumbnailRenderer": {
+                                "thumbnail": {
+                                  "thumbnails": [
+                                    { "width": 400, "height": 400, "url": "https://example.com/two.jpg" }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
