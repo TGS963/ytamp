@@ -98,6 +98,11 @@ fn apply_page_style(ui: &mut Ui, theme: &dyn Theme) {
     visuals.window_fill = theme.color(ColorRole::PageBackground);
     visuals.selection.bg_fill = theme.color(ColorRole::Accent);
     ui.ctx().set_visuals(visuals);
+    // A selectable label senses clicks for text selection, so a
+    // right-click on a title reached the label instead of the row
+    // and its menu. A player has no use for text selection.
+    ui.ctx()
+        .all_styles_mut(|style| style.interaction.selectable_labels = false);
 }
 
 /// A side- or bottom-panel frame filled with the given role, in place
