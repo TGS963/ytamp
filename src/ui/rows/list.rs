@@ -84,9 +84,10 @@ fn track_list_area(
 ///
 /// A neutral placeholder square, in `ColorRole::ArtPlaceholder`, always
 /// paints first. When `thumbnail_url` is `Some`, the real image paints
-/// over the placeholder once egui's loader has it in cache; until then,
-/// or when the url is `None`, the placeholder alone shows. The square
-/// claims its space either way, so no row ever shifts.
+/// over the placeholder once egui's loader has it in cache. Files without
+/// artwork get a restrained waveform instead, while loading URLs keep the
+/// neutral square. The square claims its space either way, so no row ever
+/// shifts.
 pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>, size: f32) {
     let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::empty());
     let radius = theme.metric(MetricRole::CornerRadius);
@@ -98,6 +99,31 @@ pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>
             .corner_radius(radius)
             .show_loading_spinner(false)
             .paint_at(ui, rect);
+    } else {
+        artwork_placeholder(ui.painter(), rect, theme);
+    }
+}
+
+fn artwork_placeholder(painter: &egui::Painter, rect: egui::Rect, theme: &dyn Theme) {
+    let extent = (rect.width() * 0.55).clamp(18., 124.);
+    let stroke = egui::Stroke::new(
+        (extent / 48.).clamp(1., 2.),
+        theme.color(ColorRole::TextSecondary).linear_multiply(0.55),
+    );
+    let center = rect.center();
+    let start = center.x - extent * 0.5;
+    let heights = [0.35, 0.65, 1.0, 0.65, 0.35];
+    let gap = extent / (heights.len() - 1) as f32;
+    for (index, height) in heights.iter().enumerate() {
+        let x = start + gap * index as f32;
+        let half = extent * height * 0.24;
+        painter.line_segment(
+            [
+                egui::pos2(x, center.y - half),
+                egui::pos2(x, center.y + half),
+            ],
+            stroke,
+        );
     }
 }
 

@@ -858,7 +858,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "ytamp-decoder-{}-{}.wav",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         fs::write(&path, wave_bytes()).expect("write wave fixture");
         path
@@ -888,7 +891,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "ytamp-varying-decoder-{}-{}.wav",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         let samples: Vec<i16> = (0..48_000).map(|sample| (sample - 24_000) as i16).collect();
         let mut bytes = Vec::new();

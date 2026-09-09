@@ -53,7 +53,7 @@ pub fn shortcut(ctx: &egui::Context, out: &mut Vec<Action>) {
 pub fn add_button(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     if ui.button("Add files…").clicked() {
         out.push(Action::AddFilesRequested);
-        ui.close();
+        close_menu_or_popup(ui);
     }
 }
 pub fn progress(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
@@ -83,10 +83,20 @@ pub fn recovery(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     };
     if ui.button("Locate file…").clicked() {
         out.push(Action::LocalFileLocateRequested(track.id.clone()));
-        ui.close();
+        close_menu_or_popup(ui);
     }
     if ui.button("Remove file from queue").clicked() {
         out.push(Action::LocalFileRemoveRequested(track.id.clone()));
+        close_menu_or_popup(ui);
+    }
+}
+
+fn close_menu_or_popup(ui: &egui::Ui) {
+    if ui
+        .stack()
+        .iter()
+        .any(|stack| matches!(stack.kind(), Some(egui::UiKind::Menu | egui::UiKind::Popup)))
+    {
         ui.close();
     }
 }
