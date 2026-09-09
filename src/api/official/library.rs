@@ -209,6 +209,7 @@ fn parse_playlist_item(item: &Value) -> Option<Track> {
         .to_string();
     item.pointer("/snippet/videoOwnerChannelTitle")?;
     Some(Track {
+        source: Default::default(),
         id: TrackId(video_id),
         title: text_of(item, "/snippet/title"),
         artists: vec![video_owner_artist(item)],

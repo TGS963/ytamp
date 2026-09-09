@@ -91,7 +91,10 @@ impl App {
                     .show(ui, |ui| {
                         ui::winamp::show(ui, state, winamp, &mut actions);
                     });
-                actions.extend(ui::winamp::dropped_skins(ui.ctx()));
+                actions.extend(ui::local_files::dropped(ui.ctx()));
+                ui::local_files::shortcut(ui.ctx(), &mut actions);
+                ui::local_files::drop_hint(ui.ctx());
+                ui::local_files::classic_status(ui.ctx(), state, &mut actions);
                 if ui.ctx().input(|input| input.viewport().close_requested()) {
                     actions.push(Action::WinampToggled);
                 }
@@ -201,7 +204,9 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut actions = ui::view(ui, &self.state, self.theme.as_ref());
-        actions.extend(ui::winamp::dropped_skins(ui.ctx()));
+        actions.extend(ui::local_files::dropped(ui.ctx()));
+        ui::local_files::shortcut(ui.ctx(), &mut actions);
+        ui::local_files::drop_hint(ui.ctx());
         let ctx = ui.ctx().clone();
         if self.state.winamp.open != self.main_window_hidden {
             ctx.send_viewport_cmd_to(

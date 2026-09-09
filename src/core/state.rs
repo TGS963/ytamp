@@ -154,6 +154,7 @@ pub struct PlaybackState {
     /// The id of the track a running radio fetch started from. Guards
     /// a late result against a queue the user has since replaced.
     pub radio_request: Option<TrackId>,
+    pub failed_local: std::collections::HashSet<TrackId>,
     /// The decoded stream's channel count, zero until a track starts.
     pub channels: u16,
     /// The decoded stream's sample rate in Hz, zero until a track starts.
@@ -176,6 +177,7 @@ impl Default for PlaybackState {
             last_hover_prefetch: None,
             autoplay: true,
             radio_request: None,
+            failed_local: Default::default(),
             channels: 0,
             sample_rate: 0,
         }
@@ -213,6 +215,8 @@ impl Default for WinampSettings {
 
 #[derive(Clone, Debug, Default)]
 pub struct State {
+    pub local_mode: bool,
+    pub imports: super::imports::Imports,
     pub discovery: super::discovery::Discovery,
     pub listening_history: super::listening_history::ListeningHistory,
     pub skin_browser_open: bool,

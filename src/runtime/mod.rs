@@ -16,6 +16,7 @@ use crate::stream::ResolverChain;
 
 mod account;
 mod cache;
+mod local_media;
 mod lyrics;
 mod requests;
 mod skins;
@@ -35,6 +36,7 @@ pub struct EffectRuntime {
     request_repaint: Arc<dyn Fn() + Send + Sync>,
     player: PlayerHandle,
     pending_lyrics: Mutex<Option<tokio::task::AbortHandle>>,
+    pending_import: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
     playback_generation: std::sync::atomic::AtomicU64,
 }
 
@@ -64,6 +66,7 @@ impl EffectRuntime {
             request_repaint,
             player,
             pending_lyrics: Mutex::new(None),
+            pending_import: Mutex::new(None),
             playback_generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -99,6 +102,17 @@ impl EffectRuntime {
 
     pub fn run(&self, effect: Effect) {
         match effect {
+            Effect::PickLocalFiles {
+                generation,
+                replace,
+            } => self.pick_local_files(generation, replace),
+            Effect::ImportLocalFiles { id, paths } => self.import_local_files(id, paths),
+            Effect::CancelLocalImport => self.cancel_local_import(),
+            Effect::FetchLocalLyrics {
+                request_id,
+                track,
+                path,
+            } => self.fetch_local_lyrics(request_id, track, path),
             Effect::FetchLyrics(request) => self.fetch_lyrics(request),
             Effect::Api(request) => self.run_api_request(request),
             Effect::LoadStoredAuth => self.load_stored_auth(),

@@ -38,6 +38,7 @@ fn history_track(item: &Value) -> Option<Track> {
         return None;
     }
     Some(Track {
+        source: Default::default(),
         id: TrackId(id.to_owned()),
         title,
         artists: history_artists(tile),

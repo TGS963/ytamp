@@ -17,6 +17,7 @@ pub(super) fn options_menu(
     out: &mut Vec<Action>,
 ) {
     menu(popup, skin, unit, |ui| {
+        crate::ui::local_files::add_button(ui, out);
         options_display_rows(ui, state, unit, out);
         options_skin_rows(ui, state, out);
         options_playback_rows(ui, state, out);
@@ -72,6 +73,7 @@ pub(super) fn playback_error_row(ui: &mut Ui, state: &State, out: &mut Vec<Actio
         return;
     };
     ui.label(error);
+    crate::ui::local_files::recovery(ui, state, out);
     if ui.button("Retry playback").clicked() {
         out.push(Action::PlaybackRetryRequested);
         ui.close();

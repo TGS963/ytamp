@@ -1,14 +1,17 @@
 use super::{Action, EffectRuntime};
 
 impl EffectRuntime {
-    pub(super) fn fetch_lyrics(&self, request: Option<(u64, crate::core::model::TrackId)>) {
-        let mut pending = self.pending_lyrics.lock().expect("lyrics task lock");
-        if let Some(task) = pending.take() {
+    pub(super) fn cancel_lyrics(&self) {
+        if let Some(task) = self.pending_lyrics.lock().expect("lyrics task lock").take() {
             task.abort();
         }
+    }
+
+    pub(super) fn fetch_lyrics(&self, request: Option<(u64, crate::core::model::TrackId)>) {
+        self.cancel_lyrics();
         if let Some((request_id, track)) = request {
             let deliver = self.delivery();
-            *pending = Some(
+            *self.pending_lyrics.lock().expect("lyrics task lock") = Some(
                 self.tokio
                     .spawn(async move {
                         let result = tokio::time::timeout(

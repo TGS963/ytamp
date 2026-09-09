@@ -14,6 +14,9 @@ pub(super) fn apply(state: &mut State, action: Action) -> Vec<Effect> {
         }
         Action::PlaylistCreateRequested(title) => request_playlist_create(state, title),
         Action::CreatePlaylistDialogOpened(then_add) => {
+            if then_add.as_ref().is_some_and(Track::is_local) {
+                return vec![];
+            }
             state.dialog = Some(Dialog::CreatePlaylist {
                 title_draft: String::new(),
                 then_add,
@@ -87,6 +90,9 @@ pub(super) fn without_item(tracks: Vec<Track>, item_id: &str) -> Vec<Track> {
 /// track's membership in the list, so a like inserts at the front and
 /// an unlike removes it.
 pub(super) fn toggle_track_like(state: &mut State, track: Track) -> Vec<Effect> {
+    if track.is_local() {
+        return vec![];
+    }
     let liked = is_liked(&state.library.liked, &track.id);
     if let Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) = &mut state.library.liked {
         if liked {
@@ -109,6 +115,9 @@ pub(super) fn add_track_to_playlist(
     playlist: PlaylistId,
     track: Track,
 ) -> Vec<Effect> {
+    if track.is_local() {
+        return vec![];
+    }
     adjust_playlist_count(state, &playlist, 1);
     vec![Effect::Api(ApiRequest::AddToPlaylist { playlist, track })]
 }
@@ -142,6 +151,7 @@ pub(super) fn append_to_open_playlist(state: &mut State, track: Track, item_id: 
         &mut state.library.open_playlist
     {
         tracks.push(Track {
+            source: Default::default(),
             playlist_item_id: Some(item_id),
             ..track
         });

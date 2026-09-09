@@ -32,12 +32,16 @@ pub(crate) fn row_context_menu(
                 action = Some(Action::TrackPlayNext(track.clone()));
                 ui.close();
             }
-            if ui.button("Start radio").clicked() {
+            if !track.is_local() && ui.button("Start radio").clicked() {
                 action = Some(Action::RadioStartRequested(track.clone()));
                 ui.close();
             }
             if ui.button("Add to queue").clicked() {
                 action = Some(Action::TrackQueued(track.clone()));
+                ui.close();
+            }
+            if track.is_local() && ui.button("Locate file…").clicked() {
+                action = Some(Action::LocalFileLocateRequested(track.id.clone()));
                 ui.close();
             }
             add_to_playlist_menu(ui, track, context, &mut action);
@@ -52,6 +56,9 @@ fn like_menu_item(
     context: &RowContext,
     action: &mut Option<Action>,
 ) {
+    if track.is_local() {
+        return;
+    }
     let label = if is_liked(context.liked, &track.id) {
         "Unlike"
     } else {
@@ -72,6 +79,9 @@ fn add_to_playlist_menu(
     context: &RowContext,
     action: &mut Option<Action>,
 ) {
+    if track.is_local() {
+        return;
+    }
     ui.menu_button("Add to playlist", |ui| {
         let max_height = (ui.ctx().content_rect().height() - 100.0).clamp(80.0, 320.0);
         ui.set_max_width(280.0);

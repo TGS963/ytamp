@@ -172,6 +172,7 @@ fn track_for_tile(
     };
     let endpoint = tile.pointer("/onSelectCommand/watchEndpoint")?;
     track_is_playable(endpoint, id, playlist.as_deref(), songs).then(|| Track {
+        source: Default::default(),
         id: TrackId(id.clone()),
         title: details.title.clone(),
         artists: artists_for(&details.subtitle),

@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      verify:
+        description: Run library tests on every package platform
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -71,6 +77,12 @@ jobs:
         with:
           shared-key: release
           cache-on-failure: true
+      - name: Verify library tests
+        if: github.event_name == 'workflow_dispatch' && inputs.verify
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 0
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: cargo test --locked --lib
       - name: Build native release binary
         if: matrix.platform != 'macos'
         run: cargo build --locked --release

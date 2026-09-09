@@ -16,6 +16,27 @@ use crate::skin::Skin;
 
 #[derive(Clone, Debug)]
 pub enum Action {
+    LocalModeOpened,
+    YouTubeSignInOpened,
+    AddFilesRequested,
+    LocalFilesDropped(Vec<PathBuf>),
+    LocalFilesChosen {
+        generation: u64,
+        replace: Option<TrackId>,
+        paths: Vec<PathBuf>,
+    },
+    LocalFileLocateRequested(TrackId),
+    LocalFileRemoveRequested(TrackId),
+    LocalImportProgress {
+        id: u64,
+        done: usize,
+    },
+    LocalImportFinished {
+        id: u64,
+        tracks: Vec<Track>,
+        errors: Vec<String>,
+    },
+    LocalImportsCancelled,
     /// Account-scoped completion. Stale generations never reach the reducer.
     ForSession {
         generation: u64,

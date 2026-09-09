@@ -15,7 +15,7 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<A
         ui.weak("Choose a song to start listening.");
         return;
     };
-    let wide = ui.available_width() >= 760.;
+    let wide = ui.available_width() >= 640.;
     let art_size = if wide {
         (ui.available_width() * 0.38).min(420.)
     } else {
@@ -90,6 +90,7 @@ mod tests {
             &mut state,
             Action::ContextPlayed {
                 tracks: vec![Track {
+                    source: Default::default(),
                     id: TrackId("test".into()),
                     title: "A song with a long title to check the listening view layout".into(),
                     artists: vec![],

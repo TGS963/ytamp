@@ -171,6 +171,13 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
 /// separated by ", " labels. A click on an artist with an id opens
 /// that artist page. A click on a bare name searches for it instead.
 pub(crate) fn artist_labels(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Action> {
+    if track.is_local() {
+        ui.add(
+            egui::Label::new(theme.secondary_label(TextRole::Caption, track.artist_names()))
+                .truncate(),
+        );
+        return None;
+    }
     let mut action = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;

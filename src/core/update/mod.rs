@@ -19,7 +19,7 @@ mod auth;
 mod library;
 mod library_write;
 mod navigation;
-mod playback;
+pub(super) mod playback;
 mod queue_controls;
 mod radio;
 mod skins;
@@ -54,7 +54,13 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
     let generation = state.playback_generation;
     let lyrics_request = state.lyrics.request_id;
     let lyrics_open = state.lyrics.open;
-    let mut effects = update_inner(state, action, random_below);
+    let cancel_imports = matches!(action, Action::QueueCleared);
+    let mut effects = if cancel_imports {
+        super::imports::cancel(state)
+    } else {
+        vec![]
+    };
+    effects.extend(update_inner(state, action, random_below));
     if effects.iter().any(|e| {
         matches!(
             e,
@@ -79,6 +85,16 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
 }
 fn update_inner(state: &mut State, action: Action, random_below: RandomBelow) -> Vec<Effect> {
     match action {
+        action @ (Action::LocalModeOpened
+        | Action::YouTubeSignInOpened
+        | Action::AddFilesRequested
+        | Action::LocalFilesDropped(_)
+        | Action::LocalFilesChosen { .. }
+        | Action::LocalFileLocateRequested(_)
+        | Action::LocalFileRemoveRequested(_)
+        | Action::LocalImportProgress { .. }
+        | Action::LocalImportFinished { .. }
+        | Action::LocalImportsCancelled) => super::imports::apply(state, action, random_below),
         action @ (Action::LyricsToggled
         | Action::LyricsDelaySet { .. }
         | Action::LyricsReloadRequested

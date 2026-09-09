@@ -30,7 +30,7 @@ use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
 use crate::core::model::Track;
 use crate::stream::{AudioBuffer, BufferStatus, ResolverChain, disk_cache};
-use source::{DecoderHandle, PositionHandle, ReadyInfo};
+use source::{DecodeFailure, DecoderHandle, DecoderInput, PositionHandle, ReadyInfo};
 
 const TICK: Duration = Duration::from_millis(10);
 const POSITION_INTERVAL: Duration = Duration::from_millis(250);
@@ -194,10 +194,11 @@ struct Engine {
     /// The position of the playing track, from real decoded samples.
     position: Option<PositionHandle>,
     active_buffer: Option<AudioBuffer>,
+    active_failure: Option<DecodeFailure>,
     next_track: Option<Track>,
     prepare_generation: u64,
-    preparing: Option<(DecoderHandle, AudioBuffer)>,
-    prepared: Option<(String, DecoderHandle, ReadyInfo, AudioBuffer)>,
+    preparing: Option<(DecoderHandle, DecoderInput)>,
+    prepared: Option<(String, DecoderHandle, ReadyInfo, DecoderInput)>,
     last_position_report: Instant,
 }
 
@@ -205,6 +206,27 @@ struct AudioOutput {
     /// Holds the device open. The player plays into its mixer.
     _device: Option<rodio::MixerDeviceSink>,
     player: rodio::Player,
+}
+
+fn remote_buffer(input: &DecoderInput) -> Option<AudioBuffer> {
+    match input {
+        DecoderInput::Remote(buffer) => Some(buffer.clone()),
+        DecoderInput::LocalFile(_) => None,
+    }
+}
+
+fn input_is_complete_remote(input: &DecoderInput) -> bool {
+    matches!(input, DecoderInput::Remote(buffer) if matches!(buffer.status(), BufferStatus::Complete))
+}
+
+fn spawn_prepared_decoder(
+    input: DecoderInput,
+    report: impl FnOnce(Result<ReadyInfo, String>) + Send + 'static,
+) -> DecoderHandle {
+    match input {
+        DecoderInput::Remote(buffer) => source::spawn_decoder(buffer, report),
+        DecoderInput::LocalFile(path) => source::spawn_file_decoder(path, report),
+    }
 }
 
 impl Engine {
@@ -236,6 +258,7 @@ impl Engine {
             pending_source: None,
             position: None,
             active_buffer: None,
+            active_failure: None,
             next_track: None,
             prepare_generation: 0,
             preparing: None,
@@ -322,24 +345,29 @@ impl Engine {
     /// cache, complete or still filling, streams at once: an earlier
     /// prefetch of the same track is adopted for free.
     fn load(&mut self, track: Track) {
-        let prepared = self
-            .prepared
-            .take()
-            .filter(|(id, _, _, _)| *id == track.id.0);
+        let key = track.playback_key();
+        let prepared = self.prepared.take().filter(|(id, _, _, _)| *id == key);
         self.stop();
-        let video_id = track.id.0;
-        self.current_track_id = Some(video_id.clone());
+        self.current_track_id = Some(key.clone());
         self.load_pending = true;
-        if let Some((_, handle, ready, buffer)) = prepared {
-            log::debug!("using prepared decoder for {video_id}");
-            self.active_buffer = Some(buffer);
+        if let Some((_, handle, ready, input)) = prepared {
+            log::debug!("using prepared decoder for {key}");
+            self.active_buffer = remote_buffer(&input);
             self.pending_source = Some(handle);
-            self.apply_source_ready(self.generation, video_id, true, Ok(ready));
+            self.apply_source_ready(
+                self.generation,
+                key,
+                input_is_complete_remote(&input),
+                Ok(ready),
+            );
             return;
         }
-        match self.prefetch_cache.get(&video_id) {
-            Some(buffer) => self.start_decoder(video_id, buffer),
-            None => self.fetch_for_load(video_id),
+        match track.local_path() {
+            Some(path) => self.start_decoder(key, DecoderInput::LocalFile(path.to_owned())),
+            None => match self.prefetch_cache.get(&key) {
+                Some(buffer) => self.start_decoder(key, DecoderInput::Remote(buffer)),
+                None => self.fetch_for_load(key),
+            },
         }
     }
 
@@ -368,26 +396,36 @@ impl Engine {
     fn apply_buffer_ready(&mut self, generation: u64, video_id: String, buffer: AudioBuffer) {
         self.prefetch_cache.insert(video_id.clone(), buffer.clone());
         if generation == self.generation {
-            self.start_decoder(video_id, buffer);
+            self.start_decoder(video_id, DecoderInput::Remote(buffer));
         }
     }
 
     /// Starts a decoder thread over `buffer` and remembers its handle
     /// until the thread's `Ready` report arrives.
-    fn start_decoder(&mut self, video_id: String, buffer: AudioBuffer) {
-        self.active_buffer = Some(buffer.clone());
+    fn start_decoder(&mut self, video_id: String, input: DecoderInput) {
+        self.active_buffer = remote_buffer(&input);
         let generation = self.generation;
-        let was_complete = matches!(buffer.status(), BufferStatus::Complete);
         let results = self.self_sender.clone();
         let report_id = video_id.clone();
-        let handle = source::spawn_decoder(buffer, move |result| {
-            let _ = results.send(PlayerMsg::SourceReady {
-                generation,
-                video_id: report_id,
-                was_complete,
-                result,
-            });
-        });
+        let was_complete = input_is_complete_remote(&input);
+        let handle = match input {
+            DecoderInput::Remote(buffer) => source::spawn_decoder(buffer, move |result| {
+                let _ = results.send(PlayerMsg::SourceReady {
+                    generation,
+                    video_id: report_id,
+                    was_complete,
+                    result,
+                });
+            }),
+            DecoderInput::LocalFile(path) => source::spawn_file_decoder(path, move |result| {
+                let _ = results.send(PlayerMsg::SourceReady {
+                    generation,
+                    video_id: report_id,
+                    was_complete: false,
+                    result,
+                });
+            }),
+        };
         self.pending_source = Some(handle);
     }
 
@@ -439,6 +477,7 @@ impl Engine {
         handle: DecoderHandle,
         ready: ReadyInfo,
     ) -> Result<Option<Duration>, String> {
+        let failure = handle.failure();
         let (source, position) = handle.into_source(ready);
         self.position = Some(position);
         let volume = self.volume;
@@ -453,6 +492,7 @@ impl Engine {
         } else {
             output.player.play();
         }
+        self.active_failure = Some(failure);
         Ok(ready.total_duration)
     }
 
@@ -472,7 +512,7 @@ impl Engine {
     /// Waits for the active load to settle first, so the active track
     /// never competes for bandwidth.
     fn prefetch(&mut self, track: Track) {
-        let video_id = track.id.0.clone();
+        let video_id = track.playback_key();
         if self.prefetch_cache.contains(&video_id) || self.prefetching.contains(&video_id) {
             return;
         }
@@ -481,6 +521,10 @@ impl Engine {
         }
         if self.load_pending {
             self.pending_prefetch = Some(track);
+            return;
+        }
+        if track.is_local() {
+            self.maybe_prepare();
             return;
         }
         if self.prefetch_in_flight >= MAX_PREFETCH_IN_FLIGHT {
@@ -493,7 +537,9 @@ impl Engine {
     }
 
     fn prepare_next(&mut self, track: Option<Track>) {
-        if self.next_track.as_ref().map(|t| &t.id) != track.as_ref().map(|t| &t.id) {
+        if self.next_track.as_ref().map(Track::playback_key)
+            != track.as_ref().map(Track::playback_key)
+        {
             self.prepare_generation = self.prepare_generation.wrapping_add(1);
             self.preparing = None;
             self.prepared = None;
@@ -511,35 +557,43 @@ impl Engine {
         let Some(track) = &self.next_track else {
             return;
         };
-        let video_id = track.id.0.clone();
-        let Some(buffer) = self.prefetch_cache.get(&video_id) else {
-            return;
+        let video_id = track.playback_key();
+        let input = match track.local_path() {
+            Some(path) => DecoderInput::LocalFile(path.to_owned()),
+            None => {
+                let Some(buffer) = self.prefetch_cache.get(&video_id) else {
+                    return;
+                };
+                DecoderInput::Remote(buffer)
+            }
         };
         let token = self.prepare_generation;
         let results = self.self_sender.clone();
-        let handle = source::spawn_decoder(buffer.clone(), move |result| {
+        let handle = spawn_prepared_decoder(input.clone(), move |result| {
             let _ = results.send(PlayerMsg::PreparedReady {
                 token,
                 video_id,
                 result,
             });
         });
-        self.preparing = Some((handle, buffer));
+        self.preparing = Some((handle, input));
     }
     fn apply_prepared(&mut self, token: u64, video_id: String, result: Result<ReadyInfo, String>) {
         if token != self.prepare_generation
-            || self.next_track.as_ref().map(|t| t.id.0.as_str()) != Some(video_id.as_str())
+            || self.next_track.as_ref().map(Track::playback_key).as_deref() != Some(&video_id)
         {
             return;
         }
-        let Some((handle, buffer)) = self.preparing.take() else {
+        let Some((handle, input)) = self.preparing.take() else {
             return;
         };
         match result {
-            Ok(ready) => self.prepared = Some((video_id, handle, ready, buffer)),
+            Ok(ready) => self.prepared = Some((video_id, handle, ready, input)),
             Err(_) => {
-                self.prefetch_cache.remove(&video_id);
-                disk_cache::remove(&video_id);
+                if matches!(input, DecoderInput::Remote(_)) {
+                    self.prefetch_cache.remove(&video_id);
+                    disk_cache::remove(&video_id);
+                }
             }
         }
     }
@@ -602,6 +656,7 @@ impl Engine {
         self.pending_source = None;
         self.position = None;
         self.active_buffer = None;
+        self.active_failure = None;
         self.prepare_generation = self.prepare_generation.wrapping_add(1);
         self.preparing = None;
         self.prepared = None;
@@ -621,11 +676,14 @@ impl Engine {
         if output.player.empty() {
             log::debug!("track output drained; reporting end");
             self.track_loaded = false;
-            let event = match self.active_buffer.as_ref().map(AudioBuffer::status) {
-                Some(BufferStatus::Failed(message)) => {
-                    PlayerEvent::Failed(format!("Playback interrupted: {message}"))
-                }
-                _ => PlayerEvent::TrackEnded,
+            let event = match self.active_failure.as_ref().and_then(source::take_failure) {
+                Some(message) => PlayerEvent::Failed(format!("Playback interrupted: {message}")),
+                None => match self.active_buffer.as_ref().map(AudioBuffer::status) {
+                    Some(BufferStatus::Failed(message)) => {
+                        PlayerEvent::Failed(format!("Playback interrupted: {message}"))
+                    }
+                    _ => PlayerEvent::TrackEnded,
+                },
             };
             self.report(event);
             return;
@@ -643,6 +701,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::MediaSource;
+    use std::fs;
+    use std::path::PathBuf;
     fn fixture() -> (
         tokio::runtime::Runtime,
         Engine,
@@ -670,6 +731,7 @@ mod tests {
     }
     fn test_track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: crate::core::model::TrackId(id.into()),
             title: id.into(),
             artists: vec![],
@@ -703,6 +765,152 @@ mod tests {
         writer.finish();
         buffer
     }
+    fn local_wave() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ytamp-player-{}.wav", std::process::id()));
+        let bytes = wave().complete_bytes().expect("complete wave");
+        fs::write(&path, bytes).expect("write local wave");
+        path
+    }
+
+    fn local_track(path: PathBuf) -> Track {
+        Track {
+            source: MediaSource::LocalFile { path },
+            ..test_track("local")
+        }
+    }
+
+    fn local_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/local-media")
+            .join(name)
+    }
+
+    #[test]
+    fn local_file_load_bypasses_remote_cache_and_reaches_the_shared_mixer() {
+        let (_runtime, mut engine, rx, events, mut mixer) = fixture();
+        let path = local_wave();
+        engine.load(local_track(path.clone()));
+        let PlayerMsg::SourceReady {
+            generation,
+            video_id,
+            was_complete,
+            result,
+        } = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local decoder ready")
+        else {
+            panic!("expected local decoder result");
+        };
+        assert!(!was_complete);
+        assert!(engine.active_buffer.is_none());
+        engine.apply_source_ready(generation, video_id, was_complete, result);
+        let Action::ForPlayback {
+            event:
+                PlayerEvent::TrackStarted {
+                    duration: Some(duration),
+                    ..
+                },
+            ..
+        } = events.try_recv().expect("track started")
+        else {
+            panic!("expected local track start");
+        };
+        assert_eq!(duration, Duration::from_secs(1));
+        assert!(
+            (0..2_000)
+                .map(|_| mixer.next().expect("mixer sample"))
+                .any(|sample| sample != 0.)
+        );
+        engine.stop();
+        fs::remove_file(path).expect("remove local wave");
+    }
+
+    #[test]
+    fn every_advertised_local_container_decodes_through_the_player() {
+        for name in [
+            "tone.wav",
+            "tone.mp3",
+            "tone.flac",
+            "tone.ogg",
+            "tone-alac.m4a",
+            "tone.aiff",
+            "tone-aac.mov",
+            "tone-aac.mkv",
+            "tone-vorbis.webm",
+            "video-first-aac.mp4",
+        ] {
+            let (_runtime, mut engine, rx, events, mut mixer) = fixture();
+            engine.load(local_track(local_fixture(name)));
+            let PlayerMsg::SourceReady {
+                generation,
+                video_id,
+                was_complete,
+                result,
+            } = rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{name}: local decoder did not report"))
+            else {
+                panic!("{name}: expected local decoder result");
+            };
+            assert!(
+                !was_complete,
+                "{name}: local source used remote cache state"
+            );
+            engine.apply_source_ready(generation, video_id, was_complete, result);
+            assert!(
+                matches!(
+                    events.try_recv(),
+                    Ok(Action::ForPlayback {
+                        event: PlayerEvent::TrackStarted { .. },
+                        ..
+                    })
+                ),
+                "{name}: player did not start"
+            );
+            assert!(
+                (0..20_000)
+                    .map(|_| mixer.next().expect("mixer sample"))
+                    .any(|sample| sample != 0.),
+                "{name}: player emitted no audio"
+            );
+            engine.stop();
+        }
+    }
+
+    #[test]
+    fn files_without_supported_audio_never_start_the_player() {
+        for name in ["no-audio.mp4", "corrupt.mp3"] {
+            let (_runtime, mut engine, rx, events, _mixer) = fixture();
+            engine.load(local_track(local_fixture(name)));
+            let PlayerMsg::SourceReady {
+                generation,
+                video_id,
+                was_complete,
+                result,
+            } = rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{name}: local decoder did not report"))
+            else {
+                panic!("{name}: expected local decoder result");
+            };
+            engine.apply_source_ready(generation, video_id, was_complete, result);
+            assert!(
+                matches!(
+                    events.try_recv(),
+                    Ok(Action::ForPlayback {
+                        event: PlayerEvent::Failed(_),
+                        ..
+                    })
+                ),
+                "{name}: player started without supported audio"
+            );
+            assert!(
+                !engine.track_loaded,
+                "{name}: player marked the track loaded"
+            );
+        }
+    }
+
     #[test]
     fn prepared_decoder_handoff_outputs_audio_and_canceled_completion_is_ignored() {
         let (_runtime, mut engine, rx, events, mut mixer) = fixture();
@@ -772,6 +980,20 @@ mod tests {
             matches!(events.try_recv().unwrap(), Action::ForPlayback { generation: 71, event: PlayerEvent::Failed(message) } if message.contains("connection lost"))
         );
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_native_decoder_terminal_error_reports_player_failure() {
+        let (_runtime, mut engine, _rx, events, _source) = fixture();
+        engine.active_failure = Some(Arc::new(std::sync::Mutex::new(Some(
+            "file read failed".into(),
+        ))));
+        engine.track_loaded = true;
+        engine.report_generation = 72;
+        engine.tick();
+        assert!(
+            matches!(events.try_recv().unwrap(), Action::ForPlayback { generation: 72, event: PlayerEvent::Failed(message) } if message.contains("file read failed"))
+        );
     }
     #[test]
     fn late_decoder_completion_after_stop_cannot_restart_or_report() {

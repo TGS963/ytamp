@@ -42,6 +42,10 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>
         });
 }
 fn content(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    if ui.button("Play local files").clicked() {
+        out.push(Action::LocalModeOpened);
+    }
+    ui.add_space(12.);
     ui.label(theme.secondary_label(TextRole::Caption, "YTAMP"));
     ui.add_space(10.);
     let title = match state.auth {

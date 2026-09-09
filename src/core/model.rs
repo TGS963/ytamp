@@ -1,12 +1,26 @@
 //! Domain types shared by the state, the API layer, and the player.
 
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
-/// A YouTube video id, the identity of a playable song.
+/// Media identity: a YouTube video id or a namespaced local path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackId(pub String);
+impl TrackId {
+    pub fn local_file(path: &Path) -> Self {
+        let encoded: String = path
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Self(format!("local:{encoded}"))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlaylistId(pub String);
@@ -16,6 +30,15 @@ pub struct AlbumId(pub String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArtistId(pub String);
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum MediaSource {
+    #[default]
+    YouTube,
+    LocalFile {
+        path: PathBuf,
+    },
+}
 
 /// One artist credit on a track: a display name, and the artist's
 /// channel id when the source carries one. A click on a name with an
@@ -59,6 +82,8 @@ impl From<ArtistRefRepr> for ArtistRef {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Track {
+    #[serde(default)]
+    pub source: MediaSource,
     pub id: TrackId,
     pub title: String,
     pub artists: Vec<ArtistRef>,
@@ -75,6 +100,22 @@ pub struct Track {
 }
 
 impl Track {
+    pub fn is_local(&self) -> bool {
+        matches!(self.source, MediaSource::LocalFile { .. })
+    }
+
+    pub fn local_path(&self) -> Option<&Path> {
+        match &self.source {
+            MediaSource::LocalFile { path } => Some(path),
+            MediaSource::YouTube => None,
+        }
+    }
+
+    pub fn playback_key(&self) -> String {
+        self.local_path()
+            .map_or_else(|| self.id.0.clone(), |path| TrackId::local_file(path).0)
+    }
+
     /// The track's artist names, joined for a caption-line display.
     pub fn artist_names(&self) -> String {
         self.artists
@@ -180,6 +221,7 @@ mod tests {
     #[test]
     fn track_artist_names_join_with_a_comma() {
         let track = Track {
+            source: Default::default(),
             id: TrackId("t1".into()),
             title: "Song".into(),
             artists: vec![ArtistRef::named("A"), ArtistRef::named("B")],
@@ -190,5 +232,33 @@ mod tests {
             playlist_item_id: None,
         };
         assert_eq!(track.artist_names(), "A, B");
+    }
+
+    #[test]
+    fn old_track_json_defaults_to_youtube() {
+        let json = r#"{"id":"t1","title":"Song","artists":[],"album":null,"album_id":null,"duration":null,"thumbnail_url":null,"playlist_item_id":null}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert_eq!(track.source, MediaSource::YouTube);
+        assert_eq!(track.playback_key(), "t1");
+    }
+
+    #[test]
+    fn local_track_uses_a_path_key() {
+        let track = Track {
+            source: MediaSource::LocalFile {
+                path: PathBuf::from("/tmp/song.wav"),
+            },
+            id: TrackId("song".into()),
+            title: "Song".into(),
+            artists: vec![],
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail_url: None,
+            playlist_item_id: None,
+        };
+        assert!(track.is_local());
+        assert_eq!(track.local_path().unwrap(), Path::new("/tmp/song.wav"));
+        assert_eq!(track.playback_key(), "local:2f746d702f736f6e672e776176");
     }
 }

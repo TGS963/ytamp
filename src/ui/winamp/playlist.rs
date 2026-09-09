@@ -696,6 +696,7 @@ fn menus(
 /// Opens the main window's Search page, the only place ytamp adds
 /// songs from.
 fn add_menu(ui: &mut Ui, out: &mut Vec<Action>) {
+    crate::ui::local_files::add_button(ui, out);
     if ui.button("Search").clicked() {
         out.push(Action::WinampToggled);
         out.push(Action::NavigatedTo(Page::Search));
@@ -738,6 +739,7 @@ mod tests {
 
     fn track(id: &str, duration_secs: Option<u64>) -> Track {
         Track {
+            source: Default::default(),
             id: crate::core::model::TrackId(id.into()),
             title: id.into(),
             artists: vec![crate::core::model::ArtistRef::named("Artist")],

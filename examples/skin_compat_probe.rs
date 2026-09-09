@@ -173,6 +173,7 @@ fn check(skin: Arc<Skin>, scale: u8) -> Result<(), String> {
     }
     let tracks = ["current", "first", "second", "third"]
         .map(|name| ytamp::core::model::Track {
+            source: Default::default(),
             id: ytamp::core::model::TrackId(name.into()),
             title: name.into(),
             artists: vec![],

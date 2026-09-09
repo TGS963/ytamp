@@ -6,14 +6,26 @@
 //! and a command channel carries seek/stop without waiting for decoding. The
 //! `Source` side never blocks.
 
-use std::sync::Arc;
+use std::fs::File;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use rodio::source::{SeekError, Source};
 use rodio::{ChannelCount, SampleRate};
+use symphonia::core::{
+    audio::{AudioBufferRef, SampleBuffer, SignalSpec},
+    codecs::{Decoder as SymphoniaCodecDecoder, DecoderOptions},
+    errors::Error as SymphoniaError,
+    formats::{FormatOptions, FormatReader, SeekMode, SeekTo, SeekedTo},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
+    probe::Hint,
+};
+use symphonia::default::{get_codecs, get_probe};
 
 use crate::stream::AudioBuffer;
 use crate::vis::AudioTap;
@@ -31,6 +43,14 @@ pub struct ReadyInfo {
     pub total_duration: Option<Duration>,
 }
 
+/// The bytes a decoder reads. Remote audio can grow while decoding;
+/// local media stays on disk and can seek immediately.
+#[derive(Clone)]
+pub enum DecoderInput {
+    Remote(AudioBuffer),
+    LocalFile(PathBuf),
+}
+
 enum DecoderCommand {
     Seek { generation: u64, position: Duration },
     Stop,
@@ -44,7 +64,10 @@ pub struct DecoderHandle {
     samples: Receiver<(u64, f32)>,
     commands: Sender<DecoderCommand>,
     progress: Arc<Progress>,
+    failure: DecodeFailure,
 }
+
+pub type DecodeFailure = Arc<Mutex<Option<String>>>;
 
 impl DecoderHandle {
     /// Builds the playable source from this handle and the stream's
@@ -71,6 +94,17 @@ impl DecoderHandle {
         };
         (source, position)
     }
+
+    pub fn failure(&self) -> DecodeFailure {
+        self.failure.clone()
+    }
+}
+
+pub fn take_failure(failure: &DecodeFailure) -> Option<String> {
+    failure
+        .lock()
+        .expect("decoder failure mutex poisoned")
+        .take()
 }
 
 /// Real samples played since the last seek, and where that seek
@@ -127,37 +161,65 @@ pub fn spawn_decoder(
     buffer: AudioBuffer,
     report: impl FnOnce(Result<ReadyInfo, String>) + Send + 'static,
 ) -> DecoderHandle {
+    spawn_decoder_input(DecoderInput::Remote(buffer), report)
+}
+
+/// Starts a decoder over a local file without reading the file into memory.
+pub fn spawn_file_decoder(
+    path: PathBuf,
+    report: impl FnOnce(Result<ReadyInfo, String>) + Send + 'static,
+) -> DecoderHandle {
+    spawn_decoder_input(DecoderInput::LocalFile(path), report)
+}
+
+fn spawn_decoder_input(
+    input: DecoderInput,
+    report: impl FnOnce(Result<ReadyInfo, String>) + Send + 'static,
+) -> DecoderHandle {
     let (sample_tx, sample_rx) = sync_channel(SAMPLE_CHANNEL_CAPACITY);
     let (command_tx, command_rx) = channel();
     let progress = Arc::new(Progress::default());
     let thread_progress = progress.clone();
+    let failure = Arc::new(Mutex::new(None));
+    let thread_failure = failure.clone();
     thread::Builder::new()
         .name("decoder".to_string())
-        .spawn(move || run_decoder(buffer, report, sample_tx, command_rx, thread_progress))
+        .spawn(move || {
+            run_decoder(
+                input,
+                report,
+                sample_tx,
+                command_rx,
+                thread_progress,
+                thread_failure,
+            )
+        })
         .expect("the decoder thread failed to start");
     DecoderHandle {
         samples: sample_rx,
         commands: command_tx,
         progress,
+        failure,
     }
 }
 
-type BufferDecoder = rodio::Decoder<crate::stream::BufferReader>;
+type SourceDecoder = Box<dyn Source<Item = f32> + Send>;
 
 /// The decoder thread's whole job: open the stream, report its
 /// shape, then decode until the track ends, the buffer fails, or the
 /// caller lets go of the source.
 fn run_decoder(
-    buffer: AudioBuffer,
+    input: DecoderInput,
     report: impl FnOnce(Result<ReadyInfo, String>),
     samples: SyncSender<(u64, f32)>,
     commands: Receiver<DecoderCommand>,
     progress: Arc<Progress>,
+    failure: DecodeFailure,
 ) {
-    let decoder = match build_streaming_decoder(&buffer) {
+    let decoder = match build_decoder(&input, failure.clone()) {
         Ok(decoder) => decoder,
         Err(error) => {
-            report(Err(format!("The audio did not decode: {error}")));
+            report(Err(error));
             return;
         }
     };
@@ -166,7 +228,7 @@ fn run_decoder(
         sample_rate: decoder.sample_rate(),
         total_duration: decoder.total_duration(),
     }));
-    let mut state = DecodeState::new(decoder, buffer);
+    let mut state = DecodeState::new(decoder, input, failure);
     decode_until_done(&mut state, &samples, &commands, &progress);
 }
 
@@ -175,47 +237,301 @@ fn run_decoder(
 /// starts, so playback begins while the download still runs. A
 /// seekable decoder would parse every atom to the end of the file
 /// first, and needs the byte length, which a filling buffer lacks.
-fn build_streaming_decoder(
-    buffer: &AudioBuffer,
-) -> Result<BufferDecoder, rodio::decoder::DecoderError> {
-    rodio::Decoder::builder()
-        .with_data(buffer.reader())
-        .with_seekable(false)
-        .build()
+fn build_decoder(input: &DecoderInput, failure: DecodeFailure) -> Result<SourceDecoder, String> {
+    match input {
+        DecoderInput::Remote(buffer) => rodio::Decoder::builder()
+            .with_data(buffer.reader())
+            .with_seekable(false)
+            .build()
+            .map(|decoder| Box::new(decoder) as SourceDecoder)
+            .map_err(decode_error),
+        DecoderInput::LocalFile(path) => {
+            LocalFileDecoder::open(path, failure).map(|decoder| Box::new(decoder) as SourceDecoder)
+        }
+    }
 }
 
 /// A decoder over a complete buffer, with real seeks. Only valid once
 /// the download is complete, because symphonia reads every atom of a
 /// seekable stream before it starts.
-fn build_seekable_decoder(
-    buffer: &AudioBuffer,
-    len: u64,
-) -> Result<BufferDecoder, rodio::decoder::DecoderError> {
+fn build_seekable_buffer_decoder(buffer: &AudioBuffer, len: u64) -> Result<SourceDecoder, String> {
     rodio::Decoder::builder()
         .with_data(buffer.reader())
         .with_seekable(true)
         .with_byte_len(len)
         .build()
+        .map(|decoder| Box::new(decoder) as SourceDecoder)
+        .map_err(decode_error)
 }
+
+fn build_file_decoder(path: &PathBuf, failure: DecodeFailure) -> Result<SourceDecoder, String> {
+    LocalFileDecoder::open(path, failure).map(|decoder| Box::new(decoder) as SourceDecoder)
+}
+
+fn decode_error(error: rodio::decoder::DecoderError) -> String {
+    format!("The audio did not decode: {error}")
+}
+
+/// A seekable native decoder that selects the same supported audio track as
+/// local-media import. Rodio's decoder selects the first non-null stream,
+/// which can be a video track in an MP4.
+struct LocalFileDecoder {
+    decoder: Box<dyn SymphoniaCodecDecoder>,
+    format: Box<dyn FormatReader>,
+    track_id: u32,
+    buffer: SampleBuffer<f32>,
+    spec: SignalSpec,
+    offset: usize,
+    ended: bool,
+    time_base: Option<symphonia::core::units::TimeBase>,
+    total_duration: Option<Duration>,
+    failure: DecodeFailure,
+}
+
+impl LocalFileDecoder {
+    fn open(path: &PathBuf, failure: DecodeFailure) -> Result<Self, String> {
+        let file = File::open(path)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        let mut hint = Hint::new();
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            hint.with_extension(extension);
+        }
+        let source = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut probed = get_probe()
+            .format(
+                &hint,
+                source,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .map_err(|error| format!("The audio did not decode: {error}"))?;
+        let (track_id, parameters) = selected_track(&*probed.format)?;
+        let mut decoder = get_codecs()
+            .make(&parameters, &DecoderOptions::default())
+            .map_err(|error| format!("The audio did not decode: {error}"))?;
+        let (buffer, spec) = next_audio_buffer(&mut *probed.format, &mut *decoder, track_id)?
+            .ok_or_else(|| "The audio did not decode any samples".to_string())?;
+        let total_duration = parameters
+            .time_base
+            .zip(parameters.n_frames)
+            .map(|(base, frames)| base.calc_time(frames).into())
+            .filter(|duration: &Duration| !duration.is_zero());
+        Ok(Self {
+            decoder,
+            format: probed.format,
+            track_id,
+            buffer,
+            spec,
+            offset: 0,
+            ended: false,
+            time_base: parameters.time_base,
+            total_duration,
+            failure,
+        })
+    }
+
+    fn refill(&mut self) -> Result<bool, String> {
+        match next_audio_buffer(&mut *self.format, &mut *self.decoder, self.track_id) {
+            Ok(Some((buffer, spec))) => {
+                self.buffer = buffer;
+                self.spec = spec;
+                self.offset = 0;
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_failure(&self, error: String) {
+        *self.failure.lock().expect("decoder failure mutex poisoned") = Some(error);
+    }
+
+    fn discard_before_target(&mut self, seeked: SeekedTo) {
+        let Some(time_base) = self.time_base else {
+            return;
+        };
+        let time = time_base.calc_time(seeked.required_ts.saturating_sub(seeked.actual_ts));
+        let samples = ((time.seconds as f64 + time.frac)
+            * self.spec.rate as f64
+            * self.spec.channels.count() as f64)
+            .ceil() as usize;
+        for _ in 0..samples {
+            if self.next().is_none() {
+                break;
+            }
+        }
+    }
+}
+
+impl Iterator for LocalFileDecoder {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        if self.offset >= self.buffer.len() {
+            match self.refill() {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.ended = true;
+                    return None;
+                }
+                Err(error) => {
+                    self.record_failure(error);
+                    self.ended = true;
+                    return None;
+                }
+            }
+        }
+        let sample = *self.buffer.samples().get(self.offset)?;
+        self.offset += 1;
+        Some(sample)
+    }
+}
+
+impl Source for LocalFileDecoder {
+    fn current_span_len(&self) -> Option<usize> {
+        Some(self.buffer.len().saturating_sub(self.offset))
+    }
+
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(
+            self.spec
+                .channels
+                .count()
+                .try_into()
+                .expect("channel count fits u16"),
+        )
+        .expect("audio has channels")
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(self.spec.rate).expect("audio has a sample rate")
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.total_duration
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        let target = self
+            .total_duration
+            .map_or(position, |end| position.min(end));
+        if self.total_duration.is_some_and(|end| target >= end) {
+            self.ended = true;
+            self.offset = self.buffer.len();
+            return Ok(());
+        }
+        let seeked = self
+            .format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time: target.into(),
+                    track_id: Some(self.track_id),
+                },
+            )
+            .map_err(local_seek_error)?;
+        self.decoder.reset();
+        self.ended = false;
+        self.offset = self.buffer.len();
+        match self.refill() {
+            Ok(true) => {
+                self.discard_before_target(seeked);
+                Ok(())
+            }
+            Ok(false) => {
+                self.ended = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.record_failure(error.clone());
+                Err(SeekError::Other(Arc::new(LocalSeekError(error))))
+            }
+        }
+    }
+}
+
+fn selected_track(
+    format: &dyn FormatReader,
+) -> Result<(u32, symphonia::core::codecs::CodecParameters), String> {
+    crate::local_media::select_supported_audio_track(format)
+        .map(|track| (track.id, track.codec_params.clone()))
+        .ok_or_else(|| "The file has no supported audio track".to_string())
+}
+
+fn next_audio_buffer(
+    format: &mut dyn FormatReader,
+    decoder: &mut dyn SymphoniaCodecDecoder,
+    track_id: u32,
+) -> Result<Option<(SampleBuffer<f32>, SignalSpec)>, String> {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(error))
+                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("The audio did not decode: {error}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(decoded) if decoded.frames() > 0 => return copied_samples(decoded).map(Some),
+            Ok(_) | Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(error) => return Err(format!("The audio did not decode: {error}")),
+        }
+    }
+}
+
+fn copied_samples(decoded: AudioBufferRef<'_>) -> Result<(SampleBuffer<f32>, SignalSpec), String> {
+    let spec = *decoded.spec();
+    let mut buffer = SampleBuffer::new(decoded.capacity() as u64, spec);
+    buffer.copy_interleaved_ref(decoded);
+    (!buffer.is_empty())
+        .then_some((buffer, spec))
+        .ok_or_else(|| "The audio did not decode any samples".to_string())
+}
+
+fn local_seek_error(error: SymphoniaError) -> SeekError {
+    SeekError::Other(Arc::new(LocalSeekError(error.to_string())))
+}
+
+#[derive(Debug)]
+struct LocalSeekError(String);
+
+impl std::fmt::Display for LocalSeekError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LocalSeekError {}
 
 /// The decoder plus where it stands, in samples since the track
 /// start, so a seek can compute how far to skip.
 struct DecodeState {
     generation: u64,
-    decoder: BufferDecoder,
-    buffer: AudioBuffer,
+    decoder: SourceDecoder,
+    input: DecoderInput,
+    failure: DecodeFailure,
     position_samples: u64,
     samples_per_second: u64,
 }
 
 impl DecodeState {
-    fn new(decoder: BufferDecoder, buffer: AudioBuffer) -> Self {
+    fn new(decoder: SourceDecoder, input: DecoderInput, failure: DecodeFailure) -> Self {
         let samples_per_second =
             u64::from(decoder.channels().get()) * u64::from(decoder.sample_rate().get());
         Self {
             generation: 0,
             decoder,
-            buffer,
+            input,
+            failure,
             position_samples: 0,
             samples_per_second,
         }
@@ -232,24 +548,36 @@ impl DecodeState {
     /// decoded samples, or restarts from the front and then skips.
     fn seek(&mut self, target: Duration) -> Result<(), String> {
         let target_samples = samples_at(target, self.samples_per_second);
-        match self.buffer.complete_bytes().map(|bytes| bytes.len() as u64) {
-            Some(len) => self.seek_in_complete_buffer(target, target_samples, len),
+        match self.input.clone() {
+            DecoderInput::LocalFile(path) => self.seek_in_file(&path, target, target_samples),
+            DecoderInput::Remote(buffer) => self.seek_in_remote(&buffer, target, target_samples),
+        }
+    }
+
+    fn seek_in_remote(
+        &mut self,
+        buffer: &AudioBuffer,
+        target: Duration,
+        target_samples: u64,
+    ) -> Result<(), String> {
+        match buffer.complete_bytes().map(|bytes| bytes.len() as u64) {
+            Some(len) => self.seek_in_complete_buffer(buffer, target, target_samples, len),
             None if target_samples >= self.position_samples => {
                 self.skip_to(target_samples);
                 Ok(())
             }
-            None => self.restart_and_skip_to(target_samples),
+            None => self.restart_and_skip_to(buffer, target_samples),
         }
     }
 
     fn seek_in_complete_buffer(
         &mut self,
+        buffer: &AudioBuffer,
         target: Duration,
         target_samples: u64,
         len: u64,
     ) -> Result<(), String> {
-        let mut decoder = build_seekable_decoder(&self.buffer, len)
-            .map_err(|error| format!("The audio did not decode: {error}"))?;
+        let mut decoder = build_seekable_buffer_decoder(buffer, len)?;
         decoder
             .try_seek(target)
             .map_err(|error| format!("The seek failed: {error}"))?;
@@ -258,9 +586,27 @@ impl DecodeState {
         Ok(())
     }
 
-    fn restart_and_skip_to(&mut self, target_samples: u64) -> Result<(), String> {
-        self.decoder = build_streaming_decoder(&self.buffer)
-            .map_err(|error| format!("The audio did not decode: {error}"))?;
+    fn seek_in_file(
+        &mut self,
+        path: &PathBuf,
+        target: Duration,
+        target_samples: u64,
+    ) -> Result<(), String> {
+        let mut decoder = build_file_decoder(path, self.failure.clone())?;
+        decoder
+            .try_seek(target)
+            .map_err(|error| format!("The seek failed: {error}"))?;
+        self.decoder = decoder;
+        self.position_samples = target_samples;
+        Ok(())
+    }
+
+    fn restart_and_skip_to(
+        &mut self,
+        buffer: &AudioBuffer,
+        target_samples: u64,
+    ) -> Result<(), String> {
+        self.decoder = build_decoder(&DecoderInput::Remote(buffer.clone()), self.failure.clone())?;
         self.position_samples = 0;
         self.skip_to(target_samples);
         Ok(())
@@ -502,9 +848,134 @@ impl Drop for StreamingSource {
 mod tests {
     use super::*;
     use crate::stream::AudioBuffer;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::mpsc::channel;
     use std::thread;
     use std::time::Duration;
+
+    fn wave_file() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ytamp-decoder-{}-{}.wav",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&path, wave_bytes()).expect("write wave fixture");
+        path
+    }
+
+    fn wave_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36u32 + 96000).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&48000u32.to_le_bytes());
+        bytes.extend_from_slice(&96000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&96000u32.to_le_bytes());
+        for _ in 0..48_000 {
+            bytes.extend_from_slice(&4096i16.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn varying_wave_file() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ytamp-varying-decoder-{}-{}.wav",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let samples: Vec<i16> = (0..48_000).map(|sample| (sample - 24_000) as i16).collect();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36u32 + (samples.len() * 2) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&((samples.len() * 2) as u32).to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        fs::write(&path, bytes).expect("write varying wave fixture");
+        path
+    }
+
+    #[test]
+    fn a_local_wave_file_decodes_and_seeks_without_a_byte_buffer() {
+        let path = wave_file();
+        let failure = Arc::new(Mutex::new(None));
+        let mut decoder = build_file_decoder(&path, failure).expect("decode local wave");
+        assert!(decoder.next().is_some());
+        decoder
+            .try_seek(Duration::from_millis(500))
+            .expect("seek local wave");
+        assert!(decoder.next().is_some());
+        fs::remove_file(path).expect("remove wave fixture");
+    }
+
+    #[test]
+    fn a_local_seek_discards_to_the_requested_sample_and_accepts_end_of_file() {
+        let path = varying_wave_file();
+        let failure = Arc::new(Mutex::new(None));
+        let mut decoder = build_file_decoder(&path, failure).expect("decode varying wave");
+        decoder
+            .try_seek(Duration::from_millis(750))
+            .expect("seek to the middle");
+        let expected = 12_000f32 / 32_768f32;
+        assert!((decoder.next().expect("sample after seek") - expected).abs() < 0.0001);
+        decoder
+            .try_seek(Duration::from_secs(1))
+            .expect("seek to end");
+        assert!(decoder.next().is_none());
+        fs::remove_file(path).expect("remove varying wave fixture");
+    }
+
+    #[test]
+    fn streaming_player_seek_delivers_the_requested_local_sample() {
+        let path = varying_wave_file();
+        let (ready_tx, ready_rx) = channel();
+        let handle = spawn_decoder_input(DecoderInput::LocalFile(path.clone()), move |ready| {
+            ready_tx.send(ready).expect("report ready");
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local decoder ready")
+            .expect("local decoder opens");
+        let (mut player, _position) = handle.into_source(ready);
+        player
+            .try_seek(Duration::from_millis(750))
+            .expect("seek local player");
+        let expected = 12_000f32 / 32_768f32;
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut reached = false;
+        while std::time::Instant::now() < deadline {
+            match player.next() {
+                Some(sample) if (sample - expected).abs() < 0.0001 => {
+                    reached = true;
+                    break;
+                }
+                Some(0.) => thread::sleep(Duration::from_millis(1)),
+                Some(_) => {}
+                None => panic!("the local player ended before the requested sample"),
+            }
+        }
+        assert!(
+            reached,
+            "the player did not deliver the requested local sample"
+        );
+        fs::remove_file(path).expect("remove varying wave fixture");
+    }
 
     #[test]
     fn samples_at_inverts_played_duration() {
@@ -610,6 +1081,7 @@ mod tests {
             samples: sample_rx,
             commands: command_tx,
             progress: progress.clone(),
+            failure: Arc::new(Mutex::new(None)),
         };
         let (mut source, position) = handle.into_source(ReadyInfo {
             channels: 1.try_into().unwrap(),

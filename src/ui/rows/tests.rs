@@ -74,6 +74,7 @@ mod menu_tests {
 
     fn sample_track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: TrackId(id.to_string()),
             title: format!("Title {id}"),
             artists: vec![ArtistRef::named("Artist")],

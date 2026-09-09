@@ -18,6 +18,20 @@ pub enum AuthMethod {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
+    PickLocalFiles {
+        generation: u64,
+        replace: Option<TrackId>,
+    },
+    ImportLocalFiles {
+        id: u64,
+        paths: Vec<PathBuf>,
+    },
+    CancelLocalImport,
+    FetchLocalLyrics {
+        request_id: u64,
+        track: TrackId,
+        path: PathBuf,
+    },
     Api(ApiRequest),
     Player(PlayerCommand),
     FetchLyrics(Option<(u64, TrackId)>),

@@ -196,6 +196,9 @@ fn like_button(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     let Some(track) = state.playback.queue.current() else {
         return;
     };
+    if track.is_local() {
+        return;
+    }
     let liked = is_liked(&state.library.liked, &track.id);
     let icon = if liked { "♥" } else { "♡" };
     let button =

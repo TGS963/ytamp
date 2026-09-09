@@ -21,13 +21,17 @@ pub(super) fn apply(state: &mut State, action: Action, random_below: RandomBelow
         Action::TrackHovered(track) => hover_prefetch(state, track),
         Action::PlayToggled => toggle_play(state),
         Action::PlaybackRetryRequested => {
+            state.playback.failed_local.clear();
             if state.playback.error.is_some() {
                 restart_current(state)
             } else {
                 vec![]
             }
         }
-        Action::NextPressed => advance_or_start_radio(state, |state| state.playback.queue.next()),
+        Action::NextPressed => {
+            state.playback.failed_local.clear();
+            advance_or_start_radio(state, |state| state.playback.queue.next())
+        }
         Action::PreviousPressed => go_previous(state),
         Action::SeekRequested(position) => {
             let position = state
@@ -85,8 +89,14 @@ pub(super) fn toggle_play(state: &mut State) -> Vec<Effect> {
 
 /// Play on a stopped player reloads the current track and continues
 /// where it stopped. This is how a restored session resumes.
-pub(super) fn restart_current(state: &mut State) -> Vec<Effect> {
-    let Some(track) = state.playback.queue.current().cloned() else {
+pub(in crate::core) fn restart_current(state: &mut State) -> Vec<Effect> {
+    let track = state
+        .playback
+        .queue
+        .current()
+        .cloned()
+        .or_else(|| state.playback.queue.next());
+    let Some(track) = track else {
         return vec![];
     };
     let position = state.playback.position;
@@ -110,6 +120,16 @@ pub(super) fn restore_session(
     state.equalizer = session.equalizer.clone().normalized();
     state.playback.position = session.position();
     state.playback.queue = session.queue;
+    state.local_mode = state
+        .playback
+        .queue
+        .current()
+        .is_some_and(|track| track.is_local())
+        || state
+            .playback
+            .queue
+            .upcoming()
+            .any(|track| track.is_local());
     state.playback.volume = session.volume.clamp(0.0, 1.0);
     state.playback.balance = if session.balance.is_finite() {
         session.balance.clamp(-1., 1.)
@@ -140,6 +160,7 @@ pub(super) fn restore_session(
 }
 
 pub(super) fn go_previous(state: &mut State) -> Vec<Effect> {
+    state.playback.failed_local.clear();
     if state.playback.position >= RESTART_THRESHOLD {
         state.playback.position = Duration::ZERO;
         return vec![Effect::Player(PlayerCommand::Seek(Duration::ZERO))];
@@ -193,7 +214,14 @@ pub(super) fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<E
             state.playback.loading = false;
             state.playback.status = PlayStatus::Stopped;
             state.playback.error = Some(message);
-            vec![]
+            let Some(track) = state.playback.queue.current().cloned() else {
+                return vec![];
+            };
+            if !track.is_local() {
+                return vec![];
+            }
+            state.playback.failed_local.insert(track.id);
+            advance_failed_local(state)
         }
     }
 }
@@ -254,11 +282,25 @@ pub(super) fn advance_or_start_radio(
 ) -> Vec<Effect> {
     let current = state.playback.queue.current().cloned();
     let next = step(state);
-    match decide_next_step(next, state.playback.autoplay, current.as_ref()) {
+    let autoplay =
+        state.playback.autoplay && current.as_ref().is_none_or(|track| !track.is_local());
+    match decide_next_step(next, autoplay, current.as_ref()) {
         NextStep::Load(track) => load_track(state, Some(track)),
         NextStep::FetchRadio(id) => start_radio_fetch(state, id),
         NextStep::Stop => stop_playback(state),
     }
+}
+
+fn advance_failed_local(state: &mut State) -> Vec<Effect> {
+    for _ in 0..256 {
+        let Some(track) = state.playback.queue.next() else {
+            return stop_playback(state);
+        };
+        if !state.playback.failed_local.contains(&track.id) {
+            return load_track(state, Some(track));
+        }
+    }
+    stop_playback(state)
 }
 
 /// Marks the player as loading and requests a radio for `track_id`,
@@ -324,6 +366,39 @@ pub(super) fn load_track(state: &mut State, track: Option<Track>) -> Vec<Effect>
     state.playback.position = Duration::ZERO;
     state.playback.track_duration = track.duration;
     vec![Effect::Player(PlayerCommand::Load(track))]
+}
+
+/// Adds imported tracks in source order, starting the first one only when the
+/// queue is empty and leaving later tracks in the explicit queue.
+pub(in crate::core) fn append_imported_tracks(
+    state: &mut State,
+    tracks: Vec<Track>,
+    random_below: RandomBelow,
+) -> Vec<Effect> {
+    if tracks.is_empty() {
+        return vec![];
+    }
+    let was_paused = state.playback.status == PlayStatus::Paused;
+    let empty = state.playback.queue.current().is_none()
+        && state.playback.queue.upcoming().next().is_none();
+    let mut tracks = tracks.into_iter();
+    let mut effects = if empty {
+        tracks
+            .next()
+            .map(|first| play_context(state, vec![first], 0, random_below))
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    for track in tracks {
+        state.playback.queue.queue_track(track);
+    }
+    if empty && was_paused {
+        state.playback.status = PlayStatus::Paused;
+        effects.push(Effect::Player(PlayerCommand::Pause));
+    }
+    effects.extend(prefetch_next(state));
+    effects
 }
 
 /// The effect that warms the cache for the track after the current

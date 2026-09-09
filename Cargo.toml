@@ -12,14 +12,14 @@ bytes = "1.12.1"
 directories = "6.0.0"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "persistence", "links"] }
 egui = "0.36"
-egui_extras = { version = "0.36", default-features = false, features = ["image", "http"] }
+egui_extras = { version = "0.36", default-features = false, features = ["file", "image", "http"] }
 env_logger = "0.11.11"
 flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 fastrand = "2.5.0"
 log = "0.4.34"
 reqwest = "0.13.4"
-rodio = "0.22.2"
+rodio = { version = "0.22.2", features = ["symphonia-aiff", "symphonia-alac", "symphonia-mkv"] }
 raw-window-handle = "0.6"
 rustypipe = { version = "0.11.4" }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -34,6 +34,8 @@ souvlaki = "0.8.3"
 tiny-skia = "0.11"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 ytmapi-rs = { version = "0.3.3", features = ["reqwest", "serde_json"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "aiff", "alac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
 
 [profile.release]
 lto = "thin"

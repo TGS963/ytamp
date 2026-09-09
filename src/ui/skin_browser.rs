@@ -63,7 +63,7 @@ impl SkinBrowser {
         }
         self.receive_previews(ui.ctx());
         render_panel(self, ui, state, out);
-        let dropped = super::winamp::dropped_skins(ui.ctx());
+        let dropped = super::local_files::dropped(ui.ctx());
         if !dropped.is_empty() {
             self.initialized = false;
         }

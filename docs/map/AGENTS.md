@@ -1,12 +1,13 @@
 # ytamp system map
 
-This map routes changes to four live object clusters and four real flows.
+This map routes changes to four live object clusters and five real flows.
 The Rust source remains the behavior authority. Map cards cite source paths.
 
 | Change | Open |
 | --- | --- |
 | Account, library, search, or discovery | `objects/account-catalog/` and `processes/sign-in.md` or `processes/home-loading.md` |
 | Queue, audio, stream, or effects | `objects/playback/` and `processes/playback.md` |
+| Local file drops, import, metadata, or file recovery | `processes/local-import.md` and `objects/playback/` |
 | Main window, pages, controls, or navigation | `objects/default-ui/` and the affected process card |
 | Winamp window or `.wsz` skin | `objects/classic-skins/` and `processes/skin-loading.md` |
 | Change impact lookup | `effects/CONTEXT.md` |

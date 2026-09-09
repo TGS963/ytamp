@@ -91,6 +91,7 @@ fn song_from_row(row: &Value) -> Option<Track> {
     let (artists, album, duration) = parse_song_runs(runs);
     let thumbnails = row_thumbnails(row);
     Some(Track {
+        source: Default::default(),
         id: TrackId(video_id.clone()),
         title,
         artists,

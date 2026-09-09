@@ -1,10 +1,28 @@
 use super::*;
-use crate::core::model::TrackId;
+use crate::core::model::{MediaSource, TrackId};
+use std::path::PathBuf;
 
 fn track(id: &str) -> Track {
     Track {
+        source: Default::default(),
         id: TrackId(id.to_string()),
         title: id.to_string(),
+        artists: vec![],
+        album: None,
+        album_id: None,
+        duration: None,
+        thumbnail_url: None,
+        playlist_item_id: None,
+    }
+}
+
+fn local_track(path: &str) -> Track {
+    Track {
+        source: MediaSource::LocalFile {
+            path: PathBuf::from(path),
+        },
+        id: TrackId(path.to_string()),
+        title: path.to_string(),
         artists: vec![],
         album: None,
         album_id: None,
@@ -24,6 +42,10 @@ fn retry_then_skip_does_not_seek_the_next_song_to_the_failed_position() {
             start: 0,
         },
     );
+    state.playback.loading = true;
+    state.playback.resume_position = Some(Duration::from_secs(4));
+    state.playback.channels = 2;
+    state.playback.sample_rate = 48_000;
     apply(
         &mut state,
         Action::Player(PlayerEvent::PositionChanged(Duration::from_secs(73))),
@@ -267,10 +289,22 @@ fn sign_out_stops_playback_and_keeps_the_volume() {
         },
     );
     apply(&mut state, Action::VolumeSet(0.3));
+    state.playback.error = Some("remote failure".into());
+    state.playback.resume_position = Some(Duration::from_secs(8));
+    state.playback.last_hover_prefetch = Some(TrackId("hover".into()));
+    state.playback.radio_request = Some(TrackId("radio".into()));
+    state.playback.channels = 2;
+    state.playback.sample_rate = 48_000;
     let effects = apply(&mut state, Action::SignOutRequested);
     assert_eq!(state.playback.queue.current(), None);
     assert_eq!(state.playback.status, PlayStatus::Stopped);
     assert_eq!(state.playback.volume, 0.3);
+    assert_eq!(state.playback.error, None);
+    assert_eq!(state.playback.resume_position, None);
+    assert_eq!(state.playback.last_hover_prefetch, None);
+    assert_eq!(state.playback.radio_request, None);
+    assert_eq!(state.playback.channels, 0);
+    assert_eq!(state.playback.sample_rate, 0);
     assert_eq!(
         effects,
         vec![
@@ -279,6 +313,221 @@ fn sign_out_stops_playback_and_keeps_the_volume() {
             Effect::ClearLibraryCache,
         ]
     );
+}
+
+#[test]
+fn sign_out_keeps_local_playback_and_clears_remote_queue_entries() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![
+                track("remote"),
+                local_track("song.wav"),
+                local_track("next.wav"),
+            ],
+            start: 1,
+        },
+    );
+    state.playback.status = PlayStatus::Playing;
+    state.playback.position = Duration::from_secs(12);
+    state.playback.error = Some("local warning".into());
+    state.playback.resume_position = Some(Duration::from_secs(4));
+    state.playback.last_hover_prefetch = Some(TrackId("local-hover".into()));
+    state.playback.radio_request = Some(TrackId("stale-radio".into()));
+    state.imports.generation = 9;
+    state.playback_generation = 17;
+    state.winamp.open = true;
+    state.winamp.skin = Some("Zaxon".into());
+    let effects = apply(&mut state, Action::SignOutRequested);
+    assert_eq!(
+        state.playback.queue.current().unwrap().id,
+        TrackId("song.wav".into())
+    );
+    assert!(state.local_mode);
+    assert_eq!(state.imports.generation, 9);
+    assert_eq!(state.playback_generation, 17);
+    assert_eq!(state.playback.status, PlayStatus::Playing);
+    assert_eq!(state.playback.position, Duration::from_secs(12));
+    assert_eq!(state.playback.error.as_deref(), Some("local warning"));
+    assert_eq!(state.playback.resume_position, Some(Duration::from_secs(4)));
+    assert_eq!(state.playback.last_hover_prefetch, None);
+    assert_eq!(state.playback.radio_request, None);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Player(PlayerCommand::PrepareNext(Some(track)))
+            if track.id == TrackId("next.wav".into())
+    )));
+    assert!(state.winamp.open);
+    assert_eq!(state.winamp.skin.as_deref(), Some("Zaxon"));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Player(PlayerCommand::Stop)))
+    );
+}
+
+#[test]
+fn sign_out_preserves_pending_local_import_mode_until_completion() {
+    let mut state = State {
+        auth: AuthState::SignedIn,
+        ..Default::default()
+    };
+    let effects = apply(
+        &mut state,
+        Action::LocalFilesDropped(vec!["offline.wav".into()]),
+    );
+    let id = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::ImportLocalFiles { id, .. } => Some(*id),
+            _ => None,
+        })
+        .expect("import started");
+    apply(&mut state, Action::SignOutRequested);
+    assert!(state.local_mode);
+    assert!(state.imports.pending());
+    apply(
+        &mut state,
+        Action::LocalImportFinished {
+            id,
+            tracks: vec![local_track("offline.wav")],
+            errors: vec![],
+        },
+    );
+    assert!(state.local_mode);
+    assert_eq!(
+        state.playback.queue.current().unwrap().id,
+        TrackId("offline.wav".into())
+    );
+}
+
+#[test]
+fn play_restarts_with_the_next_local_after_removing_current_file() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![local_track("missing.wav"), local_track("next.wav")],
+            start: 0,
+        },
+    );
+    state.playback.loading = true;
+    state.playback.resume_position = Some(Duration::from_secs(4));
+    state.playback.channels = 2;
+    state.playback.sample_rate = 48_000;
+    apply(
+        &mut state,
+        Action::LocalFileRemoveRequested(TrackId("missing.wav".into())),
+    );
+    assert!(!state.playback.loading);
+    assert_eq!(state.playback.resume_position, None);
+    assert_eq!(state.playback.channels, 0);
+    assert_eq!(state.playback.sample_rate, 0);
+    let effects = apply(&mut state, Action::PlayToggled);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Player(PlayerCommand::Load(track))] if track.id == TrackId("next.wav".into()))
+    );
+}
+
+#[test]
+fn play_restarts_with_local_after_signout_removed_remote_current() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![track("remote"), local_track("offline.wav")],
+            start: 0,
+        },
+    );
+    apply(&mut state, Action::SignOutRequested);
+    let effects = apply(&mut state, Action::PlayToggled);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Player(PlayerCommand::Load(track))] if track.id == TrackId("offline.wav".into()))
+    );
+}
+
+#[test]
+fn local_tracks_do_not_emit_youtube_library_or_radio_requests() {
+    let mut state = State::default();
+    let local = local_track("song.wav");
+    assert!(apply(&mut state, Action::TrackLikeToggled(local.clone())).is_empty());
+    assert!(
+        apply(
+            &mut state,
+            Action::TrackAddedToPlaylist {
+                playlist: PlaylistId("p".into()),
+                track: local.clone(),
+            },
+        )
+        .is_empty()
+    );
+    assert!(apply(&mut state, Action::RadioStartRequested(local)).is_empty());
+}
+
+#[test]
+fn failed_local_track_advances_once_to_the_next_valid_track() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![local_track("bad.wav"), local_track("good.wav")],
+            start: 0,
+        },
+    );
+    let effects = apply(
+        &mut state,
+        Action::Player(PlayerEvent::Failed("bad file".into())),
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::Player(PlayerCommand::Load(track))] if track.id == TrackId("good.wav".into()))
+    );
+    assert_eq!(
+        state.playback.queue.current().unwrap().id,
+        TrackId("good.wav".into())
+    );
+}
+
+#[test]
+fn local_end_does_not_start_youtube_radio() {
+    let mut state = State::default();
+    state.playback.autoplay = true;
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![local_track("only.wav")],
+            start: 0,
+        },
+    );
+    let effects = apply(&mut state, Action::Player(PlayerEvent::TrackEnded));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Api(ApiRequest::FetchRadio(_))))
+    );
+}
+
+#[test]
+fn failed_local_tracks_stop_after_one_repeat_all_cycle() {
+    let mut state = State::default();
+    state.playback.queue.repeat = crate::core::queue::RepeatMode::All;
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![local_track("bad-a.wav"), local_track("bad-b.wav")],
+            start: 0,
+        },
+    );
+    apply(
+        &mut state,
+        Action::Player(PlayerEvent::Failed("bad a".into())),
+    );
+    let effects = apply(
+        &mut state,
+        Action::Player(PlayerEvent::Failed("bad b".into())),
+    );
+    assert!(effects.is_empty());
+    assert_eq!(state.playback.status, PlayStatus::Stopped);
 }
 
 #[test]
@@ -1033,6 +1282,26 @@ fn a_restored_session_resumes_at_the_old_position() {
 }
 
 #[test]
+fn a_restored_local_session_reopens_offline_mode() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![local_track("old-song.wav")],
+            start: 0,
+        },
+    );
+    let saved = crate::core::session::SavedSession::capture(&state);
+    let mut restored = State::default();
+    apply(&mut restored, Action::SessionRestored(Box::new(saved)));
+    assert!(restored.local_mode);
+    assert_eq!(
+        restored.playback.queue.current().unwrap().id,
+        TrackId("old-song.wav".into())
+    );
+}
+
+#[test]
 fn volume_is_clamped() {
     let mut state = State::default();
     apply(&mut state, Action::VolumeSet(1.7));
@@ -1667,6 +1936,7 @@ fn counted_playlist(id: &str, track_count: Option<usize>) -> Playlist {
 
 fn track_in_playlist(id: &str, item_id: &str) -> Track {
     Track {
+        source: Default::default(),
         playlist_item_id: Some(item_id.to_string()),
         ..track(id)
     }

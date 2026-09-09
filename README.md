@@ -13,6 +13,7 @@ ytamp is early software. Currently implemented:
 - Library: your playlists and your liked songs.
 - OAuth YouTube watch history with Refresh and Load older.
 - Playback with an editable queue, shuffle, repeat, seek, volume, and stereo balance.
+- Local audio and video files in the same queue, with offline playback.
 - Media keys and resume of the last session.
 - Like/unlike, create playlists, and add/remove playlist tracks.
 - Winamp mode with classic `.wsz` skins and visualisers.
@@ -60,6 +61,31 @@ removes the selection. Right-click offers Play now, Play selected next, and
 Remove selected. Cmd/Ctrl+A selects upcoming songs; Escape clears selection.
 The current song stays in place. Manual order survives restart and preserves
 explicitly queued songs separately from their album/playlist context.
+
+## Local files
+
+Drop audio or video files onto either player or the Winamp playlist. **Add files…**
+and Cmd+O (macOS) or Ctrl+O (Windows/Linux) open the native file picker. Files join
+in the order supplied by the OS, before the remaining album or playlist. An empty
+queue starts the first valid file. Adding to an existing queue preserves playback.
+Duplicates stay as separate entries. Clear queue also cancels pending imports.
+
+Choose **Play local files** on the sign-in page to use ytamp offline. Tags, artwork,
+and durations are read on this computer. Video files play only their audio. Local
+tracks use the same seek, volume, balance, EQ, visualizer, and media controls as
+YouTube tracks. A same-name `.lrc` file supplies local lyrics; local track data is
+never sent to online lyrics or YouTube services.
+
+Tested formats are MP3, PCM WAV, FLAC, Ogg/Vorbis, AIFF, M4A/ALAC, MP4 and MOV
+with AAC, MKV with AAC, and WebM with Vorbis. The player selects the default
+supported audio stream, or the first supported stream. Unsupported codecs,
+including Opus, and files without audio report an import error. No FFmpeg install
+is needed. Folder scanning and playlist-file import are not included.
+
+Queue paths and position survive restart; playback waits for Play. If a file
+moves, use **Locate file…** or **Remove file from queue** in its context menu or
+playback error. Locate updates all occurrences and leaves playback paused.
+Signing out removes YouTube entries while retaining local files and local playback.
 
 ## Lyrics and menu bar
 
@@ -145,7 +171,7 @@ The optional `yt-dlp` fallback must be on `PATH` on each platform.
 
 [Routine CI](.github/workflows/platforms.yml) runs one Linux job for code changes: formatting, map checks, Clippy, and library tests. It caches dependencies without workspace or incremental build output. Documentation-only pushes do not start Rust builds, except for system-map changes.
 
-[Release builds](.github/workflows/release.yml) run manually or on `v*` tags. They produce Linux and Windows archives plus a universal macOS app for Apple Silicon and Intel (macOS 14 or later). A tag must match the version in `Cargo.toml`. Manual runs upload packages as workflow artifacts. Tag runs create a draft GitHub release. Packages are not signed for distribution or notarized.
+[Release builds](.github/workflows/release.yml) run manually or on `v*` tags. They produce Linux and Windows archives plus a universal macOS app for Apple Silicon and Intel (macOS 14 or later). A tag must match the version in `Cargo.toml`. Manual runs upload packages as workflow artifacts, and can enable **verify** to run the library tests on all package platforms. Tag runs create a draft GitHub release. Packages are not signed for distribution or notarized.
 
 [Desktop validation](docs/audit/2026-09-09-branding.md) records the completed Windows/Linux build, test, packaging, and native startup checks.
 

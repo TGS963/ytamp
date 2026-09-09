@@ -24,6 +24,13 @@ pub(super) async fn execute_api_request(
     if slot.read().expect("api lock").generation != generation {
         return;
     }
+    if contains_local_media(&request) {
+        deliver(request_failure(
+            request,
+            "Local files cannot be sent to YouTube.".into(),
+        ));
+        return;
+    }
     match request {
         ApiRequest::VerifyAuth(method) => deliver(sign_in(slot, generation, &method).await),
         ApiRequest::StartOAuth {
@@ -240,5 +247,31 @@ pub(super) fn request_failure(request: ApiRequest, message: String) -> Action {
         ApiRequest::CreatePlaylist(request_id, _) => {
             Action::PlaylistCreated(request_id, Err(message))
         }
+    }
+}
+
+fn contains_local_media(request: &ApiRequest) -> bool {
+    match request {
+        ApiRequest::FetchTrackDurations(ids) => ids.iter().any(|id| id.0.starts_with("local:")),
+        ApiRequest::FetchRadio(id) | ApiRequest::RateTrack { id, .. } => id.0.starts_with("local:"),
+        ApiRequest::StartRadio { seed, .. } => seed.is_local(),
+        ApiRequest::AddToPlaylist { track, .. } => track.is_local(),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::TrackId;
+
+    #[test]
+    fn local_duration_request_is_rejected_before_api_access() {
+        let request = ApiRequest::FetchTrackDurations(vec![TrackId("local:fixture".into())]);
+        assert!(contains_local_media(&request));
+        assert!(matches!(
+            request_failure(request, "Local files cannot be sent to YouTube.".into()),
+            Action::TrackDurationsLoaded(Err(message)) if message == "Local files cannot be sent to YouTube."
+        ));
     }
 }

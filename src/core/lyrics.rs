@@ -2,7 +2,7 @@
 use super::{
     action::Action,
     effect::Effect,
-    model::TrackId,
+    model::{Track, TrackId},
     state::{Loadable, State},
 };
 #[derive(Clone, Debug, PartialEq)]
@@ -121,16 +121,12 @@ pub struct LyricsState {
     pub content: Loadable<Option<Lyrics>>,
 }
 pub fn sync(state: &mut State) -> Vec<Effect> {
-    if !state.lyrics.open && state.page != super::state::Page::NowPlaying {
-        if matches!(state.lyrics.content, Loadable::Loading) {
-            state.lyrics.request_id = state.lyrics.request_id.wrapping_add(1);
-            state.lyrics.content = Loadable::NotAsked;
-            return vec![Effect::FetchLyrics(None)];
-        }
-        return vec![];
+    if let Some(effects) = cancel_closed_request(state) {
+        return effects;
     }
-    let track = state.playback.queue.current().map(|t| t.id.clone());
-    if track == state.lyrics.track && !matches!(state.lyrics.content, Loadable::NotAsked) {
+    let current = state.playback.queue.current().cloned();
+    let track = current.as_ref().map(|t| t.id.clone());
+    if same_lyrics_request(state, &track) {
         return vec![];
     }
     if track.is_none() && state.lyrics.track.is_none() {
@@ -143,9 +139,39 @@ pub fn sync(state: &mut State) -> Vec<Effect> {
     } else {
         Loadable::NotAsked
     };
-    vec![Effect::FetchLyrics(
-        track.map(|id| (state.lyrics.request_id, id)),
-    )]
+    lyrics_effect(state, current, track)
+}
+
+fn cancel_closed_request(state: &mut State) -> Option<Vec<Effect>> {
+    if state.lyrics.open || state.page == super::state::Page::NowPlaying {
+        return None;
+    }
+    if matches!(state.lyrics.content, Loadable::Loading) {
+        state.lyrics.request_id = state.lyrics.request_id.wrapping_add(1);
+        state.lyrics.content = Loadable::NotAsked;
+        return Some(vec![Effect::FetchLyrics(None)]);
+    }
+    Some(vec![])
+}
+
+fn same_lyrics_request(state: &State, track: &Option<TrackId>) -> bool {
+    track == &state.lyrics.track && !matches!(state.lyrics.content, Loadable::NotAsked)
+}
+
+fn lyrics_effect(state: &State, current: Option<Track>, track: Option<TrackId>) -> Vec<Effect> {
+    match current.and_then(|track| {
+        let path = track.local_path()?.to_owned();
+        Some((track, path))
+    }) {
+        Some((track, path)) => vec![Effect::FetchLocalLyrics {
+            request_id: state.lyrics.request_id,
+            track: track.id,
+            path,
+        }],
+        None => vec![Effect::FetchLyrics(
+            track.map(|id| (state.lyrics.request_id, id)),
+        )],
+    }
 }
 pub fn apply(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -209,9 +235,14 @@ fn apply_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{model::Track, update::update};
+    use crate::core::{
+        model::{MediaSource, Track},
+        update::update,
+    };
+    use std::path::PathBuf;
     fn track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: TrackId(id.into()),
             title: id.into(),
             artists: vec![],
@@ -224,6 +255,29 @@ mod tests {
     }
     fn send(state: &mut State, action: Action) -> Vec<Effect> {
         update(state, action, &mut |_| 0)
+    }
+
+    #[test]
+    fn local_tracks_request_same_name_local_lyrics() {
+        let mut state = State::default();
+        let mut local = track("song");
+        local.source = MediaSource::LocalFile {
+            path: PathBuf::from("/music/song.wav"),
+        };
+        send(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![local],
+                start: 0,
+            },
+        );
+        let effects = send(&mut state, Action::LyricsToggled);
+        assert!(effects.iter().any(|effect| matches!(effect, Effect::FetchLocalLyrics { path, .. } if path == &PathBuf::from("/music/song.wav"))));
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::FetchLyrics(_)))
+        );
     }
     #[test]
     fn lyrics_follow_track_ignore_old_results_and_cancel_when_closed() {

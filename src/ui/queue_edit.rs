@@ -133,6 +133,16 @@ impl Editor {
         }
     }
     pub fn menu(&mut self, ui: &mut Ui, index: usize, out: &mut Vec<Action>) {
+        if let Some(track) = self
+            .snapshot
+            .as_ref()
+            .and_then(|queue| queue.upcoming().nth(index))
+            .filter(|track| track.is_local())
+            && ui.button("Locate file…").clicked()
+        {
+            out.push(Action::LocalFileLocateRequested(track.id.clone()));
+            ui.close();
+        }
         if ui.button("Play now").clicked() {
             out.push(Action::QueueJumped(index));
             ui.close();

@@ -273,6 +273,97 @@ impl Queue {
         self.context.iter().any(|track| &track.id == id)
     }
 
+    pub fn replace_local(&mut self, id: &TrackId, replacement: Track) -> bool {
+        if !replacement.is_local() {
+            return false;
+        }
+        let mut replaced = false;
+        for track in self
+            .context
+            .iter_mut()
+            .chain(self.user_queue.iter_mut())
+            .chain(self.current.iter_mut().map(|current| &mut current.track))
+            .filter(|track| track.is_local() && &track.id == id)
+        {
+            *track = replacement.clone();
+            replaced = true;
+        }
+        replaced
+    }
+
+    pub fn retain_local(&mut self) {
+        self.retain_tracks(|track| track.is_local());
+    }
+
+    pub fn remove_local(&mut self, id: &TrackId) -> bool {
+        let had_match = self
+            .context
+            .iter()
+            .chain(self.user_queue.iter())
+            .any(|track| track.is_local() && &track.id == id)
+            || self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.track.is_local() && &current.track.id == id);
+        self.retain_tracks(|track| !track.is_local() || &track.id != id);
+        had_match
+    }
+
+    fn retain_tracks(&mut self, keep: impl Fn(&Track) -> bool) {
+        let old_context = std::mem::take(&mut self.context);
+        let mut context_map = vec![None; old_context.len()];
+        let mut new_context = Vec::new();
+        for (index, track) in old_context.into_iter().enumerate() {
+            if keep(&track) {
+                context_map[index] = Some(new_context.len());
+                new_context.push(track);
+            }
+        }
+        self.context = new_context;
+        let old_order = std::mem::take(&mut self.order);
+        let old_cursor = self.cursor;
+        self.order = old_order
+            .iter()
+            .filter_map(|index| context_map.get(*index).copied().flatten())
+            .collect();
+        self.cursor = old_cursor.and_then(|cursor| {
+            let retained_before = old_order
+                .iter()
+                .take(cursor)
+                .filter_map(|index| context_map.get(*index).copied().flatten())
+                .count();
+            if old_order
+                .get(cursor)
+                .and_then(|index| context_map.get(*index))
+                .is_some_and(Option::is_some)
+            {
+                Some(retained_before)
+            } else {
+                retained_before.checked_sub(1)
+            }
+        });
+        let old_user = std::mem::take(&mut self.user_queue);
+        let mut user_map = vec![None; old_user.len()];
+        let mut new_user = VecDeque::new();
+        for (index, track) in old_user.into_iter().enumerate() {
+            if keep(&track) {
+                user_map[index] = Some(new_user.len());
+                new_user.push_back(track);
+            }
+        }
+        self.user_queue = new_user;
+        if let Some(order) = &mut self.manual_order {
+            *order = remap_manual_order(order, &user_map, &context_map);
+        }
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| !keep(&current.track))
+        {
+            self.current = None;
+        }
+    }
+
     /// An explicit skip. Returns the track to load, or `None` when the
     /// queue is exhausted and playback stops.
     // A repeatable transport action, not an iterator (Previous can move back).
@@ -298,7 +389,9 @@ impl Queue {
             });
             return Some(track);
         }
-        let cursor = self.advanced_cursor()?;
+        let cursor = self
+            .advanced_cursor()
+            .or_else(|| self.cursor.is_none().then_some(0))?;
         self.cursor = Some(cursor);
         let track = self.context[self.order[cursor]].clone();
         self.current = Some(CurrentTrack {
@@ -316,7 +409,7 @@ impl Queue {
                 (track, TrackSource::UserQueue)
             }
             UpcomingEntry::Context(i) => {
-                let next = self.cursor? + 1;
+                let next = self.cursor.map_or(0, |cursor| cursor + 1);
                 let position = self.order.iter().position(|v| *v == i)?;
                 if position < next {
                     return None;
@@ -387,7 +480,7 @@ impl Queue {
             let rest = self
                 .cursor
                 .map(|c| &self.order[c + 1..])
-                .unwrap_or_default();
+                .unwrap_or(&self.order[..]);
             Box::new(
                 self.user_queue
                     .iter()
@@ -433,6 +526,28 @@ impl Queue {
     }
 }
 
+fn remap_manual_order(
+    order: &[UpcomingEntry],
+    user_map: &[Option<usize>],
+    context_map: &[Option<usize>],
+) -> Vec<UpcomingEntry> {
+    order
+        .iter()
+        .filter_map(|entry| match *entry {
+            UpcomingEntry::User(index) => user_map
+                .get(index)
+                .copied()
+                .flatten()
+                .map(UpcomingEntry::User),
+            UpcomingEntry::Context(index) => context_map
+                .get(index)
+                .copied()
+                .flatten()
+                .map(UpcomingEntry::Context),
+        })
+        .collect()
+}
+
 /// The play order for a context of `len` tracks, and the cursor of the
 /// `start` track inside it. Sequential order covers the whole context, so
 /// Previous can reach the tracks before `start`. A shuffle puts `start`
@@ -471,6 +586,7 @@ mod tests {
 
     fn track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: TrackId(id.to_string()),
             title: id.to_string(),
             artists: vec![],
@@ -480,6 +596,114 @@ mod tests {
             thumbnail_url: None,
             playlist_item_id: None,
         }
+    }
+
+    fn local_track(path: &str) -> Track {
+        Track {
+            source: super::super::model::MediaSource::LocalFile { path: path.into() },
+            id: TrackId(path.into()),
+            title: path.into(),
+            artists: vec![],
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail_url: None,
+            playlist_item_id: None,
+        }
+    }
+
+    #[test]
+    fn retain_local_remaps_mixed_context_and_queue() {
+        let mut queue = Queue::default();
+        queue.play_context(
+            vec![track("remote"), local_track("one"), local_track("two")],
+            2,
+            &mut no_random,
+        );
+        queue.queue_track(track("queued-remote"));
+        queue.queue_track(local_track("queued-local"));
+        queue.retain_local();
+        assert_eq!(queue.context.len(), 2);
+        assert_eq!(queue.user_queue.len(), 1);
+        assert_eq!(queue.current().unwrap().id, TrackId("two".into()));
+        assert!(queue.context.iter().all(Track::is_local));
+    }
+
+    #[test]
+    fn remove_local_remaps_the_remaining_local_entries() {
+        let mut queue = Queue::default();
+        queue.play_context(
+            vec![local_track("one"), local_track("two")],
+            1,
+            &mut no_random,
+        );
+        assert!(queue.remove_local(&TrackId("two".into())));
+        assert_eq!(queue.current(), None);
+        assert_eq!(queue.context.len(), 1);
+        assert_eq!(queue.context[0].id, TrackId("one".into()));
+    }
+
+    #[test]
+    fn retain_local_remaps_manual_user_indices() {
+        let mut queue = Queue::default();
+        queue.play_context(vec![local_track("current")], 0, &mut no_random);
+        queue.queue_track(track("remote"));
+        queue.queue_track(local_track("queued"));
+        queue.move_upcoming(&[1], 2);
+        queue.retain_local();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|track| track.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["queued"]
+        );
+        assert_eq!(queue.next().unwrap().id, TrackId("queued".into()));
+    }
+
+    #[test]
+    fn retain_local_exposes_context_after_removed_current() {
+        let mut queue = Queue::default();
+        queue.play_context(
+            vec![track("remote"), local_track("upcoming")],
+            0,
+            &mut no_random,
+        );
+        queue.retain_local();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|track| track.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["upcoming"]
+        );
+        assert_eq!(queue.next().unwrap().id, TrackId("upcoming".into()));
+    }
+
+    #[test]
+    fn retain_local_does_not_replay_context_before_removed_current() {
+        let mut queue = Queue::default();
+        queue.play_context(
+            vec![local_track("before"), track("remote"), local_track("after")],
+            1,
+            &mut no_random,
+        );
+        queue.retain_local();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|track| track.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["after"]
+        );
+        assert_eq!(queue.next().unwrap().id, TrackId("after".into()));
+    }
+
+    #[test]
+    fn repeat_off_does_not_restart_after_exhaustion() {
+        let mut queue = Queue::default();
+        queue.play_context(vec![track("only")], 0, &mut no_random);
+        assert_eq!(queue.next(), None);
     }
 
     fn tracks(ids: &[&str]) -> Vec<Track> {

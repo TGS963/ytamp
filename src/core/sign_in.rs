@@ -109,6 +109,7 @@ mod recovery_tests {
             &mut state,
             Action::ContextPlayed {
                 tracks: vec![Track {
+                    source: Default::default(),
                     id: TrackId("song".into()),
                     title: "Song".into(),
                     artists: vec![],

@@ -10,6 +10,7 @@ pub mod branding;
 pub mod core;
 pub mod fonts;
 pub mod library_cache;
+pub mod local_media;
 pub mod media_keys;
 pub mod player;
 pub mod runtime;

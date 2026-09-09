@@ -338,6 +338,7 @@ mod controls_tests {
     };
     fn track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: TrackId(id.into()),
             title: id.into(),
             artists: vec![],

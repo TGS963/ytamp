@@ -16,6 +16,7 @@ use crate::thumbnails::{preferred, track_art, video_thumbnail};
 pub fn song_to_track(song: SearchResultSong) -> Track {
     let (album, album_id) = split_song_album(song.album);
     Track {
+        source: Default::default(),
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
         artists: vec![ArtistRef::named(song.artist)],
@@ -82,6 +83,7 @@ pub fn artist_page(artist: GetArtist, id: ArtistId) -> ArtistPage {
 fn artist_song_to_track(song: ArtistSong) -> Track {
     let thumbnail_url = Some(video_thumbnail(song.video_id.get_raw()));
     Track {
+        source: Default::default(),
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
         artists: song.artists.into_iter().map(artist_ref).collect(),
@@ -132,6 +134,7 @@ pub fn album_page(album: GetAlbum, id: AlbumId) -> AlbumPage {
 fn album_song_to_track(song: AlbumSong) -> Track {
     let thumbnail_url = Some(video_thumbnail(song.video_id.get_raw()));
     Track {
+        source: Default::default(),
         id: TrackId(song.video_id.get_raw().to_string()),
         title: song.title,
         artists: vec![],
@@ -154,6 +157,7 @@ fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
     tracks
         .into_iter()
         .map(|track| Track {
+            source: Default::default(),
             artists: match track.artists.is_empty() {
                 true => album
                     .artists
@@ -177,6 +181,7 @@ fn tracks_with_album_art(tracks: Vec<Track>, album: &Album) -> Vec<Track> {
 /// A "Start radio" track. It carries no album information at all.
 pub fn watch_track(track: WatchPlaylistTrack) -> Track {
     Track {
+        source: Default::default(),
         id: TrackId(track.video_id.get_raw().to_string()),
         title: track.title,
         artists: vec![ArtistRef::named(track.author)],
@@ -228,6 +233,7 @@ mod tests {
             thumbnail_url: Some("art-url".into()),
         };
         let bare_track = Track {
+            source: Default::default(),
             id: TrackId("t1".into()),
             title: "Song".into(),
             artists: vec![],

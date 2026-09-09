@@ -34,7 +34,7 @@ pub(super) fn sync(state: &mut State) -> Vec<Effect> {
         .current()
         .into_iter()
         .chain(state.playback.queue.upcoming())
-        .filter(|track| track.duration.is_none())
+        .filter(|track| !track.is_local() && track.duration.is_none())
         .map(|track| track.id.clone())
         .filter(|id| {
             lookup.attempts.get(id).copied().unwrap_or_default() < 3 && seen.insert(id.clone())
@@ -100,6 +100,7 @@ mod tests {
     fn track(id: impl Into<String>) -> Track {
         let id = id.into();
         Track {
+            source: Default::default(),
             id: TrackId(id.clone()),
             title: id,
             artists: vec![],

@@ -429,6 +429,7 @@ mod tests {
             &mut state,
             Action::ContextPlayed {
                 tracks: vec![Track {
+                    source: Default::default(),
                     id: TrackId("example".into()),
                     title: "A long song title that must stay within its own panel".into(),
                     artists: vec![],

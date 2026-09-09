@@ -95,19 +95,58 @@ pub(super) fn start_oauth(state: &mut State) -> Vec<Effect> {
 /// volume and equalizer settings survive.
 pub(super) fn sign_out(state: &mut State) -> Vec<Effect> {
     let equalizer = state.equalizer.clone();
-    let volume = state.playback.volume;
-    let balance = state.playback.balance;
+    let winamp = state.winamp.clone();
+    let playback_generation = state.playback_generation;
+    let mut playback = state.playback.clone();
+    let had_remote_current = playback
+        .queue
+        .current()
+        .is_some_and(|track| !track.is_local());
+    playback.queue.retain_local();
+    let pending_import = state.imports.pending();
+    let local_mode = pending_import
+        || playback
+            .queue
+            .current()
+            .is_some_and(|track| track.is_local())
+        || playback.queue.upcoming().any(|track| track.is_local());
+    let local_current = playback
+        .queue
+        .current()
+        .is_some_and(|track| track.is_local());
+    let imports = std::mem::take(&mut state.imports);
+    playback.last_hover_prefetch = None;
+    playback.radio_request = None;
+    playback.duration_lookup = Default::default();
+    let local_next = local_current.then(|| playback.queue.peek_next());
+    if had_remote_current {
+        playback.error = None;
+        playback.loading = false;
+        playback.status = super::PlayStatus::Stopped;
+        playback.position = std::time::Duration::ZERO;
+        playback.track_duration = None;
+        playback.resume_position = None;
+        playback.channels = 0;
+        playback.sample_rate = 0;
+    }
     let generation = state.session_generation + 1;
     *state = State::default();
     state.session_generation = generation;
-    state.playback.volume = volume;
-    state.playback.balance = balance;
+    state.playback_generation = playback_generation;
+    state.playback = playback;
     state.equalizer = equalizer;
-    vec![
-        Effect::Player(PlayerCommand::Stop),
-        Effect::ClearCredentials,
-        Effect::ClearLibraryCache,
-    ]
+    state.winamp = winamp;
+    state.local_mode = local_mode;
+    state.imports = imports;
+    let mut effects = vec![Effect::ClearCredentials, Effect::ClearLibraryCache];
+    if had_remote_current {
+        effects.insert(0, Effect::Player(PlayerCommand::Stop));
+    } else if local_current {
+        effects.push(Effect::Player(PlayerCommand::PrepareNext(
+            local_next.flatten(),
+        )));
+    }
+    effects
 }
 
 pub(super) fn finish_sign_in(

@@ -22,6 +22,7 @@ The reducer controls queue and generation state. The player owns the audio devic
 - Audio source and buffer contracts start in [`src/stream/mod.rs`](../../../../src/stream/mod.rs).
 - Audio and lyrics clients share the [RustyPipe cache factory](../../../../src/rustypipe_client.rs).
 - Effects execute through [`src/runtime/mod.rs`](../../../../src/runtime/mod.rs).
+- Local files are inspected by [`src/local_media/mod.rs`](../../../../src/local_media/mod.rs).
 
 ## Connected to
 
@@ -41,3 +42,4 @@ UI actions and runtime results cross the reducer. The player thread owns device 
 
 - [`src/core/update/mod.rs`](../../../../src/core/update/mod.rs)
 - [`src/player/mod.rs`](../../../../src/player/mod.rs)
+- [`../../processes/local-import.md`](../../processes/local-import.md)

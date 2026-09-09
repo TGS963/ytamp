@@ -180,6 +180,7 @@ mod tests {
 
     fn track(id: &str) -> Track {
         Track {
+            source: Default::default(),
             id: TrackId(id.to_string()),
             title: id.to_string(),
             artists: vec![],

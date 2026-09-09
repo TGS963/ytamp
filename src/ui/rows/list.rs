@@ -88,7 +88,7 @@ fn track_list_area(
 /// or when the url is `None`, the placeholder alone shows. The square
 /// claims its space either way, so no row ever shifts.
 pub fn artwork(ui: &mut egui::Ui, theme: &dyn Theme, thumbnail_url: Option<&str>, size: f32) {
-    let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let (rect, _response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::empty());
     let radius = theme.metric(MetricRole::CornerRadius);
     ui.painter()
         .rect_filled(rect, radius, theme.color(ColorRole::ArtPlaceholder));

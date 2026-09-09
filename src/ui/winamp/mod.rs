@@ -225,24 +225,8 @@ pub fn window_height(shade: bool) -> u32 {
     }
 }
 
-/// The `.wsz` and `.zip` files dropped on this window this frame, each
-/// as the action that installs it. `App` calls this for both the main
-/// window and the skin window, since a skin can land on either.
-pub fn dropped_skins(ctx: &egui::Context) -> Vec<Action> {
-    ctx.input(|input| {
-        input
-            .raw
-            .dropped_files
-            .iter()
-            .map(|file| file.path().to_path_buf())
-            .filter(|path| is_skin_file(path))
-            .map(Action::SkinFileDropped)
-            .collect()
-    })
-}
-
 /// Whether a dropped file could be a Winamp skin, by its name.
-fn is_skin_file(path: &std::path::Path) -> bool {
+pub(crate) fn is_skin_file(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -521,6 +505,7 @@ mod tests {
         assert_eq!(track_marquee_text(&state), "ytamp");
 
         let track = crate::core::model::Track {
+            source: Default::default(),
             id: crate::core::model::TrackId("t1".into()),
             title: "Everything In Its Right Place".into(),
             artists: vec![crate::core::model::ArtistRef {

@@ -8,6 +8,9 @@ pub(super) fn apply(state: &mut State, action: Action, random_below: RandomBelow
             vec![]
         }
         Action::RadioStartRequested(seed) => {
+            if seed.is_local() {
+                return vec![];
+            }
             state.discovery.radio_loading = true;
             state.discovery.radio_request_id = state.discovery.radio_request_id.wrapping_add(1);
             vec![Effect::Api(ApiRequest::StartRadio {
@@ -22,6 +25,10 @@ pub(super) fn apply(state: &mut State, action: Action, random_below: RandomBelow
             seed,
             result,
         } => {
+            if seed.is_local() {
+                state.discovery.radio_loading = false;
+                return vec![];
+            }
             if request_id != state.discovery.radio_request_id {
                 return vec![];
             }

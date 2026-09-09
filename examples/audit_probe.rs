@@ -14,6 +14,7 @@ use ytamp::theme::DefaultTheme;
 
 fn track(id: &str) -> Track {
     Track {
+        source: Default::default(),
         id: TrackId(id.into()),
         title: format!("Title {id}"),
         artists: vec![ArtistRef::named("Artist link")],
