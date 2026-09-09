@@ -144,7 +144,7 @@ The optional `yt-dlp` fallback must be on `PATH` on each platform.
 
 [Routine CI](.github/workflows/platforms.yml) runs one Linux job for code changes: formatting, map checks, Clippy, and library tests. It caches dependencies without workspace or incremental build output. Documentation-only pushes do not start Rust builds, except for system-map changes.
 
-[Release builds](.github/workflows/release.yml) run manually or on `v*` tags. They produce Linux and Windows archives plus a universal macOS app for Apple Silicon and Intel. A tag must match the version in `Cargo.toml`. Manual runs upload packages as workflow artifacts. Tag runs create a draft GitHub release. Packages are not signed for distribution or notarized.
+[Release builds](.github/workflows/release.yml) run manually or on `v*` tags. They produce Linux and Windows archives plus a universal macOS app for Apple Silicon and Intel (macOS 14 or later). A tag must match the version in `Cargo.toml`. Manual runs upload packages as workflow artifacts. Tag runs create a draft GitHub release. Packages are not signed for distribution or notarized.
 
 [Desktop validation](docs/audit/2026-09-09-branding.md) records the completed Windows/Linux build, test, packaging, and native startup checks.
 

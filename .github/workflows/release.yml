@@ -124,5 +124,5 @@ jobs:
             fi
             gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release-assets/* --draft --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" release-assets/* --draft --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
           fi
