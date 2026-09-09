@@ -7,6 +7,7 @@
 //! `Source` side never blocks.
 
 use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
@@ -239,15 +240,34 @@ fn run_decoder(
 /// first, and needs the byte length, which a filling buffer lacks.
 fn build_decoder(input: &DecoderInput, failure: DecodeFailure) -> Result<SourceDecoder, String> {
     match input {
-        DecoderInput::Remote(buffer) => rodio::Decoder::builder()
-            .with_data(buffer.reader())
-            .with_seekable(false)
-            .build()
-            .map(|decoder| Box::new(decoder) as SourceDecoder)
-            .map_err(decode_error),
+        DecoderInput::Remote(buffer) => build_remote_decoder(buffer),
         DecoderInput::LocalFile(path) => {
             LocalFileDecoder::open(path, failure).map(|decoder| Box::new(decoder) as SourceDecoder)
         }
+    }
+}
+
+/// Wait for the first byte before probing. Symphonia treats read failures
+/// during format detection as an unrecognized format, hiding source errors.
+fn build_remote_decoder(buffer: &AudioBuffer) -> Result<SourceDecoder, String> {
+    buffer.reader().read_exact(&mut [0u8; 1]).map_err(|error| {
+        remote_decode_error(
+            buffer,
+            format!("The audio stream contained no readable data: {error}"),
+        )
+    })?;
+    rodio::Decoder::builder()
+        .with_data(buffer.reader())
+        .with_seekable(false)
+        .build()
+        .map(|decoder| Box::new(decoder) as SourceDecoder)
+        .map_err(|error| remote_decode_error(buffer, decode_error(error)))
+}
+
+fn remote_decode_error(buffer: &AudioBuffer, fallback: String) -> String {
+    match buffer.status() {
+        crate::stream::BufferStatus::Failed(message) => message,
+        _ => fallback,
     }
 }
 
@@ -1076,6 +1096,35 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the decoder reports Ready or an error");
         (ready, handle)
+    }
+
+    #[test]
+    fn source_failure_before_first_byte_reaches_the_decoder_report() {
+        let buffer = AudioBuffer::new(None);
+        let cause = "No source produced audio. yt-dlp: executable missing / rustypipe: HTTP 403";
+        buffer.writer().fail(cause.into());
+        let (ready, _handle) = wait_for_ready(buffer);
+        assert_eq!(ready.unwrap_err(), cause);
+    }
+
+    #[test]
+    fn source_failure_during_header_probe_keeps_the_download_error() {
+        let buffer = AudioBuffer::new(None);
+        let writer = buffer.writer();
+        writer.push(b"R");
+        writer.fail("The audio connection ended during the header".into());
+        let (ready, _handle) = wait_for_ready(buffer);
+        assert_eq!(
+            ready.unwrap_err(),
+            "The audio connection ended during the header"
+        );
+    }
+
+    #[test]
+    fn empty_completed_stream_reports_missing_audio_data() {
+        let buffer = AudioBuffer::from_complete(bytes::Bytes::new());
+        let (ready, _handle) = wait_for_ready(buffer);
+        assert!(ready.unwrap_err().contains("no readable data"));
     }
 
     #[test]
