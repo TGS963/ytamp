@@ -463,29 +463,61 @@ fn draw_row_text(
     let duration_line = text.line(ctx, &duration);
     let duration_at = Area::new(
         line.x + line.width.saturating_sub(pad + duration_line.width),
-        line.y + line.height.saturating_sub(duration_line.height) / 2,
+        centered_text_y(line, duration_line.height),
         duration_line.width,
         duration_line.height,
     );
-    paint_line(view, duration_line.texture.id(), duration_at, 1.0, tint);
+    paint_line(
+        view,
+        duration_line.texture.id(),
+        duration_at,
+        line,
+        1.0,
+        tint,
+    );
 
     let title_room = line.width.saturating_sub(3 * pad + duration_line.width);
     let title = fit_text(text, &row.label, title_room as f32);
     let title_line = text.line(ctx, &title);
     let title_at = Area::new(
         line.x + pad,
-        line.y + line.height.saturating_sub(title_line.height) / 2,
+        centered_text_y(line, title_line.height),
         title_line.width.min(title_room),
         title_line.height,
     );
     let uv_right = title_at.width as f32 / title_line.width.max(1) as f32;
-    paint_line(view, title_line.texture.id(), title_at, uv_right, tint);
+    paint_line(
+        view,
+        title_line.texture.id(),
+        title_at,
+        line,
+        uv_right,
+        tint,
+    );
+}
+
+fn centered_text_y(line: Area, text_height: u32) -> u32 {
+    let spare = line.height.saturating_sub(text_height) / 2;
+    let excess = text_height.saturating_sub(line.height);
+    line.y
+        .saturating_add(spare)
+        .saturating_sub(excess.div_ceil(2))
 }
 
 /// Paints a rasterised line's texture, tinted, at `area`, showing
 /// only up to `uv_right` of its width (1.0 for the whole line).
-fn paint_line(view: &View, texture: egui::TextureId, area: Area, uv_right: f32, tint: Color32) {
-    let clip = view.rect(area).intersect(view.ui.clip_rect());
+fn paint_line(
+    view: &View,
+    texture: egui::TextureId,
+    area: Area,
+    row: Area,
+    uv_right: f32,
+    tint: Color32,
+) {
+    let clip = view
+        .rect(area)
+        .intersect(view.rect(row))
+        .intersect(view.ui.clip_rect());
     let painter = view.ui.painter().with_clip_rect(clip);
     painter.image(
         texture,
@@ -827,6 +859,89 @@ mod tests {
     fn missing_duration_is_not_displayed_as_zero() {
         assert_eq!(duration_text(Some(Duration::from_secs(65))), "1:05");
         assert_eq!(duration_text(None), "--:--");
+    }
+
+    #[test]
+    fn playlist_text_ink_and_clip_stay_inside_the_row_at_every_scale() {
+        for scale in [1., 1.5, 2., 3., 4.] {
+            for label in [
+                "1. Wizhum - Deep Atmosphere Runner",
+                "2. The Night Hour - Be Alright",
+                "3. 初音ミク - 歌",
+                "4. Ágyp - Between Planets",
+            ] {
+                assert_rendered_row_bounds(label, scale);
+            }
+        }
+    }
+
+    fn assert_rendered_row_bounds(label: &str, scale: f32) {
+        let ctx = egui::Context::default();
+        let skin = crate::skin::Skin::builtin();
+        let textures = std::collections::HashMap::new();
+        let mut text = PixelText::default();
+        let row = Row {
+            label: label.into(),
+            duration: Some(Duration::from_secs(177)),
+            current: false,
+            jump_to: Some(0),
+        };
+        let mut bounds = egui::Rect::NOTHING;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400., 500.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let mut view = View {
+                    ui,
+                    origin: egui::pos2(4., 4.),
+                    unit: scale,
+                    skin: &skin,
+                    mask: None,
+                    textures: &textures,
+                };
+                let line = Area::new(12, 20, 243, layout::PLAYLIST_TRACK_HEIGHT);
+                bounds = view.rect(line);
+                draw_row_text(&mut view, &ctx, &mut text, &row, line, Color32::WHITE);
+            },
+        );
+        let uploads = std::mem::take(&mut output.textures_delta.set);
+        output.textures_delta.clear();
+        let mut count = 0;
+        for shape in &output.shapes {
+            let egui::Shape::Mesh(mesh) = &shape.shape else {
+                continue;
+            };
+            let Some(deltas) = uploads.get(&mesh.texture_id) else {
+                continue;
+            };
+            let egui::ImageData::Color(image) = &deltas[0].image;
+            let rect = mesh.calc_bounds();
+            let mut ink = 0;
+            for (index, pixel) in image.pixels.iter().enumerate() {
+                if pixel.a() == 0 {
+                    continue;
+                }
+                let y = rect.top() + (index / image.width()) as f32 * scale;
+                assert!(
+                    y >= bounds.top() && y + scale <= bounds.bottom(),
+                    "{label}, scale {scale}: ink {y} outside {bounds:?}"
+                );
+                ink += 1;
+            }
+            assert!(ink > 0);
+            assert!(
+                bounds.contains_rect(shape.clip_rect),
+                "{label}, scale {scale}: clip {:?} outside {bounds:?}",
+                shape.clip_rect
+            );
+            count += 1;
+        }
+        assert_eq!(count, 2, "must check both title and duration textures");
     }
 
     #[test]
