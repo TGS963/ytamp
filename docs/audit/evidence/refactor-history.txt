@@ -1,0 +1,11 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.43s
+     Running `target/debug/examples/oauth_history_probe`
+Official liked-songs control: HTTP 200
+WEB_REMIX/FEmusic_history: HTTP 400, content false, video entries 0, sign-in prompt false
+IOS_MUSIC/FEmusic_history: HTTP 400, content false, video entries 0, sign-in prompt false
+TVHTML5/FEmusic_history: HTTP 400, content false, video entries 0, sign-in prompt false
+TVHTML5/FEhistory: HTTP 200, content true, video entries 45, sign-in prompt false
+Production page 1: 15 tracks, 15 with artists, 15 with duration, older true
+Production page 2: 15 tracks, 15 with artists, 15 with duration, older true
+Production page 3: 15 tracks, 15 with artists, 15 with duration, older true

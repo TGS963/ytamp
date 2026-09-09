@@ -1,0 +1,11 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.59s
+     Running `target/debug/examples/discovery_integration_probe --decode`
+Page 1: 3 shelves, 18 cards
+Page 2: 4 shelves, 24 cards
+Page 3: 3 shelves, 18 cards
+album: 1 tracks, 0 shelves
+mix: 15 tracks, 0 shelves
+mix audio: decoded two seconds; playback position advances
+radio: 20 tracks, 0 shelves
+playlist: 8 tracks, 0 shelves

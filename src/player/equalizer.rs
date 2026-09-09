@@ -152,6 +152,12 @@ impl<S: Source> Equalized<S> {
     }
     fn process_frame(&mut self) {
         self.refresh();
+        self.advance_ramps();
+        let peak = self.filter_channels();
+        self.mix_output(peak);
+    }
+
+    fn advance_ramps(&mut self) {
         if self.balance_ramp > 0 {
             self.balance += (self.target_balance - self.balance) / self.balance_ramp as f64;
             self.balance_ramp -= 1;
@@ -167,6 +173,9 @@ impl<S: Source> Equalized<S> {
             self.wet += (self.target_wet - self.wet) / remaining;
             self.ramp -= 1;
         }
+    }
+
+    fn filter_channels(&mut self) -> f64 {
         let mut peak = 0_f64;
         for (channel, sample) in self.frame.iter_mut().enumerate() {
             let mut value = *sample as f64 * self.gain;
@@ -177,6 +186,10 @@ impl<S: Source> Equalized<S> {
             *sample = value as f32;
             peak = peak.max(value.abs());
         }
+        peak
+    }
+
+    fn mix_output(&mut self, peak: f64) {
         // Instant attack and an 80 ms release, linked across channels to
         // preserve the stereo image. Inactive in settled bypass.
         let required = if peak > 1. { 1. / peak } else { 1. };

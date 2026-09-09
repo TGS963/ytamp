@@ -30,154 +30,191 @@ pub fn view(
         continue_listening(ui, state, theme, context, out);
         ui.add_space(28.0);
         super::discovery::feed(ui, state, theme, context, out);
-        section(ui, "Your playlists", "View library →", theme, out);
-        match &state.library.playlists {
-            Loadable::Loaded(playlists) | Loadable::Refreshing(playlists)
-                if !playlists.is_empty() =>
-            {
-                let columns = columns(ui.available_width());
-                let width = (ui.available_width() - (columns - 1) as f32 * 16.0) / columns as f32;
-                egui::Grid::new(("home-playlists", columns, width.round() as u32))
-                    .spacing([16., 20.])
-                    .show(ui, |ui| {
-                        for (index, playlist) in playlists.iter().take(columns).enumerate() {
-                            ui.push_id(&playlist.id, |ui| {
-                                let response = card(
-                                    ui,
-                                    width,
-                                    &playlist.title,
-                                    &playlist
-                                        .track_count
-                                        .map(|n| format!("{n} tracks"))
-                                        .unwrap_or_else(|| "Playlist".into()),
-                                    playlist.thumbnail_url.as_deref(),
-                                    theme,
-                                );
-                                if response.clicked() {
-                                    out.push(Action::PlaylistOpened(playlist.id.clone()));
-                                }
-                            });
-                            if (index + 1) % columns == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-            }
-            Loadable::Failed(_) => {
-                ui.label("Your playlists couldn’t load.");
-                retry(ui, out);
-            }
-            Loadable::Loaded(_) | Loadable::Refreshing(_) => {
-                ui.label(theme.secondary_label(
-                    TextRole::Body,
-                    "A place for every mood. Create your first playlist.",
-                ));
-                if ui.button("New playlist").clicked() {
-                    out.push(Action::CreatePlaylistDialogOpened(None));
-                }
-            }
-            _ => {
-                ui.spinner();
-                ui.weak("Loading your playlists…");
-            }
-        }
+        render_playlists(ui, state, theme, out);
         ui.add_space(28.0);
-        section(ui, "From your likes", "View all →", theme, out);
-        if state
-            .library
-            .liked
-            .loaded()
-            .is_some_and(|tracks| !tracks.is_empty())
-        {
-            if ui.button("Shuffle your likes").clicked() {
-                out.push(Action::LikedShuffleRequested);
-            }
-            ui.add_space(10.);
-        }
-        match &state.library.liked {
-            Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) if !tracks.is_empty() => {
-                let columns = columns(ui.available_width());
-                let width = (ui.available_width() - (columns - 1) as f32 * 16.0) / columns as f32;
-                egui::Grid::new(("home-liked", columns, width.round() as u32))
-                    .spacing([16., 20.])
-                    .show(ui, |ui| {
-                        for (index, track) in tracks.iter().take(columns).enumerate() {
-                            ui.push_id(&track.id, |ui| {
-                                let response = card(
-                                    ui,
-                                    width,
-                                    &track.title,
-                                    &track.artist_names(),
-                                    track.thumbnail_url.as_deref(),
-                                    theme,
-                                )
-                                .on_hover_text("Play · right-click for more");
-                                if response.clicked() {
-                                    out.push(Action::ContextPlayed {
-                                        tracks: tracks.clone(),
-                                        start: index,
-                                    });
-                                }
-                                if let Some(action) =
-                                    rows::row_context_menu(&response, track, context)
-                                {
-                                    out.push(action);
-                                }
-                            });
-                        }
-                    });
-            }
-            Loadable::Failed(_) => {
-                ui.label("Your liked songs couldn’t load.");
-                retry(ui, out);
-            }
-            Loadable::Loaded(_) | Loadable::Refreshing(_) => {
-                ui.label(theme.secondary_label(
-                    TextRole::Body,
-                    "Like songs as you listen. They’ll be waiting here.",
-                ));
-            }
-            _ => {
-                ui.spinner();
-                ui.weak("Loading your liked songs…");
-            }
-        }
+        render_liked(ui, state, theme, context, out);
         ui.add_space(28.0);
-        if let Some(next) = state.playback.queue.peek_next() {
-            surface(theme).show(ui, |ui| {
-                ui.set_width((ui.available_width() - 4.0).max(0.0));
-                ui.horizontal(|ui| {
-                    rows::artwork(ui, theme, next.thumbnail_url.as_deref(), 48.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            theme.secondary_label(
-                                TextRole::Caption,
-                                if state
-                                    .playback
-                                    .queue
-                                    .current()
-                                    .is_some_and(|track| track.id == next.id)
-                                {
-                                    "ON REPEAT"
-                                } else {
-                                    "UP NEXT"
-                                },
-                            ),
-                        );
-                        ui.add(
-                            egui::Label::new(theme.label(TextRole::Body, &next.title)).truncate(),
-                        );
-                        ui.label(theme.secondary_label(TextRole::Caption, next.artist_names()));
-                    });
-                });
-                if ui.button("Open queue →").clicked() && !state.queue_open {
-                    out.push(Action::QueuePanelToggled);
-                }
-            });
-        }
+        render_up_next(ui, state, theme, out);
         ui.add_space(24.0);
     });
 }
+fn render_playlists(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    section(ui, "Your playlists", "View library →", theme, out);
+    match &state.library.playlists {
+        Loadable::Loaded(playlists) | Loadable::Refreshing(playlists) if !playlists.is_empty() => {
+            render_playlist_cards(ui, playlists, theme, out)
+        }
+        Loadable::Failed(_) => {
+            ui.label("Your playlists couldn’t load.");
+            retry(ui, out);
+        }
+        Loadable::Loaded(_) | Loadable::Refreshing(_) => {
+            ui.label(theme.secondary_label(
+                TextRole::Body,
+                "A place for every mood. Create your first playlist.",
+            ));
+            if ui.button("New playlist").clicked() {
+                out.push(Action::CreatePlaylistDialogOpened(None));
+            }
+        }
+        _ => {
+            ui.spinner();
+            ui.weak("Loading your playlists…");
+        }
+    }
+}
+
+fn render_playlist_cards(
+    ui: &mut Ui,
+    playlists: &[crate::core::model::Playlist],
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+) {
+    let columns = columns(ui.available_width());
+    let width = card_width(ui.available_width(), columns);
+    egui::Grid::new(("home-playlists", columns, width.round() as u32))
+        .spacing([16., 20.])
+        .show(ui, |ui| {
+            for (index, playlist) in playlists.iter().take(columns).enumerate() {
+                ui.push_id(&playlist.id, |ui| {
+                    let subtitle = playlist
+                        .track_count
+                        .map(|n| format!("{n} tracks"))
+                        .unwrap_or_else(|| "Playlist".into());
+                    if card(
+                        ui,
+                        width,
+                        &playlist.title,
+                        &subtitle,
+                        playlist.thumbnail_url.as_deref(),
+                        theme,
+                    )
+                    .clicked()
+                    {
+                        out.push(Action::PlaylistOpened(playlist.id.clone()));
+                    }
+                });
+                if (index + 1) % columns == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+fn render_liked(
+    ui: &mut Ui,
+    state: &State,
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
+    section(ui, "From your likes", "View all →", theme, out);
+    if state
+        .library
+        .liked
+        .loaded()
+        .is_some_and(|tracks| !tracks.is_empty())
+    {
+        if ui.button("Shuffle your likes").clicked() {
+            out.push(Action::LikedShuffleRequested);
+        }
+        ui.add_space(10.);
+    }
+    match &state.library.liked {
+        Loadable::Loaded(tracks) | Loadable::Refreshing(tracks) if !tracks.is_empty() => {
+            render_liked_cards(ui, tracks, theme, context, out)
+        }
+        Loadable::Failed(_) => {
+            ui.label("Your liked songs couldn’t load.");
+            retry(ui, out);
+        }
+        Loadable::Loaded(_) | Loadable::Refreshing(_) => {
+            ui.label(theme.secondary_label(
+                TextRole::Body,
+                "Like songs as you listen. They’ll be waiting here.",
+            ));
+        }
+        _ => {
+            ui.spinner();
+            ui.weak("Loading your liked songs…");
+        }
+    }
+}
+
+fn render_liked_cards(
+    ui: &mut Ui,
+    tracks: &[crate::core::model::Track],
+    theme: &dyn Theme,
+    context: &RowContext,
+    out: &mut Vec<Action>,
+) {
+    let columns = columns(ui.available_width());
+    let width = card_width(ui.available_width(), columns);
+    egui::Grid::new(("home-liked", columns, width.round() as u32))
+        .spacing([16., 20.])
+        .show(ui, |ui| {
+            for (index, track) in tracks.iter().take(columns).enumerate() {
+                ui.push_id(&track.id, |ui| {
+                    let response = card(
+                        ui,
+                        width,
+                        &track.title,
+                        &track.artist_names(),
+                        track.thumbnail_url.as_deref(),
+                        theme,
+                    )
+                    .on_hover_text("Play · right-click for more");
+                    if response.clicked() {
+                        out.push(Action::ContextPlayed {
+                            tracks: tracks.to_vec(),
+                            start: index,
+                        });
+                    }
+                    if let Some(action) = rows::row_context_menu(&response, track, context) {
+                        out.push(action);
+                    }
+                });
+            }
+        });
+}
+
+fn card_width(available: f32, columns: usize) -> f32 {
+    (available - (columns - 1) as f32 * 16.0) / columns as f32
+}
+
+fn render_up_next(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
+    let Some(next) = state.playback.queue.peek_next() else {
+        return;
+    };
+    surface(theme).show(ui, |ui| {
+        ui.set_width((ui.available_width() - 4.0).max(0.0));
+        ui.horizontal(|ui| {
+            rows::artwork(ui, theme, next.thumbnail_url.as_deref(), 48.0);
+            ui.vertical(|ui| {
+                ui.label(theme.secondary_label(TextRole::Caption, next_label(state, &next)));
+                ui.add(egui::Label::new(theme.label(TextRole::Body, &next.title)).truncate());
+                ui.label(theme.secondary_label(TextRole::Caption, next.artist_names()));
+            });
+        });
+        if ui.button("Open queue →").clicked() && !state.queue_open {
+            out.push(Action::QueuePanelToggled);
+        }
+    });
+}
+
+fn next_label(state: &State, next: &crate::core::model::Track) -> &'static str {
+    if state
+        .playback
+        .queue
+        .current()
+        .is_some_and(|track| track.id == next.id)
+    {
+        "ON REPEAT"
+    } else {
+        "UP NEXT"
+    }
+}
+
 fn columns(width: f32) -> usize {
     ((width + 16.) / 190.).floor().max(1.) as usize
 }

@@ -1,26 +1,26 @@
 //! Read-only discovery capability check. Prints no credentials or item titles.
 use serde_json::{Value, json};
 use std::time::Duration;
+mod probe_support;
 #[tokio::main]
 async fn main() {
-    let Some(json) = ytamp::auth::load_oauth_token() else {
-        println!("No saved OAuth token");
-        return;
+    let session = match probe_support::oauth_session().await {
+        Ok(session) => session,
+        Err(probe_support::OAuthSessionError::Missing) => {
+            println!("No saved OAuth token");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::Invalid) => {
+            println!("Invalid saved token");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::RefreshFailed) => {
+            println!("Token refresh failed or timed out");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::MissingAccess) => return,
     };
-    let Ok(token) = serde_json::from_str::<ytmapi_rs::auth::OAuthToken>(&json) else {
-        println!("Invalid saved token");
-        return;
-    };
-    let mut yt = ytmapi_rs::YtMusic::from_auth_token(token);
-    let Ok(Ok(token)) = tokio::time::timeout(Duration::from_secs(15), yt.refresh_token()).await
-    else {
-        println!("Token refresh failed or timed out");
-        return;
-    };
-    let token = serde_json::to_value(token).unwrap();
-    let Some(access) = token.get("access_token").and_then(Value::as_str) else {
-        return;
-    };
+    let access = session.access_token;
     let http = reqwest::Client::builder().user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36").build().unwrap();
     let page = http
         .get("https://music.youtube.com/")
@@ -93,7 +93,7 @@ async fn main() {
             continue;
         }
         let request = http.post(format!("https://{host}/youtubei/v1/browse"))
-            .bearer_auth(access)
+            .bearer_auth(&access)
             .header("Origin",format!("https://{host}"))
             .header("X-Goog-Request-Time", "1")
             .json(&json!({"context":{"client":{"clientName":client,"clientVersion":version,"hl":"en","gl":"US","visitorData":visitor}},"browseId":browse}))
@@ -134,7 +134,7 @@ async fn main() {
                                 break;
                             };
                             let response=http.post(format!("https://{host}/youtubei/v1/browse"))
-                                .bearer_auth(access).header("User-Agent","Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version")
+                                .bearer_auth(&access).header("User-Agent","Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version")
                                 .json(&json!({"context":{"client":{"clientName":client,"clientVersion":version,"hl":"en","gl":"US"}},"continuation":continuation}))
                                 .timeout(Duration::from_secs(15)).send().await;
                             if let Ok(response) = response {

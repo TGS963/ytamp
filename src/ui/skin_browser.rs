@@ -5,6 +5,7 @@ use crate::{
 };
 use std::sync::mpsc::{Receiver, channel};
 
+#[derive(Clone)]
 struct Entry {
     name: Option<String>,
     preview: Result<egui::TextureHandle, String>,
@@ -60,113 +61,153 @@ impl SkinBrowser {
         if !self.initialized {
             self.refresh(ui.ctx());
         }
-        if let Some(receiver) = &self.pending {
-            loop {
-                match receiver.try_recv() {
-                    Ok((name, bitmap)) => {
-                        let texture = bitmap.map(|bitmap| {
-                            ui.ctx().load_texture(
-                                format!("skin-preview-{name:?}"),
-                                egui::ColorImage::from_rgba_unmultiplied(
-                                    [bitmap.width as usize, bitmap.height as usize],
-                                    &bitmap.rgba,
-                                ),
-                                egui::TextureOptions::NEAREST,
-                            )
-                        });
-                        self.entries.push(Entry {
-                            name,
-                            preview: texture,
-                        });
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.pending = None;
-                        break;
-                    }
-                }
-            }
-        }
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Winamp skins");
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.pending.is_none(), egui::Button::new("Refresh"))
-                    .clicked()
-                {
-                    self.refresh(ui.ctx());
-                }
-                if ui.button("Open skins folder").clicked() {
-                    crate::skins_dir::open_folder();
-                }
-                if self.pending.is_some() {
-                    ui.spinner();
-                }
-            });
-            ui.label("Drop a classic .wsz or .zip skin here to install it.");
-            for notice in state.notices.iter().rev().take(1) {
-                ui.weak(notice);
-            }
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter skins"));
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("skin-gallery")
-                .show(ui, |ui| {
-                    for (index, entry) in self.entries.iter().enumerate() {
-                        let name = entry.name.as_deref().unwrap_or("Built-in skin");
-                        if !name.to_lowercase().contains(&self.filter.to_lowercase()) {
-                            continue;
-                        }
-                        ui.push_id(index, |ui| {
-                            ui.horizontal(|ui| {
-                                if let Ok(texture) = &entry.preview
-                                    && ui
-                                        .add(
-                                            egui::Image::new((
-                                                texture.id(),
-                                                egui::vec2(137.5, 58.0),
-                                            ))
-                                            .sense(egui::Sense::click()),
-                                        )
-                                        .clicked()
-                                {
-                                    self.selected = index;
-                                }
-                                ui.vertical(|ui| {
-                                    if ui.selectable_label(self.selected == index, name).clicked() {
-                                        self.selected = index;
-                                    }
-                                    if entry.name == state.winamp.skin {
-                                        ui.weak("In use");
-                                    }
-                                    if let Err(error) = &entry.preview {
-                                        ui.label(error);
-                                    }
-                                });
-                            });
-                            if self.selected == index
-                                && let Ok(texture) = &entry.preview
-                            {
-                                let width = ui.available_width().min(550.0);
-                                ui.add(egui::Image::new((
-                                    texture.id(),
-                                    egui::vec2(width, width * 116.0 / 275.0),
-                                )));
-                                if ui.button("Use this skin").clicked() {
-                                    out.push(Action::SkinChosen(entry.name.clone()));
-                                }
-                            }
-                            ui.separator();
-                        });
-                    }
-                });
-        });
+        self.receive_previews(ui.ctx());
+        render_panel(self, ui, state, out);
         let dropped = super::winamp::dropped_skins(ui.ctx());
         if !dropped.is_empty() {
             self.initialized = false;
         }
         out.extend(dropped);
     }
+
+    fn receive_previews(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = &self.pending else {
+            return;
+        };
+        loop {
+            match receiver.try_recv() {
+                Ok((name, bitmap)) => {
+                    let texture = bitmap.map(|bitmap| {
+                        ctx.load_texture(
+                            format!("skin-preview-{name:?}"),
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [bitmap.width as usize, bitmap.height as usize],
+                                &bitmap.rgba,
+                            ),
+                            egui::TextureOptions::NEAREST,
+                        )
+                    });
+                    self.entries.push(Entry {
+                        name,
+                        preview: texture,
+                    });
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn render_panel(
+    browser: &mut SkinBrowser,
+    ui: &mut egui::Ui,
+    state: &State,
+    out: &mut Vec<Action>,
+) {
+    egui::CentralPanel::default().show(ui, |ui| {
+        ui.heading("Winamp skins");
+        render_toolbar(browser, ui);
+        ui.label("Drop a classic .wsz or .zip skin here to install it.");
+        for notice in state.notices.iter().rev().take(1) {
+            ui.weak(notice);
+        }
+        ui.add(egui::TextEdit::singleline(&mut browser.filter).hint_text("Filter skins"));
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("skin-gallery")
+            .show(ui, |ui| render_entries(browser, ui, state, out));
+    });
+}
+
+fn render_toolbar(browser: &mut SkinBrowser, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(browser.pending.is_none(), egui::Button::new("Refresh"))
+            .clicked()
+        {
+            browser.refresh(ui.ctx());
+        }
+        if ui.button("Open skins folder").clicked() {
+            crate::skins_dir::open_folder();
+        }
+        if browser.pending.is_some() {
+            ui.spinner();
+        }
+    });
+}
+
+fn render_entries(
+    browser: &mut SkinBrowser,
+    ui: &mut egui::Ui,
+    state: &State,
+    out: &mut Vec<Action>,
+) {
+    let filter = browser.filter.to_lowercase();
+    let entries = browser.entries.clone();
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = entry.clone();
+        let name = entry.name.as_deref().unwrap_or("Built-in skin").to_owned();
+        if !name.to_lowercase().contains(&filter) {
+            continue;
+        }
+        ui.push_id(index, |ui| {
+            render_entry(browser, ui, state, out, index, &entry, &name)
+        });
+    }
+}
+
+fn render_entry(
+    browser: &mut SkinBrowser,
+    ui: &mut egui::Ui,
+    state: &State,
+    out: &mut Vec<Action>,
+    index: usize,
+    entry: &Entry,
+    name: &str,
+) {
+    ui.horizontal(|ui| {
+        if let Ok(texture) = &entry.preview
+            && ui
+                .add(
+                    egui::Image::new((texture.id(), egui::vec2(137.5, 58.0)))
+                        .sense(egui::Sense::click()),
+                )
+                .clicked()
+        {
+            browser.selected = index;
+        }
+        ui.vertical(|ui| {
+            if ui
+                .selectable_label(browser.selected == index, name)
+                .clicked()
+            {
+                browser.selected = index;
+            }
+            if entry.name == state.winamp.skin {
+                ui.weak("In use");
+            }
+            if let Err(error) = &entry.preview {
+                ui.label(error);
+            }
+        });
+    });
+    if browser.selected == index
+        && let Ok(texture) = &entry.preview
+    {
+        let width = ui.available_width().min(550.0);
+        ui.add(egui::Image::new((
+            texture.id(),
+            egui::vec2(width, width * 116.0 / 275.0),
+        )));
+        if ui.button("Use this skin").clicked() {
+            out.push(Action::SkinChosen(entry.name.clone()));
+        }
+    }
+    ui.separator();
 }
 /// Assemble the idle player's artwork from the same sprite/layout tables as playback.
 fn preview(skin: &Skin) -> Bitmap {

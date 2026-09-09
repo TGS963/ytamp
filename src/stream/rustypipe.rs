@@ -20,7 +20,7 @@ impl Default for RustyPipeSource {
 impl RustyPipeSource {
     pub fn new() -> Self {
         Self {
-            client: RustyPipe::new(),
+            client: crate::rustypipe_client::new(),
         }
     }
 }

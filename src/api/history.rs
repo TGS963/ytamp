@@ -6,38 +6,77 @@ use crate::core::{
 use serde_json::Value;
 
 pub fn parse(value: &Value) -> Result<HistoryPage, String> {
-    let grid = value
-        .pointer("/contents/tvBrowseRenderer/content/tvSurfaceContentRenderer/content/gridRenderer")
-        .or_else(|| value.pointer("/continuationContents/gridContinuation"))
-        .ok_or_else(|| {
-            "YouTube returned an unfamiliar history layout. Try refreshing.".to_owned()
-        })?;
-    let items = grid
+    let grid = history_grid(value).ok_or_else(|| {
+        "YouTube returned an unfamiliar history layout. Try refreshing.".to_owned()
+    })?;
+    let tracks = grid
         .get("items")
         .and_then(Value::as_array)
-        .ok_or_else(|| "YouTube did not return a history list.".to_owned())?;
-    let tracks = items.iter().filter_map(|item| {
-        let tile = item.get("tileRenderer")?;
-        let id = tile.pointer("/onSelectCommand/watchEndpoint/videoId")?.as_str()?;
-        let title = text(tile.pointer("/metadata/tileMetadataRenderer/title")?);
-        if id.is_empty() || title.is_empty() { return None; }
-        let artist = tile.pointer("/metadata/tileMetadataRenderer/lines/0/lineRenderer/items/0/lineItemRenderer/text").map(text).unwrap_or_default();
-        let thumbnail_url = tile.pointer("/header/tileHeaderRenderer/thumbnail/thumbnails")
-            .and_then(Value::as_array).and_then(|images| images.last())
-            .and_then(|image| image.get("url")).and_then(Value::as_str).map(str::to_owned);
-        let duration = duration(tile.get("header").unwrap_or(&Value::Null));
-        Some(Track { id: TrackId(id.to_owned()), title, artists: if artist.is_empty() { vec![] } else { vec![ArtistRef::named(artist)] },
-            album: None, album_id: None, duration, thumbnail_url, playlist_item_id: None })
-    }).collect();
-    let continuation = grid
-        .pointer("/continuations/0/nextContinuationData/continuation")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
+        .ok_or_else(|| "YouTube did not return a history list.".to_owned())?
+        .iter()
+        .filter_map(history_track)
+        .collect();
     Ok(HistoryPage {
         tracks,
-        continuation,
+        continuation: continuation(grid),
     })
+}
+
+fn history_grid(value: &Value) -> Option<&Value> {
+    value
+        .pointer("/contents/tvBrowseRenderer/content/tvSurfaceContentRenderer/content/gridRenderer")
+        .or_else(|| value.pointer("/continuationContents/gridContinuation"))
+}
+
+fn history_track(item: &Value) -> Option<Track> {
+    let tile = item.get("tileRenderer")?;
+    let id = tile
+        .pointer("/onSelectCommand/watchEndpoint/videoId")?
+        .as_str()?;
+    let title = text(tile.pointer("/metadata/tileMetadataRenderer/title")?);
+    if id.is_empty() || title.is_empty() {
+        return None;
+    }
+    Some(Track {
+        id: TrackId(id.to_owned()),
+        title,
+        artists: history_artists(tile),
+        album: None,
+        album_id: None,
+        duration: duration(tile.get("header").unwrap_or(&Value::Null)),
+        thumbnail_url: thumbnail_url(tile),
+        playlist_item_id: None,
+    })
+}
+
+fn history_artists(tile: &Value) -> Vec<ArtistRef> {
+    let artist = tile
+        .pointer(
+            "/metadata/tileMetadataRenderer/lines/0/lineRenderer/items/0/lineItemRenderer/text",
+        )
+        .map(text)
+        .unwrap_or_default();
+    if artist.is_empty() {
+        vec![]
+    } else {
+        vec![ArtistRef::named(artist)]
+    }
+}
+
+fn thumbnail_url(tile: &Value) -> Option<String> {
+    tile.pointer("/header/tileHeaderRenderer/thumbnail/thumbnails")
+        .and_then(Value::as_array)
+        .and_then(|images| images.last())
+        .and_then(|image| image.get("url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn continuation(grid: &Value) -> Option<String> {
+    grid.pointer("/continuations/0/nextContinuationData/continuation")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 fn text(value: &Value) -> String {
     value

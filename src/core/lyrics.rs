@@ -21,7 +21,21 @@ pub struct TimedLine {
 /// Parse standard LRC, including repeated timestamps and the millisecond offset tag.
 /// Untimed metadata is ignored; simultaneous lines are combined in source order.
 pub fn parse_lrc(input: &str) -> Vec<TimedLine> {
-    let offset = input
+    let offset = parse_offset(input);
+    let mut entries: Vec<_> = input
+        .lines()
+        .flat_map(|line| parse_lrc_line(line, offset))
+        .collect();
+    entries.sort_by_key(|line| line.at);
+    let mut lines = merge_simultaneous_lines(entries);
+    if !lines.iter().any(|line| !line.text.is_empty()) {
+        lines.clear();
+    }
+    lines
+}
+
+fn parse_offset(input: &str) -> i64 {
+    input
         .lines()
         .filter_map(|line| {
             line.trim()
@@ -31,54 +45,60 @@ pub fn parse_lrc(input: &str) -> Vec<TimedLine> {
                 .ok()
         })
         .next_back()
-        .unwrap_or(0);
-    let mut entries = Vec::new();
-    for line in input.lines() {
-        let mut rest = line.trim();
-        let mut stamps = Vec::new();
-        while let Some(tagged) = rest.strip_prefix('[') {
-            let Some((tag, tail)) = tagged.split_once(']') else {
-                break;
-            };
-            let timestamp = (|| {
-                let (minutes, seconds) = tag.split_once(':')?;
-                let minutes = minutes.parse::<u32>().ok()?;
-                let seconds = seconds.parse::<f64>().ok()?;
-                if !(0.0..60.0).contains(&seconds) {
-                    return None;
-                }
-                Some((f64::from(minutes) * 60.0 + seconds) * 1000.0)
-            })();
-            if let Some(ms) = timestamp {
-                stamps.push(ms);
-            }
-            rest = tail;
+        .unwrap_or(0)
+}
+
+fn parse_lrc_line(line: &str, offset: i64) -> Vec<TimedLine> {
+    let mut rest = line.trim();
+    let mut stamps = Vec::new();
+    while let Some(tagged) = rest.strip_prefix('[') {
+        let Some((tag, tail)) = tagged.split_once(']') else {
+            break;
+        };
+        if let Some(ms) = parse_timestamp(tag) {
+            stamps.push(ms);
         }
-        for ms in stamps {
-            entries.push(TimedLine {
-                at: std::time::Duration::from_secs_f64(((ms + offset as f64) / 1000.0).max(0.0)),
-                text: rest.trim().to_owned(),
-            });
-        }
+        rest = tail;
     }
-    entries.sort_by_key(|line| line.at);
+    let text = rest.trim().to_owned();
+    stamps
+        .into_iter()
+        .map(|ms| TimedLine {
+            at: std::time::Duration::from_secs_f64(((ms + offset as f64) / 1000.0).max(0.0)),
+            text: text.clone(),
+        })
+        .collect()
+}
+
+fn parse_timestamp(tag: &str) -> Option<f64> {
+    let (minutes, seconds) = tag.split_once(':')?;
+    let minutes = minutes.parse::<u32>().ok()?;
+    let seconds = seconds.parse::<f64>().ok()?;
+    (0.0..60.0)
+        .contains(&seconds)
+        .then_some((f64::from(minutes) * 60.0 + seconds) * 1000.0)
+}
+
+fn merge_simultaneous_lines(entries: Vec<TimedLine>) -> Vec<TimedLine> {
     let mut lines: Vec<TimedLine> = Vec::new();
     for entry in entries {
         if let Some(last) = lines.last_mut().filter(|last| last.at == entry.at) {
-            if !entry.text.is_empty() {
-                if !last.text.is_empty() {
-                    last.text.push('\n');
-                }
-                last.text.push_str(&entry.text);
-            }
+            append_line_text(&mut last.text, &entry.text);
         } else {
             lines.push(entry);
         }
     }
-    if !lines.iter().any(|line| !line.text.is_empty()) {
-        lines.clear();
-    }
     lines
+}
+
+fn append_line_text(target: &mut String, addition: &str) {
+    if addition.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(addition);
 }
 
 impl Lyrics {
@@ -129,47 +149,61 @@ pub fn sync(state: &mut State) -> Vec<Effect> {
 }
 pub fn apply(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
-        Action::LyricsDelaySet { track, seconds } => {
-            if seconds.is_finite() {
-                if seconds == 0.0 {
-                    state.lyrics.delays.remove(&track.0);
-                } else {
-                    state
-                        .lyrics
-                        .delays
-                        .insert(track.0, seconds.clamp(-30.0, 30.0));
-                }
-            }
-        }
-        Action::LyricsToggled => {
-            state.lyrics.open = !state.lyrics.open;
-            if !state.lyrics.open && state.page != super::state::Page::NowPlaying {
-                state.lyrics.request_id = state.lyrics.request_id.wrapping_add(1);
-                if matches!(state.lyrics.content, Loadable::Loading) {
-                    state.lyrics.content = Loadable::NotAsked;
-                }
-                return vec![Effect::FetchLyrics(None)];
-            }
-        }
+        Action::LyricsDelaySet { track, seconds } => apply_delay(state, track, seconds),
+        Action::LyricsToggled => return toggle_lyrics(state),
         Action::LyricsReloadRequested => state.lyrics.content = Loadable::NotAsked,
         Action::LyricsLoaded {
             request_id,
             track,
             result,
-        } => {
-            if (state.lyrics.open || state.page == super::state::Page::NowPlaying)
-                && request_id == state.lyrics.request_id
-                && state.lyrics.track.as_ref() == Some(&track)
-            {
-                state.lyrics.content = match result {
-                    Ok(lyrics) => Loadable::Loaded(lyrics),
-                    Err(error) => Loadable::Failed(error),
-                };
-            }
-        }
+        } => apply_loaded(state, request_id, track, result),
         _ => unreachable!("lyrics actions only"),
     }
     vec![]
+}
+
+fn apply_delay(state: &mut State, track: TrackId, seconds: f64) {
+    if !seconds.is_finite() {
+        return;
+    }
+    if seconds == 0.0 {
+        state.lyrics.delays.remove(&track.0);
+    } else {
+        state
+            .lyrics
+            .delays
+            .insert(track.0, seconds.clamp(-30.0, 30.0));
+    }
+}
+
+fn toggle_lyrics(state: &mut State) -> Vec<Effect> {
+    state.lyrics.open = !state.lyrics.open;
+    if state.lyrics.open || state.page == super::state::Page::NowPlaying {
+        return vec![];
+    }
+    state.lyrics.request_id = state.lyrics.request_id.wrapping_add(1);
+    if matches!(state.lyrics.content, Loadable::Loading) {
+        state.lyrics.content = Loadable::NotAsked;
+    }
+    vec![Effect::FetchLyrics(None)]
+}
+
+fn apply_loaded(
+    state: &mut State,
+    request_id: u64,
+    track: TrackId,
+    result: Result<Option<Lyrics>, String>,
+) {
+    let is_open = state.lyrics.open || state.page == super::state::Page::NowPlaying;
+    let is_current =
+        request_id == state.lyrics.request_id && state.lyrics.track.as_ref() == Some(&track);
+    if !is_open || !is_current {
+        return;
+    }
+    state.lyrics.content = match result {
+        Ok(lyrics) => Loadable::Loaded(lyrics),
+        Err(error) => Loadable::Failed(error),
+    };
 }
 
 #[cfg(test)]

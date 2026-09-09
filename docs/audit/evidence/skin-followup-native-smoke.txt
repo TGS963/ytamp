@@ -1,3 +1,0 @@
-PASS: native player / EQ / playlist / shade / return cycle 1
-PASS: native player / EQ / playlist / shade / return cycle 2
-PASS: native player / EQ / playlist / shade / return cycle 3

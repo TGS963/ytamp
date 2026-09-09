@@ -1,5 +1,10 @@
 # Implementation queue
 
+Current work: [approved refactor](plans/refactor-2026-09-09.md) complete.
+See [verification](audit/2026-09-09-refactor.md) and the [system map](map/CLAUDE.md).
+
+The sequences below retain the feature history.
+
 User-authorized sequence (2026-09-08). Complete and verify each before starting the next.
 
 - [x] Queue editing: shared ordering, multi-selection, Delete, drag/drop, context menus; native checks in both interfaces.

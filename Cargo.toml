@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
 description = "YouTube Music, native and fast. A client with no browser engine."
-repository = "https://github.com/suvojit-0x55aa/ytamp"
+repository = "https://github.com/TGS963/ytamp"
 
 [dependencies]
 bytes = "1.12.1"
@@ -15,7 +15,7 @@ egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["image", "http"] }
 env_logger = "0.11.11"
 flate2 = "1"
-image = { version = "*", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 fastrand = "2.5.0"
 log = "0.4.34"
 reqwest = "0.13.4"

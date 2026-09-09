@@ -212,37 +212,7 @@ fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>)
             );
             let compact = ui.ctx().content_rect().height() < 700.;
             let footer_height = if compact { 48. } else { 150. };
-            if ui.available_height() > footer_height + 100. {
-                ui.add_space(16.);
-                ui.label(theme.secondary_label(TextRole::Caption, "YOUR PLAYLISTS"));
-                ui.add_space(8.);
-                if let Some(playlists) = state.library.playlists.loaded() {
-                    egui::ScrollArea::vertical()
-                        .id_salt("sidebar-playlists")
-                        .max_height((ui.available_height() - footer_height - 12.).max(0.))
-                        .show(ui, |ui| {
-                            for playlist in playlists.iter().take(8) {
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width(), 30.],
-                                        components::quiet(
-                                            theme.secondary_label(
-                                                TextRole::Caption,
-                                                &playlist.title,
-                                            ),
-                                        )
-                                        .right_text("")
-                                        .truncate(),
-                                    )
-                                    .on_hover_text(&playlist.title)
-                                    .clicked()
-                                {
-                                    out.push(Action::PlaylistOpened(playlist.id.clone()));
-                                }
-                            }
-                        });
-                }
-            }
+            sidebar_playlists(ui, state, theme, out, footer_height);
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.add_space(10.);
                 if compact {
@@ -292,6 +262,43 @@ fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>)
                 ui.separator();
             });
         });
+}
+
+fn sidebar_playlists(
+    ui: &mut Ui,
+    state: &State,
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+    footer_height: f32,
+) {
+    if ui.available_height() > footer_height + 100. {
+        ui.add_space(16.);
+        ui.label(theme.secondary_label(TextRole::Caption, "YOUR PLAYLISTS"));
+        ui.add_space(8.);
+        if let Some(playlists) = state.library.playlists.loaded() {
+            egui::ScrollArea::vertical()
+                .id_salt("sidebar-playlists")
+                .max_height((ui.available_height() - footer_height - 12.).max(0.))
+                .show(ui, |ui| {
+                    for playlist in playlists.iter().take(8) {
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 30.],
+                                components::quiet(
+                                    theme.secondary_label(TextRole::Caption, &playlist.title),
+                                )
+                                .right_text("")
+                                .truncate(),
+                            )
+                            .on_hover_text(&playlist.title)
+                            .clicked()
+                        {
+                            out.push(Action::PlaylistOpened(playlist.id.clone()));
+                        }
+                    }
+                });
+        }
+    }
 }
 
 fn is_library_page(page: &Page) -> bool {

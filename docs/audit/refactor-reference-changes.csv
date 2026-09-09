@@ -1,0 +1,12 @@
+original,destination,result
+src/core/update.rs,src/core/update/,moved behind existing Rust module path
+src/runtime.rs,src/runtime/,moved behind existing Rust module path
+src/api/official.rs,src/api/official/,moved behind existing Rust module path
+src/api/discovery.rs,src/api/discovery/,moved behind existing Rust module path
+src/ui/components.rs,src/ui/components/,moved behind existing Rust module path
+src/ui/rows.rs,src/ui/rows/,moved behind existing Rust module path
+src/ui/discovery.rs,src/ui/discovery/,moved behind existing Rust module path
+rustypipe_cache.json,OS cache via src/rustypipe_client.rs,archived; incoming links or runtime writers updated
+rustypipe_reports/2026-09-01_14-12-10_ERR.json,OS cache via src/rustypipe_client.rs,archived; incoming links or runtime writers updated
+docs/audit/evidence/menubar-winamp.txt,docs/audit/evidence/menubar-main.txt,archived; incoming links or runtime writers updated
+docs/audit/evidence/skin-followup-native-smoke.txt,docs/audit/evidence/eq-native-smoke.txt,archived; incoming links or runtime writers updated

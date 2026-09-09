@@ -109,7 +109,7 @@ fn choose(
 }
 pub async fn fetch(track: &TrackId) -> Result<Option<Lyrics>, String> {
     static CLIENT: OnceLock<RustyPipe> = OnceLock::new();
-    let query = CLIENT.get_or_init(RustyPipe::new).query();
+    let query = CLIENT.get_or_init(crate::rustypipe_client::new).query();
     let details = query
         .music_details(&track.0)
         .await

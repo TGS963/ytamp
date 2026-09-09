@@ -113,73 +113,107 @@ pub struct Discovery {
     pub collection: Feed,
 }
 pub fn apply(state: &mut super::state::State, action: Action) -> Vec<Effect> {
-    use super::state::Page;
     match action {
-        Action::DiscoveryOpened(entry) => {
-            if entry.target == Target::home() {
-                state.history.push(state.page.clone());
-                state.page = Page::Home;
-                return if state.discovery.home.loaded {
-                    vec![]
-                } else {
-                    state.discovery.home.request(Target::home(), false)
-                };
-            }
-            let page = Page::Discovery(Box::new(entry.clone()));
-            if state.page == page {
-                return vec![];
-            }
-            state.history.push(state.page.clone());
-            state.page = page;
-            state.discovery.collection.request(entry.target, false)
-        }
-        Action::DiscoveryRequested { more } => match &state.page {
-            Page::Discovery(entry) => state
-                .discovery
-                .collection
-                .request(entry.target.clone(), more),
-            _ => state.discovery.home.request(Target::home(), more),
-        },
+        Action::DiscoveryOpened(entry) => open_entry(state, entry),
+        Action::DiscoveryRequested { more } => request_page(state, more),
         Action::DiscoveryLoaded {
             request_id,
             target,
             result,
-        } => {
-            let feed = if target == Target::home() {
-                &mut state.discovery.home
-            } else {
-                &mut state.discovery.collection
-            };
-            let accepted = result.is_ok()
-                && feed.loading
-                && feed.request_id == request_id
-                && feed.target.as_ref() == Some(&target);
-            let prefetch_more = result.is_ok()
-                && feed.loading
-                && feed.request_id == request_id
-                && feed.target.as_ref() == Some(&target)
-                && !feed.appending;
-            feed.apply(request_id, &target, result);
-            let mut effects = if accepted && target == Target::home() {
-                vec![Effect::SaveLibraryCache(
-                    super::effect::LibraryCacheWrite::Discovery(feed.page.clone()),
-                )]
-            } else {
-                vec![]
-            };
-            if prefetch_more
-                && target == Target::home()
-                && feed.loaded
-                && !feed.loading
-                && feed.page.shelves.len() < 6
-                && feed.page.continuation.is_some()
-            {
-                effects.extend(feed.request(Target::home(), true));
-            }
-            effects
-        }
+        } => apply_loaded(state, request_id, target, result),
         _ => unreachable!(),
     }
+}
+
+fn open_entry(state: &mut super::state::State, entry: super::discovery::Entry) -> Vec<Effect> {
+    if entry.target == Target::home() {
+        return open_home(state);
+    }
+    open_collection(state, entry)
+}
+
+fn open_collection(state: &mut super::state::State, entry: super::discovery::Entry) -> Vec<Effect> {
+    use super::state::Page;
+    let page = Page::Discovery(Box::new(entry.clone()));
+    if state.page == page {
+        return vec![];
+    }
+    state.history.push(state.page.clone());
+    state.page = page;
+    state.discovery.collection.request(entry.target, false)
+}
+
+fn open_home(state: &mut super::state::State) -> Vec<Effect> {
+    use super::state::Page;
+    state.history.push(state.page.clone());
+    state.page = Page::Home;
+    if state.discovery.home.loaded {
+        vec![]
+    } else {
+        state.discovery.home.request(Target::home(), false)
+    }
+}
+
+fn request_page(state: &mut super::state::State, more: bool) -> Vec<Effect> {
+    use super::state::Page;
+    match &state.page {
+        Page::Discovery(entry) => state
+            .discovery
+            .collection
+            .request(entry.target.clone(), more),
+        _ => state.discovery.home.request(Target::home(), more),
+    }
+}
+
+fn apply_loaded(
+    state: &mut super::state::State,
+    request_id: u64,
+    target: Target,
+    result: Result<FeedPage, String>,
+) -> Vec<Effect> {
+    let feed = select_feed(state, &target);
+    let accepted = accepts_result(feed, request_id, &target, result.is_ok());
+    let prefetch_more = accepted && !feed.appending;
+    feed.apply(request_id, &target, result);
+    let mut effects = cache_effect(accepted, &target, feed);
+    if should_prefetch(feed, &target, prefetch_more) {
+        effects.extend(feed.request(Target::home(), true));
+    }
+    effects
+}
+
+fn select_feed<'a>(state: &'a mut super::state::State, target: &Target) -> &'a mut Feed {
+    if *target == Target::home() {
+        &mut state.discovery.home
+    } else {
+        &mut state.discovery.collection
+    }
+}
+
+fn cache_effect(accepted: bool, target: &Target, feed: &Feed) -> Vec<Effect> {
+    if accepted && *target == Target::home() {
+        vec![Effect::SaveLibraryCache(
+            super::effect::LibraryCacheWrite::Discovery(feed.page.clone()),
+        )]
+    } else {
+        vec![]
+    }
+}
+
+fn accepts_result(feed: &Feed, request_id: u64, target: &Target, succeeded: bool) -> bool {
+    succeeded
+        && feed.loading
+        && feed.request_id == request_id
+        && feed.target.as_ref() == Some(target)
+}
+
+fn should_prefetch(feed: &Feed, target: &Target, requested: bool) -> bool {
+    requested
+        && *target == Target::home()
+        && feed.loaded
+        && !feed.loading
+        && feed.page.shelves.len() < 6
+        && feed.page.continuation.is_some()
 }
 
 #[cfg(test)]

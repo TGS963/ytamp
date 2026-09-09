@@ -257,23 +257,7 @@ impl Queue {
             .as_mut()
             .and_then(|order| (!order.is_empty()).then(|| order.remove(0)))
         {
-            let (track, source) = match entry {
-                UpcomingEntry::User(i) => {
-                    let track = self.user_queue.remove(i)?;
-                    self.adjust_removed(entry);
-                    (track, TrackSource::UserQueue)
-                }
-                UpcomingEntry::Context(i) => {
-                    let next = self.cursor? + 1;
-                    let position = self.order.iter().position(|v| *v == i)?;
-                    if position < next {
-                        return None;
-                    }
-                    self.order[next..=position].rotate_right(1);
-                    self.cursor = Some(next);
-                    (self.context.get(i)?.clone(), TrackSource::Context)
-                }
-            };
+            let (track, source) = self.take_manual_entry(entry)?;
             self.current = Some(CurrentTrack {
                 track: track.clone(),
                 source,
@@ -296,6 +280,27 @@ impl Queue {
             source: TrackSource::Context,
         });
         Some(track)
+    }
+
+    fn take_manual_entry(&mut self, entry: UpcomingEntry) -> Option<(Track, TrackSource)> {
+        let selected = match entry {
+            UpcomingEntry::User(i) => {
+                let track = self.user_queue.remove(i)?;
+                self.adjust_removed(entry);
+                (track, TrackSource::UserQueue)
+            }
+            UpcomingEntry::Context(i) => {
+                let next = self.cursor? + 1;
+                let position = self.order.iter().position(|v| *v == i)?;
+                if position < next {
+                    return None;
+                }
+                self.order[next..=position].rotate_right(1);
+                self.cursor = Some(next);
+                (self.context.get(i)?.clone(), TrackSource::Context)
+            }
+        };
+        Some(selected)
     }
 
     /// The track end signal. Returns the track to load next, or `None`

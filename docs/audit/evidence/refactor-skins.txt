@@ -1,0 +1,21 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.57s
+     Running `target/debug/examples/skin_compat_probe '/Users/suvojit/Library/Application Support/ytamp/skins/AmigaPPC-dark.wsz' '/Users/suvojit/Library/Application Support/ytamp/skins/Green-Dimension-V2.wsz' '/Users/suvojit/Library/Application Support/ytamp/skins/MacOSXAqua1-5.wsz' '/Users/suvojit/Library/Application Support/ytamp/skins/TopazAmp1-2.wsz' '/Users/suvojit/Library/Application Support/ytamp/skins/ZaxonRemake1-0.wsz' '/Users/suvojit/Library/Application Support/ytamp/skins/base-2.91.wsz'`
+PASS AmigaPPC-dark at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS AmigaPPC-dark at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS AmigaPPC-dark at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS Green-Dimension-V2 at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS Green-Dimension-V2 at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS Green-Dimension-V2 at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS MacOSXAqua1-5 at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS MacOSXAqua1-5 at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS MacOSXAqua1-5 at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS TopazAmp1-2 at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS TopazAmp1-2 at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS TopazAmp1-2 at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS ZaxonRemake1-0 at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS ZaxonRemake1-0 at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS ZaxonRemake1-0 at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS base-2.91 at 1x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS base-2.91 at 2x: EQ, ten bands, preamp, balance, masks, playlist, shade/close
+PASS base-2.91 at 4x: EQ, ten bands, preamp, balance, masks, playlist, shade/close

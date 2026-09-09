@@ -49,6 +49,14 @@ impl Editor {
         }
     }
     pub fn row(&mut self, ui: &Ui, response: &Response, index: usize, out: &mut Vec<Action>) {
+        self.select_row(ui, response, index);
+        if response.double_clicked() {
+            out.push(Action::QueueJumped(index));
+        }
+        self.drag_row(ui, response, index, out);
+    }
+
+    fn select_row(&mut self, ui: &Ui, response: &Response, index: usize) {
         if response.clicked() {
             self.select(index, ui.input(|i| i.modifiers));
         }
@@ -61,9 +69,9 @@ impl Editor {
             response.request_focus();
             self.focus = Some(response.id);
         }
-        if response.double_clicked() {
-            out.push(Action::QueueJumped(index));
-        }
+    }
+
+    fn drag_row(&mut self, ui: &Ui, response: &Response, index: usize, out: &mut Vec<Action>) {
         response.dnd_set_drag_payload(DragSelection {
             selected: self.selected.iter().copied().collect(),
             snapshot: self.snapshot.clone(),

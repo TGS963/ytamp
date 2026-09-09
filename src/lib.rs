@@ -21,3 +21,5 @@ pub mod ui;
 pub mod vis;
 
 pub mod menu_bar;
+
+mod rustypipe_client;

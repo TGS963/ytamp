@@ -18,7 +18,17 @@ pub(super) fn show(
     out: &mut Vec<Action>,
     focused: bool,
 ) {
+    draw_panel(view, shell.equalizer_shade, focused);
+    title_controls(view, shell);
     if shell.equalizer_shade {
+        shaded_controls(view, state, out);
+        return;
+    }
+    full_controls(view, state, out);
+}
+
+fn draw_panel(view: &mut View, shaded: bool, focused: bool) {
+    if shaded {
         view.sprite_at(
             if focused {
                 sprites::EQ_SHADE_BAR_ACTIVE
@@ -40,7 +50,9 @@ pub(super) fn show(
             0,
         );
     }
-    // Register the drag region first, so title-bar buttons take priority.
+}
+
+fn title_controls(view: &mut View, shell: &mut WinampShell) {
     let title = view.interact(layout::EQ_TITLE_BAR, "eq-title", Sense::click_and_drag());
     if title.drag_started() {
         view.ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
@@ -75,84 +87,148 @@ pub(super) fn show(
     {
         shell.equalizer_open = false;
     }
-    if shell.equalizer_shade {
-        let (_, event) = view.slider(
-            layout::EQ_SHADE_VOLUME,
-            "eq-shade-volume",
-            layout::EQ_SHADE_THUMB,
-        );
-        if let super::SliderEvent::Dragging(v) | super::SliderEvent::Committed(v) = event {
-            out.push(Action::VolumeSet(v));
-        }
-        let x = layout::EQ_SHADE_VOLUME.x
-            + (state.playback.volume
-                * (layout::EQ_SHADE_VOLUME.width - layout::EQ_SHADE_THUMB) as f32)
-                .round() as u32;
-        let volume_thumb = if state.playback.volume < 0.33 {
-            sprites::EQ_SHADE_VOLUME_THUMB_LOW
-        } else if state.playback.volume > 0.66 {
-            sprites::EQ_SHADE_VOLUME_THUMB_HIGH
-        } else {
-            sprites::EQ_SHADE_VOLUME_THUMB_MIDDLE
-        };
-        view.sprite_at(volume_thumb, x, layout::EQ_SHADE_VOLUME.y);
-        let (response, event) = view.slider(
-            layout::EQ_SHADE_BALANCE,
-            "eq-shade-balance",
-            layout::EQ_SHADE_THUMB,
-        );
-        let mut fraction = super::slider_fraction(event, (state.playback.balance + 1.) / 2.);
-        if response.double_clicked() {
-            fraction = 0.5;
-            out.push(Action::BalanceSet(0.));
-        } else if let Some(value) = super::slider_active_value(event) {
-            out.push(Action::BalanceSet(value * 2. - 1.));
-        }
-        let value = fraction * 2. - 1.;
-        let thumb = if value < -0.33 {
-            sprites::EQ_SHADE_BALANCE_THUMB_LEFT
-        } else if value > 0.33 {
-            sprites::EQ_SHADE_BALANCE_THUMB_RIGHT
-        } else {
-            sprites::EQ_SHADE_BALANCE_THUMB_MIDDLE
-        };
-        view.sprite_at(
-            thumb,
-            layout::EQ_SHADE_BALANCE.x
-                + (fraction * (layout::EQ_SHADE_BALANCE.width - layout::EQ_SHADE_THUMB) as f32)
-                    .round() as u32,
-            layout::EQ_SHADE_BALANCE.y,
-        );
-        response.on_hover_text(crate::ui::equalizer::balance_label(value));
-        return;
+}
+
+fn shaded_controls(view: &mut View, state: &State, out: &mut Vec<Action>) {
+    shaded_volume(view, state, out);
+    shaded_balance(view, state, out);
+}
+
+fn shaded_volume(view: &mut View, state: &State, out: &mut Vec<Action>) {
+    let (_, event) = view.slider(
+        layout::EQ_SHADE_VOLUME,
+        "eq-shade-volume",
+        layout::EQ_SHADE_THUMB,
+    );
+    if let super::SliderEvent::Dragging(value) | super::SliderEvent::Committed(value) = event {
+        out.push(Action::VolumeSet(value));
     }
+    let x = layout::EQ_SHADE_VOLUME.x
+        + (state.playback.volume * (layout::EQ_SHADE_VOLUME.width - layout::EQ_SHADE_THUMB) as f32)
+            .round() as u32;
+    view.sprite_at(
+        shaded_volume_thumb(state.playback.volume),
+        x,
+        layout::EQ_SHADE_VOLUME.y,
+    );
+}
+
+fn shaded_volume_thumb(volume: f32) -> crate::skin::Sprite {
+    if volume < 0.33 {
+        sprites::EQ_SHADE_VOLUME_THUMB_LOW
+    } else if volume > 0.66 {
+        sprites::EQ_SHADE_VOLUME_THUMB_HIGH
+    } else {
+        sprites::EQ_SHADE_VOLUME_THUMB_MIDDLE
+    }
+}
+
+fn shaded_balance(view: &mut View, state: &State, out: &mut Vec<Action>) {
+    let (response, event) = view.slider(
+        layout::EQ_SHADE_BALANCE,
+        "eq-shade-balance",
+        layout::EQ_SHADE_THUMB,
+    );
+    let fraction = shade_balance_fraction(&response, event, state.playback.balance, out);
+    let value = fraction * 2. - 1.;
+    view.sprite_at(
+        shaded_balance_thumb(value),
+        layout::EQ_SHADE_BALANCE.x
+            + (fraction * (layout::EQ_SHADE_BALANCE.width - layout::EQ_SHADE_THUMB) as f32).round()
+                as u32,
+        layout::EQ_SHADE_BALANCE.y,
+    );
+    response.on_hover_text(crate::ui::equalizer::balance_label(value));
+}
+
+fn shade_balance_fraction(
+    response: &egui::Response,
+    event: super::SliderEvent,
+    resting: f32,
+    out: &mut Vec<Action>,
+) -> f32 {
+    if response.double_clicked() {
+        out.push(Action::BalanceSet(0.));
+        return 0.5;
+    }
+    let fraction = super::slider_fraction(event, (resting + 1.) / 2.);
+    if let Some(value) = super::slider_active_value(event) {
+        out.push(Action::BalanceSet(value * 2. - 1.));
+    }
+    fraction
+}
+
+fn shaded_balance_thumb(value: f32) -> crate::skin::Sprite {
+    if value < -0.33 {
+        sprites::EQ_SHADE_BALANCE_THUMB_LEFT
+    } else if value > 0.33 {
+        sprites::EQ_SHADE_BALANCE_THUMB_RIGHT
+    } else {
+        sprites::EQ_SHADE_BALANCE_THUMB_MIDDLE
+    }
+}
+
+fn full_controls(view: &mut View, state: &State, out: &mut Vec<Action>) {
     let mut p = state.equalizer.parameters;
-    let (normal, pressed) = if p.enabled {
-        (sprites::EQ_ON_ON, sprites::EQ_ON_ON_PRESSED)
-    } else {
-        (sprites::EQ_ON_OFF, sprites::EQ_ON_OFF_PRESSED)
-    };
-    if view
-        .button(layout::EQ_ON, normal, pressed, "eq-enabled")
-        .on_hover_text("Enable or bypass equalizer")
-        .clicked()
-    {
-        p.enabled = !p.enabled;
+    toggle_buttons(view, &mut p);
+    presets_menu(view, state, out);
+    let readout = sliders(view, &mut p);
+    graph(view, p, sample_rate(state));
+    draw_readout(view, readout);
+    if p != state.equalizer.parameters {
+        out.push(Action::EqualizerChanged(p));
     }
-    let (normal, pressed) = if p.auto_headroom {
-        (sprites::EQ_AUTO_ON, sprites::EQ_AUTO_ON_PRESSED)
-    } else {
-        (sprites::EQ_AUTO_OFF, sprites::EQ_AUTO_OFF_PRESSED)
-    };
-    if view
-        .button(layout::EQ_AUTO, normal, pressed, "eq-auto")
-        .on_hover_text(
-            "Automatic headroom: reduce gain by the strongest boost. Peak protection stays active.",
-        )
-        .clicked()
-    {
-        p.auto_headroom = !p.auto_headroom;
+}
+
+fn toggle_buttons(view: &mut View, parameters: &mut crate::core::equalizer::Parameters) {
+    if toggle_button(
+        view,
+        layout::EQ_ON,
+        parameters.enabled,
+        ToggleSprites {
+            on: (sprites::EQ_ON_ON, sprites::EQ_ON_ON_PRESSED),
+            off: (sprites::EQ_ON_OFF, sprites::EQ_ON_OFF_PRESSED),
+        },
+        "eq-enabled",
+        "Enable or bypass equalizer",
+    ) {
+        parameters.enabled = !parameters.enabled;
     }
+    if toggle_button(
+        view,
+        layout::EQ_AUTO,
+        parameters.auto_headroom,
+        ToggleSprites {
+            on: (sprites::EQ_AUTO_ON, sprites::EQ_AUTO_ON_PRESSED),
+            off: (sprites::EQ_AUTO_OFF, sprites::EQ_AUTO_OFF_PRESSED),
+        },
+        "eq-auto",
+        "Automatic headroom: reduce gain by the strongest boost. Peak protection stays active.",
+    ) {
+        parameters.auto_headroom = !parameters.auto_headroom;
+    }
+}
+
+struct ToggleSprites {
+    on: (crate::skin::Sprite, crate::skin::Sprite),
+    off: (crate::skin::Sprite, crate::skin::Sprite),
+}
+
+fn toggle_button(
+    view: &mut View,
+    area: Area,
+    enabled: bool,
+    sprites: ToggleSprites,
+    id: &str,
+    tooltip: &str,
+) -> bool {
+    let (normal, pressed) = if enabled { sprites.on } else { sprites.off };
+    view.button(area, normal, pressed, id)
+        .on_hover_text(tooltip)
+        .clicked()
+}
+
+fn presets_menu(view: &mut View, state: &State, out: &mut Vec<Action>) {
     let response = view.button(
         layout::EQ_PRESETS_BUTTON,
         sprites::EQ_PRESETS,
@@ -164,67 +240,77 @@ pub(super) fn show(
         view.skin,
         view.unit,
         |ui| {
-            ui.menu_button("Actual EQ values", |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(220.)
-                    .show(ui, |ui| {
-                        ui.label("Range: ±12 dB");
-                        ui.label(format!(
-                            "Preamp: {:+.1} dB",
-                            state.equalizer.parameters.preamp_db
-                        ));
-                        for (label, gain) in LABELS.iter().zip(state.equalizer.parameters.bands_db)
-                        {
-                            ui.label(format!("{label}: {gain:+.1} dB"));
-                        }
-                    });
-            });
-            if ui.button("Reset to Flat").clicked() {
-                out.push(Action::EqualizerChanged(
-                    crate::core::equalizer::Parameters {
-                        preamp_db: 0.,
-                        bands_db: [0.; 10],
-                        ..state.equalizer.parameters
-                    },
-                ));
-                ui.close();
-            }
+            preset_values(ui, state);
+            reset_button(ui, state, out);
             crate::ui::equalizer::presets(ui, state, out);
         },
     );
+}
+
+fn preset_values(ui: &mut egui::Ui, state: &State) {
+    ui.menu_button("Actual EQ values", |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(220.)
+            .show(ui, |ui| {
+                ui.label("Range: ±12 dB");
+                ui.label(format!(
+                    "Preamp: {:+.1} dB",
+                    state.equalizer.parameters.preamp_db
+                ));
+                for (label, gain) in LABELS.iter().zip(state.equalizer.parameters.bands_db) {
+                    ui.label(format!("{label}: {gain:+.1} dB"));
+                }
+            });
+    });
+}
+
+fn reset_button(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
+    if ui.button("Reset to Flat").clicked() {
+        out.push(Action::EqualizerChanged(
+            crate::core::equalizer::Parameters {
+                preamp_db: 0.,
+                bands_db: [0.; 10],
+                ..state.equalizer.parameters
+            },
+        ));
+        ui.close();
+    }
+}
+
+fn sliders(view: &mut View, parameters: &mut crate::core::equalizer::Parameters) -> Option<String> {
     let mut readout = slider(
         view,
         layout::EQ_PREAMP,
         "eq-preamp",
         "Preamp",
-        &mut p.preamp_db,
+        &mut parameters.preamp_db,
     );
-    for (i, label) in LABELS.iter().enumerate() {
+    for (index, label) in LABELS.iter().enumerate() {
         readout = slider(
             view,
-            layout::eq_band(i),
-            &format!("eq-band-{i}"),
+            layout::eq_band(index),
+            &format!("eq-band-{index}"),
             label,
-            &mut p.bands_db[i],
+            &mut parameters.bands_db[index],
         )
         .or(readout);
     }
-    graph(
-        view,
-        p,
-        if state.playback.sample_rate == 0 {
-            44100
-        } else {
-            state.playback.sample_rate
-        },
-    );
+    readout
+}
+
+fn sample_rate(state: &State) -> u32 {
+    if state.playback.sample_rate == 0 {
+        44100
+    } else {
+        state.playback.sample_rate
+    }
+}
+
+fn draw_readout(view: &mut View, readout: Option<String>) {
     if let Some(readout) = readout {
         view.sprite(sprites::EQ_GRAPH, layout::EQ_GRAPH);
         view.text(&readout, Area::new(88, 19, 109, 6));
         view.text("RANGE +/-12 DB", Area::new(88, 27, 109, 6));
-    }
-    if p != state.equalizer.parameters {
-        out.push(Action::EqualizerChanged(p));
     }
 }
 

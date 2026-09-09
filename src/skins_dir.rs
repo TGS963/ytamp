@@ -68,6 +68,36 @@ pub fn skin_path(name: &str) -> Option<PathBuf> {
 /// file and a rename, so a listing of the folder never sees a half
 /// written skin.
 pub fn install(path: &Path) -> Result<String, String> {
+    validate_skin_install(path)?;
+    let stem = install_stem(path)?;
+    let name = install_name(path)?;
+    let dir = install_directory()?;
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    copy_skin(path, &dir, name)?;
+    Ok(stem)
+}
+
+fn install_stem(path: &Path) -> Result<String, String> {
+    skin_stem(path)
+        .ok_or_else(|| "not a Winamp skin: it needs a .wsz or .zip extension".to_string())
+}
+
+fn install_name(path: &Path) -> Result<&std::ffi::OsStr, String> {
+    path.file_name()
+        .ok_or_else(|| "the dropped file has no name".to_string())
+}
+
+fn install_directory() -> Result<PathBuf, String> {
+    skins_dir().ok_or_else(|| "no config directory on this system".to_string())
+}
+
+fn copy_skin(path: &Path, dir: &Path, name: &std::ffi::OsStr) -> Result<(), String> {
+    let temp = dir.join(format!(".{}.tmp", fastrand::u64(..)));
+    fs::copy(path, &temp).map_err(|error| error.to_string())?;
+    fs::rename(&temp, dir.join(name)).map_err(|error| error.to_string())
+}
+
+fn validate_skin_install(path: &Path) -> Result<(), String> {
     if path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("wal"))
@@ -76,19 +106,9 @@ pub fn install(path: &Path) -> Result<String, String> {
             "Modern .wal skins are not supported. Choose a classic Winamp .wsz skin.".into(),
         );
     }
-    // Validate before installing: a rejected archive must not replace a working skin.
-    crate::skin::Skin::load(path).map_err(|error| format!("Could not install skin: {error}"))?;
-    let stem = skin_stem(path)
-        .ok_or_else(|| "not a Winamp skin: it needs a .wsz or .zip extension".to_string())?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| "the dropped file has no name".to_string())?;
-    let dir = skins_dir().ok_or_else(|| "no config directory on this system".to_string())?;
-    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let temp = dir.join(format!(".{}.tmp", fastrand::u64(..)));
-    fs::copy(path, &temp).map_err(|error| error.to_string())?;
-    fs::rename(&temp, dir.join(name)).map_err(|error| error.to_string())?;
-    Ok(stem)
+    crate::skin::Skin::load(path)
+        .map(|_| ())
+        .map_err(|error| format!("Could not install skin: {error}"))
 }
 
 /// Opens the skins folder in the desktop's file manager. Silently

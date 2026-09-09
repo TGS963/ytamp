@@ -1,0 +1,514 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.90s
+     Running unittests src/lib.rs (target/debug/deps/ytamp-ab4790a7045978fd)
+
+running 392 tests
+test api::convert::tests::a_song_with_no_album_carries_no_album_id ... ok
+test api::convert::tests::a_song_album_splits_into_a_name_and_an_id ... ok
+test api::discovery::entries::tests::malformed_browse_target_does_not_fall_back_to_watch ... ok
+test api::convert::tests::durations_parse_from_colon_notation ... ok
+test api::official::library::tests::a_topic_channel_title_loses_its_suffix ... ok
+test api::official::library::tests::iso8601_durations_parse ... ok
+test api::convert::tests::album_art_and_id_land_on_every_track ... ok
+test api::discovery::renderers::tests::radio_skips_matching_cards_without_tracks_to_find_the_queue ... ok
+test api::official::library::tests::item_id_of_reads_the_id_field ... ok
+test api::official::library::tests::playlist_body_is_private_with_the_given_title ... ok
+test api::history::tests::parses_tiles_once_without_collecting_menu_duplicates_and_accepts_continuations ... ok
+test api::official::library::tests::playlist_item_body_names_the_playlist_and_the_video ... ok
+test api::official::library::tests::playlist_items_without_a_channel_are_stubs ... ok
+test api::discovery::renderers::tests::radio_uses_the_requested_queue_not_unrelated_recommendations ... ok
+test api::discovery::entries::tests::parses_playlist_video_rows_including_duration_and_artist ... ok
+test api::discovery::renderers::tests::collection_tracks_and_unfamiliar_layout ... ok
+test api::official::library::tests::rate_path_carries_the_video_id_and_rating ... ok
+test api::official::library::tests::playlists_parse_from_the_official_shape ... ok
+test api::lyrics::tests::rejects_different_recordings_and_accepts_duration_tolerance ... ok
+test api::lyrics::tests::provider_failure_preserves_plain_lyrics_and_timing_wins_when_available ... ok
+test api::discovery::renderers::tests::preserves_mixed_shelf_order_and_navigation_without_menu_duplicates ... ok
+test api::search_parse::tests::playlist_search_normalizes_ids_and_skips_non_playlist_rows ... ok
+test api::tests::browse_ids_get_the_vl_prefix_once ... ok
+test core::discovery::controls_tests::cache_is_immediate_but_never_overwrites_a_fresh_home_response ... ok
+test core::discovery::controls_tests::radio_rejects_late_results_after_another_playback_choice ... ok
+test core::discovery::controls_tests::now_playing_lyrics_restart_after_leaving_during_load ... ok
+test core::discovery::prefetch_tests::home_prefetch_is_bounded_and_a_late_result_does_not_start_another_request ... ok
+test core::discovery::tests::changed_collections_reject_late_results_and_pagination_retries ... ok
+test core::discovery::tests::sign_out_discards_discovery_results ... ok
+test core::equalizer::tests::named_presets_replace_without_duplicates_and_are_bounded ... ok
+test core::listening_history::tests::sign_out_discards_pending_account_history ... ok
+test core::listening_history::tests::stale_results_and_repeated_cursors_are_ignored_and_failures_retry ... ok
+test core::discovery::controls_tests::play_next_preserves_manually_reordered_queue ... ok
+test core::lyrics::tests::lyrics_follow_track_ignore_old_results_and_cancel_when_closed ... ok
+test core::lyrics::tests::retry_and_sign_out_invalidate_requests ... ok
+test core::lyrics::timing_tests::follows_audio_boundaries_pause_backward_seek_and_user_delay ... ok
+test core::model::tests::a_bare_name_artist_ref_round_trips_as_the_struct_shape ... ok
+test core::equalizer::tests::old_sessions_default_to_bypass_and_invalid_gains_are_sanitized ... ok
+test core::equalizer::tests::settings_and_presets_restore_and_reach_the_player ... ok
+test core::lyrics::timing_tests::parses_offsets_repeated_tags_and_simultaneous_lines ... ok
+test core::model::tests::an_artist_ref_deserializes_from_a_bare_name ... ok
+test core::model::tests::track_artist_names_join_with_a_comma ... ok
+test core::queue::tests::clear_user_queue_drops_only_the_queued_tracks ... ok
+test core::model::tests::an_artist_ref_round_trips_through_json ... ok
+test core::model::tests::an_artist_ref_deserializes_from_the_struct_shape ... ok
+test core::queue::tests::contains_finds_a_track_already_in_the_context ... ok
+test core::queue::tests::extend_context_appends_tracks_after_the_context_end ... ok
+test core::queue::tests::extend_context_lets_next_reach_the_new_tracks ... ok
+test core::queue::tests::invalid_jump_keeps_explicit_queue ... ok
+test core::queue::tests::edits_after_reordering_keep_indices_and_current_intact ... ok
+test core::queue::tests::jump_to_reaches_a_context_track_and_clears_the_user_queue ... ok
+test core::queue::tests::jump_to_reaches_a_queued_track_and_drops_the_ones_before_it ... ok
+test core::queue::tests::jump_to_rejects_an_index_past_the_end ... ok
+test core::queue::tests::next_plays_the_user_queue_before_the_context ... ok
+test core::queue::tests::next_walks_the_context_and_stops_at_the_end ... ok
+test core::queue::tests::on_track_end_stops_in_repeat_off_at_the_context_end ... ok
+test core::queue::tests::peek_next_in_repeat_one_is_the_current_track ... ok
+test core::queue::tests::peek_next_is_none_at_the_context_end_in_repeat_off ... ok
+test core::queue::tests::manual_order_preserves_sources_duplicates_repeat_and_restart ... ok
+test core::queue::tests::peek_next_prefers_the_user_queue ... ok
+test core::queue::tests::peek_next_reads_the_context_without_advancing ... ok
+test core::queue::tests::play_context_rejects_an_out_of_range_start ... ok
+test core::queue::tests::play_context_starts_at_the_given_track ... ok
+test core::queue::tests::previous_preserves_pending_manual_edits ... ok
+test core::queue::tests::previous_returns_to_the_context_after_a_user_queue_track ... ok
+test core::queue::tests::previous_steps_back_and_stays_at_the_start ... ok
+test core::queue::tests::removing_upcoming_entries_preserves_current_and_repeat_order ... ok
+test core::queue::tests::repeat_all_wraps_at_the_end ... ok
+test core::queue::tests::repeat_one_replays_on_track_end_but_not_on_next ... ok
+test core::queue::tests::upcoming_lists_the_user_queue_then_the_context ... ok
+test core::queue::tests::shuffle_keeps_the_current_track_first ... ok
+test core::session::tests::a_session_survives_the_json_round_trip ... ok
+test core::session::tests::decoded_duration_survives_restart_and_old_sessions_remain_readable ... ok
+test core::session::tests::balance_restores_reaches_player_and_old_sessions_default_to_center ... ok
+test core::session::tests::lyric_delays_survive_restart_and_reset_with_old_session_compatibility ... ok
+test core::sign_in::recovery_tests::a_connection_retry_preserves_login_queue_and_position_and_rejects_stale_success ... ok
+test core::sign_in::recovery_tests::active_session_expiry_keeps_browse_and_library_state ... ok
+test core::sign_in::recovery_tests::revoked_access_and_connection_failure_have_different_recovery ... ok
+test core::sign_in::tests::transport_failures_do_not_request_new_credentials ... ok
+test core::update::tests::a_confirmed_add_appends_the_row_to_the_open_playlist ... ok
+test core::update::tests::a_confirmed_add_is_ignored_once_the_user_left_the_playlist ... ok
+test core::update::tests::a_covers_result_updates_the_slot_and_saves_the_cache ... ok
+test core::update::tests::a_failed_album_load_sets_failed ... ok
+test core::update::tests::a_dropped_skin_file_is_installed ... ok
+test core::update::tests::a_created_playlist_is_inserted_at_the_front_and_cached ... ok
+test core::update::tests::a_failed_artist_page_from_a_link_falls_back_to_search ... ok
+test core::update::tests::a_failed_add_reverts_the_count_and_posts_a_notice ... ok
+test core::update::tests::a_failed_artist_page_without_a_link_name_shows_the_failure ... ok
+test core::update::tests::a_failed_create_posts_a_notice ... ok
+test core::update::tests::a_failed_like_refetches_without_doubling_the_liked_list ... ok
+test core::update::tests::a_failed_liked_write_posts_a_notice_and_refetches_liked ... ok
+test core::update::tests::a_failed_playlist_write_refetches_its_tracks_and_the_playlists ... ok
+test core::update::tests::a_failed_load_without_cached_data_shows_the_failure ... ok
+test core::update::tests::a_failed_radio_stops_playback_with_a_notice ... ok
+test core::update::tests::a_failed_refresh_keeps_the_cached_library_and_posts_a_notice ... ok
+test core::update::tests::a_finished_liked_stream_writes_the_full_list_to_the_cache ... ok
+test core::update::tests::a_fresh_playlists_load_asks_for_covers_it_still_lacks ... ok
+test core::update::tests::a_liked_page_on_a_loading_slot_shows_at_once_and_marks_loading_more ... ok
+test core::update::tests::a_later_liked_page_appends_to_the_visible_list ... ok
+test core::update::tests::a_mid_stream_failure_keeps_the_pages_already_shown ... ok
+test core::update::tests::a_late_previous_account_result_cannot_change_a_new_account ... ok
+test core::update::tests::a_partial_liked_page_never_writes_the_cache ... ok
+test core::update::tests::a_playlist_cache_hit_fills_the_loading_page ... ok
+test core::update::tests::a_radio_result_after_a_new_context_is_ignored ... ok
+test core::update::tests::a_radio_result_appends_dedups_and_loads_the_first_new_track ... ok
+test core::update::tests::a_radio_result_for_a_different_request_is_ignored ... ok
+test core::update::tests::a_refresh_keeps_a_custom_cover_the_fresh_load_no_longer_carries ... ok
+test core::update::tests::a_restored_session_resumes_at_the_old_position ... ok
+test core::update::tests::a_stale_artist_result_is_ignored ... ok
+test core::update::tests::a_stale_playlist_cache_hit_is_ignored_after_leaving_the_page ... ok
+test core::update::tests::a_stale_playlist_page_is_ignored_after_leaving_the_playlist ... ok
+test core::update::tests::a_successful_write_does_nothing ... ok
+test core::update::tests::a_track_start_at_the_queue_end_cancels_preparation ... ok
+test core::update::tests::a_track_start_prefetches_the_next_track ... ok
+test core::update::tests::adding_a_track_raises_the_count_and_requests_the_write ... ok
+test core::update::tests::an_artist_link_with_an_id_opens_the_page_and_keeps_the_name ... ok
+test core::update::tests::an_artist_link_without_an_id_searches_the_name ... ok
+test core::update::tests::an_artist_search_request_fills_and_submits_the_search ... ok
+test core::update::tests::an_empty_covers_result_changes_nothing ... ok
+test core::update::tests::an_empty_playlist_title_is_ignored ... ok
+test core::update::tests::an_empty_radio_result_stops_playback ... ok
+test core::update::tests::an_installed_skin_is_worn_and_a_failure_is_a_notice ... ok
+test core::update::tests::autoplay_toggled_flips_the_flag ... ok
+test core::update::tests::back_onto_a_loaded_album_does_not_refetch ... ok
+test core::update::tests::back_pops_and_restores_a_playlist ... ok
+test core::update::tests::back_with_an_empty_history_does_nothing ... ok
+test core::update::tests::cache_data_fills_a_loading_slot ... ok
+test core::update::tests::choosing_a_skin_records_it_and_loads_it ... ok
+test core::update::tests::creating_a_playlist_closes_the_dialog_and_requests_it ... ok
+test core::update::tests::creating_a_playlist_with_a_remembered_track_chains_the_add ... ok
+test core::update::tests::cycling_repeat_to_one_prefetches_the_current_track ... ok
+test core::update::tests::decide_next_step_fetches_radio_at_the_end_with_autoplay_on ... ok
+test core::update::tests::decide_next_step_loads_when_a_next_track_exists ... ok
+test core::update::tests::decide_next_step_stops_at_the_end_with_autoplay_off ... ok
+test core::update::tests::decide_next_step_stops_with_no_current_track ... ok
+test core::update::tests::dismissing_the_dialog_closes_it ... ok
+test core::update::tests::fresh_liked_songs_are_saved_to_the_cache ... ok
+test core::update::tests::fresh_network_data_is_never_overwritten_by_a_late_cache_hit ... ok
+test core::update::tests::home_shuffle_uses_liked_music_and_leaves_empty_library_alone ... ok
+test core::update::tests::hovering_a_track_prefetches_it ... ok
+test core::update::tests::hovering_the_current_track_prefetches_nothing ... ok
+test core::update::tests::hovering_the_same_track_twice_prefetches_only_once ... ok
+test core::update::tests::ids_without_cover_names_only_the_generic_ones ... ok
+test core::update::tests::is_liked_reads_membership_from_a_loaded_or_refreshing_slot ... ok
+test core::update::tests::liked_pages_on_a_refreshing_slot_buffer_and_swap_in_together ... ok
+test core::update::tests::liking_an_unliked_track_inserts_it_and_rates_it ... ok
+test core::update::tests::merge_covers_keeps_a_prior_custom_cover_a_fresh_load_lacks ... ok
+test core::update::tests::merge_covers_leaves_a_playlist_with_no_prior_entry_alone ... ok
+test core::update::tests::next_pressed_at_the_queue_end_also_fetches_a_radio ... ok
+test core::update::tests::merge_covers_leaves_a_fresh_custom_cover_alone ... ok
+test core::update::tests::opening_an_artist_pushes_history_and_fetches ... ok
+test core::update::tests::opening_a_playlist_reads_the_cache_and_the_network ... ok
+test core::update::tests::opening_the_same_artist_twice_is_a_no_op ... ok
+test core::update::tests::opening_the_dialog_remembers_the_track_that_asked_for_it ... ok
+test core::update::tests::opening_the_winamp_window_loads_the_worn_skin_and_lists_the_folder ... ok
+test core::update::tests::pause_during_loading_survives_the_decoder_ready_event ... ok
+test core::update::tests::playing_a_context_loads_the_start_track ... ok
+test core::update::tests::previous_restarts_after_the_threshold ... ok
+test core::update::tests::queue_cleared_drops_only_the_explicitly_queued_tracks ... ok
+test core::update::tests::queue_jumped_loads_the_track_at_that_upcoming_index ... ok
+test core::update::tests::queue_jumped_past_the_end_preserves_playback ... ok
+test core::update::tests::queuing_a_track_prefetches_it_ahead_of_the_context ... ok
+test core::update::tests::repeated_recovery_keeps_position_until_the_stream_starts ... ok
+test core::update::tests::reopening_the_library_does_not_refetch ... ok
+test core::update::tests::removing_a_track_drops_the_row_lowers_the_count_and_requests_the_write ... ok
+test core::update::tests::repeated_refresh_does_not_start_overlapping_page_streams ... ok
+test core::update::tests::retry_then_skip_does_not_seek_the_next_song_to_the_failed_position ... ok
+test core::update::tests::sidebar_navigation_clears_history ... ok
+test core::update::tests::sign_in_success_opens_home_and_fetches_library ... ok
+test core::update::tests::sign_out_resets_browse_and_history ... ok
+test core::update::tests::seek_during_loading_keeps_last_target_and_pause_until_ready ... ok
+test core::update::tests::stale_playlist_results_are_ignored ... ok
+test core::update::tests::sign_out_stops_playback_and_keeps_the_volume ... ok
+test core::update::tests::the_autoplay_setting_survives_a_session_round_trip ... ok
+test core::update::tests::the_dwell_decision_is_pure ... ok
+test core::update::tests::the_skin_list_refresh_replaces_the_available_skins ... ok
+test core::update::tests::toggling_shuffle_prefetches_the_new_next_track ... ok
+test core::update::tests::track_end_at_the_queue_end_fetches_a_radio_with_autoplay_on ... ok
+test core::update::tests::track_end_at_the_queue_end_stops_the_player_with_autoplay_off ... ok
+test core::update::tests::track_started_carries_the_stream_shape ... ok
+test core::update::tests::unliking_a_liked_track_removes_it_and_rates_it ... ok
+test core::update::tests::typing_in_the_dialog_updates_its_draft ... ok
+test core::update::tests::volume_is_clamped ... ok
+test core::update::tests::winamp_on_top_toggled_flips_on_top ... ok
+test core::update::tests::winamp_scale_set_clamps_to_the_allowed_range ... ok
+test core::update::tests::winamp_toggled_flips_open ... ok
+test core::update::tests::with_count_delta_never_drops_below_zero ... ok
+test core::update::tests::with_count_delta_raises_and_lowers_a_known_count_only ... ok
+test core::update::tests::without_item_drops_only_the_matching_row ... ok
+test fonts::tests::bundled_fallback_covers_japanese_titles ... ok
+test library_cache::tests::a_missing_file_is_a_miss ... ok
+test library_cache::tests::playlist_tracks_path_rejects_an_unsafe_id ... ok
+test library_cache::tests::valid_playlist_id_accepts_the_usual_shape ... ok
+test library_cache::tests::valid_playlist_id_rejects_path_separators_and_dots ... ok
+test core::update::tests::rapid_skips_ignore_every_kind_of_late_player_report ... ok
+test player::equalizer::tests::balance_leaves_mono_and_multichannel_unchanged_and_sanitizes_values ... ok
+test api::search_parse::tests::a_row_with_no_title_is_skipped_without_losing_the_others ... ok
+test library_cache::tests::corrupt_json_is_a_silent_miss_and_deletes_the_file ... ok
+test library_cache::tests::a_version_mismatch_is_a_miss_and_deletes_the_file ... ok
+test library_cache::tests::write_then_read_round_trips_a_snapshot ... ok
+test api::search_parse::tests::every_coldplay_song_row_carries_a_video_id ... ok
+test api::search_parse::tests::a_known_coldplay_song_row_parses_in_full ... ok
+test api::search_parse::tests::harry_potter_audiobook_albums_parse_with_no_typed_album_type ... ok
+test api::search_parse::tests::the_video_row_in_a_songs_shelf_still_parses ... ok
+test player::equalizer::tests::seeking_clears_filter_history_and_preserves_source_metadata ... ok
+test player::source::tests::a_complete_wav_buffer_reports_ready_then_yields_its_samples_then_ends ... ok
+test player::equalizer::tests::live_preamp_and_bypass_ramp_without_an_abrupt_step ... ok
+test player::source::tests::a_seek_rejects_late_old_samples_and_old_end_of_stream ... ok
+test player::equalizer::tests::low_rate_streams_skip_bands_above_nyquist ... ok
+test player::source::tests::a_tap_batch_downmixes_and_fills_after_sixty_four_frames ... ok
+test player::source::tests::decide_next_sample_ends_the_track_after_the_last_sample ... ok
+test player::source::tests::decide_next_sample_ends_the_track_when_the_decoder_is_gone ... ok
+test player::source::tests::decide_next_sample_passes_through_a_ready_sample ... ok
+test player::source::tests::a_seek_on_a_complete_buffer_lands_at_the_target ... ok
+test player::source::tests::decide_next_sample_plays_silence_while_the_decoder_is_alive ... ok
+test player::source::tests::played_duration_counts_samples_of_every_channel ... ok
+test player::source::tests::samples_at_inverts_played_duration ... ok
+test player::source::tests::a_stalled_buffer_yields_silence_then_resumes_once_the_writer_finishes ... ok
+test player::equalizer::tests::balance_routes_stereo_independently_of_eq_and_ramps_live_changes ... ok
+test skin::config::tests::a_region_cuts_the_corners_and_a_full_one_is_no_region ... ok
+test skin::config::tests::a_typical_pledit_file_is_read ... ok
+test skin::config::tests::comments_missing_hashes_and_long_values_are_tolerated ... ok
+test skin::config::tests::keys_outside_the_text_section_are_ignored ... ok
+test skin::config::tests::lines_without_three_numbers_are_skipped_not_misread ... ok
+test api::search_parse::tests::coldplay_albums_and_artists_parse ... ok
+test skin::config::tests::many_small_polygons_add_up_and_short_ones_are_dropped ... ok
+test skin::config::tests::vis_colours_survive_comments_tabs_and_trailing_commas ... ok
+test skin::font::tests::a_glyph_is_a_five_by_six_cell_of_the_text_sheet ... ok
+test skin::font::tests::accents_fold_and_the_unknown_becomes_a_question_mark ... ok
+test skin::font::tests::digits_and_punctuation_are_on_the_second_row ... ok
+test skin::font::tests::lower_case_shares_the_capitals ... ok
+test skin::layout::tests::every_control_fits_inside_the_window ... ok
+test skin::layout::tests::hit_testing_uses_half_open_edges ... ok
+test skin::layout::tests::the_transport_row_is_contiguous ... ok
+test skin::sprites::tests::a_sprite_beyond_a_short_sheet_is_clipped_or_dropped ... ok
+test skin::sprites::tests::every_sheet_has_a_distinct_file_name ... ok
+test skin::sprites::tests::indexed_sprites_stay_inside_their_sheets ... ok
+test skin::tests::a_file_that_is_not_there_is_an_io_error ... ok
+test skin::tests::a_real_bmp_decodes_whatever_it_is_called ... ok
+test skin::tests::a_sheet_too_small_for_a_sprite_gives_what_it_has ... ok
+test skin::tests::a_folder_of_bitmaps_is_a_skin_too ... ok
+test skin::tests::an_unreadable_bitmap_is_skipped_not_fatal ... ok
+test skin::tests::files_are_found_regardless_of_case_or_folder ... ok
+test skin::tests::sample_skins_load ... ok
+test player::equalizer::tests::rapid_band_changes_remain_finite_and_settle_to_the_final_response ... ok
+test player::equalizer::tests::bypass_and_enabled_flat_preserve_the_samples ... ok
+test player::equalizer::tests::preamp_and_automatic_headroom_change_measured_gain ... ok
+test skin::tests::what_is_not_a_classic_skin_is_named_as_such ... ok
+test skin::zip::tests::a_trailing_comment_does_not_hide_the_end_record ... ok
+test skin::zip::tests::an_archive_without_its_end_record_is_not_one ... ok
+test skin::zip::tests::an_entry_that_runs_past_the_end_is_reported_rather_than_read_past ... ok
+test skin::zip::tests::encrypted_and_exotic_entries_are_refused_by_name ... ok
+test skin::zip::tests::folder_entries_and_backslashes_resolve_to_a_file_name ... ok
+test skin::zip::tests::something_else_is_not_an_archive ... ok
+test skin::zip::tests::stored_and_deflated_entries_round_trip ... ok
+test skin::tests::the_last_copy_of_a_repeated_file_wins ... ok
+test skins_dir::tests::install_copies_the_file_atomically_and_returns_its_stem ... ok
+test skins_dir::tests::skin_stem_accepts_wsz_and_zip_case_insensitively ... ok
+test stream::buffer::tests::a_dropped_attempt_handle_does_not_fail_the_buffer ... ok
+test stream::buffer::tests::a_dropped_writer_that_never_finished_fails_the_buffer ... ok
+test skins_dir::tests::invalid_and_modern_archives_are_rejected_before_installing ... ok
+test stream::buffer::tests::decide_read_reports_blocked_at_the_end_of_a_filling_buffer ... ok
+test stream::buffer::tests::decide_read_reports_eof_at_the_end_of_a_complete_buffer ... ok
+test stream::buffer::tests::decide_read_reports_ready_when_bytes_cover_the_position ... ok
+test skin::tests::missing_sheets_come_from_the_built_in_skin_or_a_stand_in ... ok
+test skin::tests::the_built_in_skin_holds_every_sprite_whole ... ok
+test stream::buffer::tests::read_on_a_complete_buffer_past_the_end_returns_zero ... ok
+test stream::buffer::tests::read_on_a_failed_buffer_returns_an_error ... ok
+test stream::buffer::tests::seek_from_end_needs_a_known_length ... ok
+test stream::buffer::tests::seek_from_end_uses_the_expected_length ... ok
+test skin::tests::the_built_in_skin_is_not_blank ... ok
+test stream::disk_cache::tests::select_evictions_keeps_everything_under_cap ... ok
+test stream::disk_cache::tests::select_evictions_removes_enough_to_clear_the_cap ... ok
+test stream::disk_cache::tests::select_evictions_removes_oldest_first_until_under_cap ... ok
+test stream::disk_cache::tests::track_path_builds_file_name_from_id ... ok
+test stream::disk_cache::tests::track_path_rejects_invalid_id ... ok
+test stream::disk_cache::tests::valid_video_id_accepts_eleven_id_characters ... ok
+test stream::disk_cache::tests::valid_video_id_rejects_wrong_shape ... ok
+test stream::disk_cache::tests::enforce_cache_cap_deletes_oldest_file_over_cap ... ok
+test stream::rustypipe::tests::conclude_finishes_the_writer_on_success ... ok
+test stream::rustypipe::tests::conclude_leaves_the_buffer_untouched_when_nothing_was_delivered ... ok
+test stream::rustypipe::tests::the_highest_bitrate_decodable_stream_wins ... ok
+test stream::rustypipe::tests::undecodable_only_lists_resolve_to_nothing ... ok
+test stream::tests::a_breaker_stays_closed_under_the_threshold ... ok
+test stream::tests::a_breaker_trips_on_the_third_failure ... ok
+test stream::disk_cache::tests::write_then_read_round_trips_bytes ... ok
+test stream::tests::a_tripped_breaker_reports_no_further_trips ... ok
+test stream::buffer::tests::a_seek_past_downloaded_bytes_then_blocks_until_they_arrive ... ok
+test stream::tests::join_failures_names_every_source_when_some_ran ... ok
+test stream::tests::join_failures_reports_an_all_tripped_chain ... ok
+test stream::buffer::tests::read_blocks_then_returns_bytes_a_writer_pushes_on_another_thread ... ok
+test player::equalizer::tests::channel_histories_are_independent_and_peak_protection_is_linked ... ok
+test stream::visitor_data::tests::parse_visitor_data_finds_a_present_token ... ok
+test stream::visitor_data::tests::parse_visitor_data_reports_none_for_an_empty_value ... ok
+test stream::visitor_data::tests::parse_visitor_data_reports_none_for_an_unclosed_field ... ok
+test stream::visitor_data::tests::parse_visitor_data_reports_none_when_absent ... ok
+test stream::ytdlp::tests::a_clean_exit_finishes_the_writer ... ok
+test stream::ytdlp::tests::a_failure_after_delivery_fails_the_writer ... ok
+test stream::ytdlp::tests::a_failure_reports_the_first_stderr_line ... ok
+test stream::ytdlp::tests::a_read_error_is_reported_over_a_missing_stderr_line ... ok
+test stream::ytdlp::tests::command_args_places_the_url_last ... ok
+test stream::ytdlp::tests::empty_stderr_falls_back_to_a_generic_message ... ok
+test stream::ytdlp::tests::extractor_args_appends_the_fast_path_fields_with_a_token ... ok
+test stream::ytdlp::tests::extractor_args_omits_fast_path_fields_without_a_token ... ok
+test thumbnails::tests::a_google_user_content_s_suffix_is_replaced ... ok
+test thumbnails::tests::a_google_user_content_w_h_suffix_is_replaced ... ok
+test thumbnails::tests::a_video_thumbnail_url_uses_the_video_id ... ok
+test thumbnails::tests::a_ytimg_url_gets_the_still_matching_the_pixel_size ... ok
+test thumbnails::tests::an_empty_thumbnail_list_has_no_preferred_url ... ok
+test thumbnails::tests::an_unrecognized_host_url_is_unchanged ... ok
+test thumbnails::tests::the_largest_thumbnail_wins_when_none_reach_300 ... ok
+test thumbnails::tests::the_smallest_thumbnail_at_or_above_300_wins ... ok
+test thumbnails::tests::track_art_falls_back_to_the_video_thumbnail ... ok
+test thumbnails::tests::track_art_prefers_a_listed_thumbnail_over_the_fallback ... ok
+test ui::components::tests::section_reserves_action_space_and_keyboard_activation_keeps_layout ... ok
+test ui::components::tests::slider_trail_stops_at_solid_thumb_and_keyboard_changes_value ... ok
+test ui::discovery::tests::layout_tests::offscreen_artwork_shelf_keeps_its_height ... ok
+test stream::tests::the_chain_stops_after_a_source_delivers_then_fails ... ok
+test stream::tests::the_chain_falls_to_the_next_source_before_the_first_chunk ... ok
+test stream::tests::a_source_trips_only_when_a_later_source_delivers ... ok
+test stream::tests::a_video_no_source_delivers_never_trips_a_breaker ... ok
+test stream::download::recovery_tests::expired_url_and_dropped_connection_can_retry_with_fresh_bytes ... ok
+test ui::queue_edit::tests::shift_ranges_command_toggle_and_stale_selection ... ok
+test ui::rows::tests::a_hover_at_the_delay_emits ... ok
+test ui::rows::tests::a_hover_past_the_delay_still_emits ... ok
+test ui::rows::tests::a_hover_short_of_the_delay_waits_for_the_remainder ... ok
+test ui::rows::tests::a_hover_with_no_timer_starts_one ... ok
+test ui::rows::tests::a_row_that_emitted_stays_quiet_until_the_pointer_leaves ... ok
+test ui::rows::tests::an_unhovered_row_resets_even_with_no_timer_running ... ok
+test ui::rows::tests::durations_format_as_minutes_and_seconds ... ok
+test ui::player_bar::polish_tests::seek_and_volume_paint_a_visible_progress_trail ... ok
+test ui::home::tests::resume_uses_existing_session_and_home_renders_at_minimum_width ... ok
+test ui::home::tests::section_links_do_not_move_content_when_hovered ... ok
+test ui::rows::tests::the_pointer_leaving_a_timed_row_resets_it ... ok
+test ui::player_bar::polish_tests::bottom_controls_use_available_width_without_overflow ... ok
+test ui::rows::tests::menu_tests::a_right_click_anywhere_on_a_row_opens_and_keeps_the_menu ... ok
+test ui::winamp::pixel_text::tests::a_line_is_ink_on_nothing_at_the_skin_size ... ok
+test ui::winamp::pixel_text::tests::an_uncovered_character_falls_back_to_the_question_mark_glyph ... ok
+test ui::winamp::pixel_text::tests::japanese_titles_use_real_fallback_glyphs ... ok
+test ui::winamp::pixel_text::tests::width_grows_with_the_text ... ok
+test ui::winamp::playlist::tests::a_notch_scrolls_three_rows_as_windows_did ... ok
+test ui::winamp::playlist::tests::duration_text_reads_none_as_zero ... ok
+test ui::winamp::playlist::tests::grip_resized_steps_only_once_a_whole_step_accumulates ... ok
+test ui::winamp::playlist::tests::position_over_duration_reads_minutes_and_seconds ... ok
+test ui::winamp::playlist::tests::rows_are_numbered_the_way_winamp_did ... ok
+test ui::winamp::playlist::tests::scroll_fraction_is_the_offset_over_the_scrollable_rows ... ok
+test ui::winamp::playlist::tests::the_list_holds_whole_rows_only ... ok
+test ui::winamp::playlist::tests::the_visible_range_never_runs_past_the_end ... ok
+test ui::winamp::playlist::tests::toggle_selection_replaces_unless_adding ... ok
+test ui::winamp::playlist::tests::total_upcoming_duration_skips_the_current_track ... ok
+test ui::winamp::tests::a_committed_slider_value_wins_over_the_resting_position ... ok
+test ui::winamp::tests::a_dropped_file_is_a_skin_by_its_extension_only ... ok
+test ui::winamp::tests::a_long_marquee_window_shows_thirty_one_characters_and_wraps_through_the_gap ... ok
+test ui::winamp::tests::a_shell_shows_a_fresh_notice_for_a_few_seconds_then_steps_aside ... ok
+test ui::winamp::tests::a_shells_marquee_restarts_from_the_top_when_the_text_changes ... ok
+test ui::winamp::tests::a_short_marquee_window_is_the_text_itself ... ok
+test ui::winamp::tests::bar_row_color_starts_at_the_third_palette_entry ... ok
+test ui::winamp::tests::bars_sit_four_skin_pixels_apart ... ok
+test ui::winamp::tests::marquee_steps_advance_every_220_milliseconds ... ok
+test ui::winamp::tests::scale_sets_points_per_skin_pixel_for_the_display ... ok
+test ui::winamp::tests::scope_color_starts_at_the_nineteenth_palette_entry ... ok
+test ui::winamp::tests::scope_span_connects_a_row_to_the_one_before_it ... ok
+test ui::winamp::tests::seek_fraction_is_the_position_over_the_duration ... ok
+test ui::winamp::tests::shade_time_text_shows_a_minus_only_when_counting_down ... ok
+test ui::winamp::tests::short_text_never_scrolls_and_long_text_does ... ok
+test ui::winamp::tests::shown_duration_counts_down_when_remaining_is_asked_for ... ok
+test ui::winamp::tests::the_blink_alternates_every_half_second ... ok
+test ui::winamp::tests::the_marquee_priority_puts_a_live_slider_before_the_track_line ... ok
+test ui::winamp::tests::the_stack_grows_by_the_open_playlists_height ... ok
+test ui::winamp::tests::the_track_line_names_the_song_and_its_length_or_the_app_with_nothing_playing ... ok
+test ui::winamp::tests::the_vis_mode_cycles_spectrum_scope_off_and_back ... ok
+test ui::winamp::tests::the_window_shrinks_to_the_title_bar_while_shaded ... ok
+test ui::winamp::tests::time_digits_split_minutes_and_seconds_and_cap_at_ninety_nine ... ok
+test ui::winamp::view::tests::mask_rectangles_preserve_every_visible_pixel_without_overlap ... ok
+test ui::winamp::view::tests::transparent_part_of_a_control_does_not_accept_clicks ... ok
+test vis::tests::a_fast_frame_rate_leaves_the_bars_alone ... ok
+test vis::tests::a_sine_lights_the_expected_bar ... ok
+test ui::sign_in::tests::saved_account_recovery_fits_and_retry_is_clickable_at_all_window_sizes ... ok
+test vis::tests::the_scope_rests_at_the_middle_and_stays_inside ... ok
+test vis::tests::the_spectrum_peaks_where_the_tone_is ... ok
+test vis::tests::the_tap_keeps_at_most_its_capacity ... ok
+test vis::tests::the_tap_mixes_stereo_down_and_pads_with_silence ... ok
+test vis::tests::window_from_reads_the_count_ending_lag_before_the_newest ... ok
+test ui::winamp::equalizer::tests::skinned_controls_open_enable_adjust_and_close_without_disabling ... ok
+test vis::tests::bars_rise_with_sound_and_fall_without ... ok
+test ui::rows::tests::menu_tests::a_right_click_on_a_playlist_page_row_opens_the_menu ... ok
+test ui::now_playing::tests::listening_page_fits_small_and_large_windows ... ok
+test ui::rows::tests::menu_tests::a_same_frame_press_and_release_opens_the_menu_too ... ok
+test player::tests::late_decoder_completion_after_stop_cannot_restart_or_report ... ok
+test player::tests::failed_stream_reports_failure_with_playback_generation_exactly_once ... ok
+test player::tests::prepared_decoder_handoff_outputs_audio_and_canceled_completion_is_ignored ... ok
+test player::equalizer::tests::each_band_has_the_requested_center_gain_at_common_sample_rates ... ok
+
+test result: ok. 392 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.89s
+
+     Running unittests src/main.rs (target/debug/deps/ytamp-17d38da56db1bbb8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/audit_probe.rs (target/debug/examples/audit_probe-b2db39c2656c9683)
+
+running 1 test
+test audited_interactions_and_async_races ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+
+     Running unittests examples/auth_probe.rs (target/debug/examples/auth_probe-fc10cc903fd443b5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/browse_probe.rs (target/debug/examples/browse_probe-79e4ea4e0272186b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/chain_probe.rs (target/debug/examples/chain_probe-7d9e673b01e2b013)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/cover_probe.rs (target/debug/examples/cover_probe-b58b0e0823137a4b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/default_skin.rs (target/debug/examples/default_skin-642f1965b3aa5e09)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/discovery_integration_probe.rs (target/debug/examples/discovery_integration_probe-d3b5312cbbef015d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/discovery_preview.rs (target/debug/examples/discovery_preview-e127361e3d609c83)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/library_dump.rs (target/debug/examples/library_dump-62cd1a9427dbb978)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/lyrics_probe.rs (target/debug/examples/lyrics_probe-5765fb386923d77f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/oauth_discovery_probe.rs (target/debug/examples/oauth_discovery_probe-20fd785852b42660)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/oauth_history_probe.rs (target/debug/examples/oauth_history_probe-7294285ab229d76b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/oauth_probe.rs (target/debug/examples/oauth_probe-26ca1f7c70f40f5a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/search_dump.rs (target/debug/examples/search_dump-739ee11398874a7c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/skin_compat_probe.rs (target/debug/examples/skin_compat_probe-f6d6c00dece52a01)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/skin_probe.rs (target/debug/examples/skin_probe-7d9df20add412f70)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/stream_probe.rs (target/debug/examples/stream_probe-e6093b839d33c221)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/write_probe.rs (target/debug/examples/write_probe-a491dfa3487a8186)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,31 +1,32 @@
 //! Read-only OAuth capability check. Prints no credentials or history entries.
 use serde_json::{Value, json};
 use std::time::Duration;
+mod probe_support;
 #[tokio::main]
 async fn main() {
-    let Some(json) = ytamp::auth::load_oauth_token() else {
-        println!("No saved OAuth token");
-        return;
+    let session = match probe_support::oauth_session().await {
+        Ok(session) => session,
+        Err(probe_support::OAuthSessionError::Missing) => {
+            println!("No saved OAuth token");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::Invalid) => {
+            println!("Invalid saved token");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::RefreshFailed) => {
+            println!("Token refresh failed or timed out");
+            return;
+        }
+        Err(probe_support::OAuthSessionError::MissingAccess) => return,
     };
-    let Ok(token) = serde_json::from_str::<ytmapi_rs::auth::OAuthToken>(&json) else {
-        println!("Invalid saved token");
-        return;
-    };
-    let mut yt = ytmapi_rs::YtMusic::from_auth_token(token);
-    let Ok(Ok(token)) = tokio::time::timeout(Duration::from_secs(15), yt.refresh_token()).await
-    else {
-        println!("Token refresh failed or timed out");
-        return;
-    };
-    let token = serde_json::to_value(token).unwrap();
-    let Some(access) = token.get("access_token").and_then(Value::as_str) else {
-        return;
-    };
+    let access = session.access_token;
+    let token = session.token_json;
     let http = reqwest::Client::new();
     let control = http
         .get("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[("playlistId", "LL"), ("part", "id"), ("maxResults", "1")])
-        .bearer_auth(access)
+        .bearer_auth(&access)
         .timeout(Duration::from_secs(15))
         .send()
         .await;
@@ -63,7 +64,7 @@ async fn main() {
             "Mozilla/5.0"
         };
         let result = http.post(format!("https://{host}/youtubei/v1/browse"))
-            .bearer_auth(access).header("User-Agent", ua).header("Content-Type", "application/json")
+            .bearer_auth(&access).header("User-Agent", ua).header("Content-Type", "application/json")
             .body(json!({"context":{"client":{"clientName":client,"clientVersion":version,"hl":"en","gl":"US"}},"browseId":browse}).to_string())
             .timeout(Duration::from_secs(15)).send().await;
         match result {

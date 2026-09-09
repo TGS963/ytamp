@@ -1,1 +1,5 @@
 /target
+/rustypipe_cache.json
+/rustypipe_reports/
+__pycache__/
+*.py[cod]
