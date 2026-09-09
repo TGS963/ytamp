@@ -35,8 +35,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libudev-dev pkg-config libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth xdotool dbus-x11
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libudev-dev pkg-config libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth xdotool dbus-x11
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -55,6 +56,15 @@ jobs:
         run: cargo test --locked --all-targets
       - name: Check Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Save compiled dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Start Linux application
         if: runner.os == 'Linux'
         env:

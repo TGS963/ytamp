@@ -118,7 +118,7 @@ fn read(video_id: &str) -> Option<Vec<u8>> {
 
 /// Marks `path` as freshly used by setting its modified time to now.
 fn touch(path: &Path) {
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(file) = fs::OpenOptions::new().write(true).open(path) else {
         return;
     };
     if let Err(error) = file.set_modified(SystemTime::now()) {
@@ -343,7 +343,9 @@ mod tests {
         fs::write(&new_path, vec![0u8; 10]).expect("write new");
 
         let old_time = SystemTime::now() - Duration::from_secs(60);
-        fs::File::open(&old_path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&old_path)
             .expect("open old")
             .set_modified(old_time)
             .expect("set old mtime");
@@ -355,6 +357,32 @@ mod tests {
 
         assert!(!old_path.exists());
         assert!(new_path.exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn touch_refreshes_modified_time() {
+        let dir = temp_dir("touch");
+        let path = dir.join("entry.m4a");
+        fs::write(&path, b"audio").expect("write entry");
+
+        let old_time = SystemTime::now() - Duration::from_secs(60);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open entry")
+            .set_modified(old_time)
+            .expect("set old mtime");
+
+        touch(&path);
+
+        let modified = fs::metadata(&path)
+            .expect("read entry metadata")
+            .modified()
+            .expect("read entry mtime");
+        assert!(modified > old_time);
+        assert_eq!(fs::read(&path).expect("read entry"), b"audio");
 
         fs::remove_dir_all(&dir).ok();
     }

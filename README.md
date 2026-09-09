@@ -126,7 +126,7 @@ On macOS, install the Xcode command-line tools.
 On Ubuntu 24.04, install the desktop build dependencies:
 
 ```bash
-sudo apt-get install build-essential pkg-config libasound2-dev libdbus-1-dev libudev-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev
+sudo apt-get install build-essential pkg-config libasound2-dev libdbus-1-dev libudev-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev libegl1-mesa-dev
 ```
 
 Build and run the application:
