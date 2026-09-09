@@ -138,7 +138,8 @@ cargo build --locked --release
 cargo run --locked --release
 ```
 
-Linux needs a graphical X11 or Wayland session, an OpenGL-capable driver, and an audio device for playback.
+Windows and Linux need OpenGL 2.0 or newer and an audio device for playback.
+Linux also needs a graphical X11 or Wayland session.
 The session D-Bus service enables Linux media controls. Windows media controls use the app's native window handle.
 The optional `yt-dlp` fallback must be on `PATH` on each platform.
 

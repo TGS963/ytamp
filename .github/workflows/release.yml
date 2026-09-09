@@ -70,6 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: release
+          cache-on-failure: true
       - name: Build native release binary
         if: matrix.platform != 'macos'
         run: cargo build --locked --release
@@ -90,7 +91,7 @@ jobs:
           cargo build --locked --release --target x86_64-apple-darwin
           mkdir -p dist
           lipo -create -output dist/ytamp-universal target/aarch64-apple-darwin/release/ytamp target/x86_64-apple-darwin/release/ytamp
-          lipo -verify_arch arm64 x86_64 dist/ytamp-universal
+          lipo dist/ytamp-universal -verify_arch arm64 x86_64
           lipo -info dist/ytamp-universal
           python3 scripts/package.py --platform macos --binary dist/ytamp-universal --output ${{ matrix.staging }}
           ditto -c -k --sequesterRsrc --keepParent ${{ matrix.staging }} ${{ matrix.archive }}
