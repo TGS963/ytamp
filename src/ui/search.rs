@@ -18,11 +18,20 @@ pub fn view(
     context: &RowContext,
     out: &mut Vec<Action>,
 ) {
+    super::components::page_title(ui, theme, "Search");
+    ui.label(theme.secondary_label(
+        TextRole::Body,
+        "Songs, artists, albums, and playlists from YouTube Music.",
+    ));
+    ui.add_space(16.);
     query_box(ui, state, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
     match &state.search.results {
         Loadable::NotAsked => {
-            ui.label(theme.secondary_label(TextRole::Body, "Search for songs, albums, artists."));
+            ui.label(theme.secondary_label(
+                TextRole::Body,
+                "Search for songs, albums, artists, and playlists.",
+            ));
         }
         Loadable::Loading => {
             ui.spinner();
@@ -39,7 +48,8 @@ pub fn view(
 fn query_box(ui: &mut egui::Ui, state: &State, out: &mut Vec<Action>) {
     let mut input = state.search.input.clone();
     let edit = egui::TextEdit::singleline(&mut input)
-        .hint_text("Search YouTube Music")
+        .hint_text("What do you want to listen to?")
+        .margin(egui::vec2(12., 10.))
         .desired_width(f32::INFINITY);
     let response = ui.add(edit);
     if response.changed() {
@@ -63,6 +73,7 @@ fn results_view(
             songs_section(ui, results, theme, context, out);
             albums_section(ui, results, theme, out);
             artists_section(ui, results, theme, out);
+            playlists_section(ui, results, theme, out);
         });
 }
 
@@ -141,5 +152,32 @@ fn artist_row(ui: &mut egui::Ui, artist: &Artist, theme: &dyn Theme, out: &mut V
     });
     if response.clicked() {
         out.push(Action::ArtistOpened(artist.id.clone()));
+    }
+}
+
+fn playlists_section(
+    ui: &mut egui::Ui,
+    results: &SearchResults,
+    theme: &dyn Theme,
+    out: &mut Vec<Action>,
+) {
+    if results.playlists.is_empty() {
+        return;
+    }
+    ui.add_space(theme.metric(MetricRole::GapLarge));
+    ui.label(theme.label(TextRole::Heading, "Playlists"));
+    for playlist in &results.playlists {
+        let response = rows::row_frame(ui, theme, |ui| {
+            rows::artwork(
+                ui,
+                theme,
+                playlist.thumbnail_url.as_deref(),
+                theme.metric(MetricRole::RowArtSize),
+            );
+            ui.add(egui::Label::new(theme.label(TextRole::Body, &playlist.title)).truncate());
+        });
+        if response.clicked() {
+            out.push(Action::PlaylistOpened(playlist.id.clone()));
+        }
     }
 }

@@ -1,0 +1,30 @@
+skin: MacOSXAqua1-5
+sheets:
+  main decoded (275x116)
+  cbuttons decoded (136x36)
+  titlebar decoded (344x87)
+  shufrep decoded (92x85)
+  posbar decoded (307x10)
+  volume decoded (68x433)
+  balance decoded (47x433)
+  monoster decoded (58x24)
+  playpaus decoded (42x9)
+  numbers fell back to a substitute or the built-in skin
+  nums_ex decoded (108x13)
+  text decoded (155x18)
+  pledit decoded (280x186)
+  eqmain decoded (275x315)
+  eq_ex decoded (275x56)
+pledit.txt colors:
+  normal: [0, 0, 0]
+  current: [57, 102, 160]
+  normal background: [255, 255, 255]
+  selected background: [154, 193, 234]
+  font: Lucida Grande
+viscolor.txt colors: 24
+region masks:
+  normal: false
+  shade: false
+  equalizer: false
+  equalizer shade: false
+wrote the preview to skin_probe.png

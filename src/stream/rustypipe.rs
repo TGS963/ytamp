@@ -11,6 +11,12 @@ pub struct RustyPipeSource {
     client: RustyPipe,
 }
 
+impl Default for RustyPipeSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RustyPipeSource {
     pub fn new() -> Self {
         Self {

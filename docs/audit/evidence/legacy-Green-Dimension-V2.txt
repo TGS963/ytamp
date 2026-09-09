@@ -1,0 +1,30 @@
+skin: Green-Dimension-V2
+sheets:
+  main decoded (275x116)
+  cbuttons decoded (136x36)
+  titlebar decoded (344x87)
+  shufrep decoded (92x85)
+  posbar decoded (307x10)
+  volume decoded (68x419)
+  balance decoded (47x419)
+  monoster decoded (56x24)
+  playpaus decoded (42x9)
+  numbers fell back to a substitute or the built-in skin
+  nums_ex decoded (108x13)
+  text decoded (155x18)
+  pledit decoded (280x186)
+  eqmain decoded (275x315)
+  eq_ex decoded (275x56)
+pledit.txt colors:
+  normal: [0, 150, 0]
+  current: [0, 255, 0]
+  normal background: [0, 0, 0]
+  selected background: [0, 96, 0]
+  font: Lucida Sans
+viscolor.txt colors: 24
+region masks:
+  normal: true
+  shade: true
+  equalizer: true
+  equalizer shade: true
+wrote the preview to skin_probe.png

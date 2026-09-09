@@ -39,6 +39,8 @@ pub enum AuthState {
     Verifying,
     SignedIn,
     Failed(String),
+    ConnectionFailed,
+    Expired,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -46,7 +48,12 @@ pub enum Page {
     #[default]
     SignIn,
     Search,
+    Home,
+    NowPlaying,
+    DiscoveryShelf(Box<super::discovery::Shelf>),
+    Discovery(Box<super::discovery::Entry>),
     Library,
+    ListeningHistory,
     Playlist(PlaylistId),
     Artist(ArtistId),
     Album(AlbumId),
@@ -67,11 +74,7 @@ pub enum Dialog {
 /// What the user is entering on the sign-in page.
 #[derive(Clone, Debug, Default)]
 pub struct SignInState {
-    /// The Cookie header value (the fallback path).
-    pub draft: String,
-    /// The X-Goog-AuthUser header value: which signed-in Google
-    /// account the session belongs to. Empty means account 0.
-    pub authuser_draft: String,
+    pub saved_account: bool,
     /// The user's own Google Cloud OAuth client (TV type).
     pub client_id_draft: String,
     pub client_secret_draft: String,
@@ -81,6 +84,7 @@ pub struct SignInState {
 
 #[derive(Clone, Debug, Default)]
 pub struct SearchState {
+    pub request_id: u64,
     pub input: String,
     pub results: Loadable<SearchResults>,
 }
@@ -127,11 +131,15 @@ pub enum PlayStatus {
 
 #[derive(Clone, Debug)]
 pub struct PlaybackState {
+    pub error: Option<String>,
+    pub loading: bool,
     pub queue: Queue,
     pub status: PlayStatus,
     pub position: Duration,
     pub track_duration: Option<Duration>,
     pub volume: f32,
+    /// Stereo balance: -1 left, 0 centered, +1 right.
+    pub balance: f32,
     /// Where the next started track seeks to: set when a restored
     /// session resumes mid-track.
     pub resume_position: Option<Duration>,
@@ -154,11 +162,14 @@ pub struct PlaybackState {
 impl Default for PlaybackState {
     fn default() -> Self {
         Self {
+            error: None,
+            loading: false,
             queue: Queue::default(),
             status: PlayStatus::default(),
             position: Duration::ZERO,
             track_duration: None,
             volume: 1.0,
+            balance: 0.0,
             resume_position: None,
             last_hover_prefetch: None,
             autoplay: true,
@@ -200,6 +211,14 @@ impl Default for WinampSettings {
 
 #[derive(Clone, Debug, Default)]
 pub struct State {
+    pub discovery: super::discovery::Discovery,
+    pub listening_history: super::listening_history::ListeningHistory,
+    pub skin_browser_open: bool,
+    pub lyrics: super::lyrics::LyricsState,
+    pub equalizer: super::equalizer::EqualizerSettings,
+    pub session_generation: u64,
+    pub playback_generation: u64,
+    pub playlist_request_id: u64,
     pub auth: AuthState,
     pub sign_in: SignInState,
     pub page: Page,
@@ -217,8 +236,7 @@ pub struct State {
     pub notices: Vec<String>,
     /// The modal dialog on screen, if any.
     pub dialog: Option<Dialog>,
-    /// The track a create-playlist request will add once the new
-    /// playlist comes back, carried here once the dialog that
-    /// remembered it has closed.
-    pub pending_playlist_track: Option<Track>,
+    /// Tracks to add after playlist creation, keyed by request identity
+    /// so overlapping requests retain their own intended track.
+    pub pending_playlist_tracks: std::collections::HashMap<u64, Option<Track>>,
 }

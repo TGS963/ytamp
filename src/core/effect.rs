@@ -6,29 +6,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
 use super::model::{AlbumId, ArtistId, Playlist, PlaylistId, Track, TrackId};
-
-/// What a YouTube Music session needs: the Cookie header, the
-/// X-Goog-AuthUser index that picks the account inside the session,
-/// and the other request headers the browser sent. ytmusicapi keeps
-/// and replays all copied headers, because account selection (brand
-/// accounts included) and consistency checks ride on them.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Credentials {
-    pub cookies: String,
-    #[serde(default)]
-    pub authuser: String,
-    /// Lowercased header names with their values, from the cURL paste.
-    #[serde(default)]
-    pub headers: Vec<(String, String)>,
-}
 
 /// One way to authenticate the YouTube Music session.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthMethod {
-    Browser(Credentials),
     /// A serialized ytmapi-rs OAuth token, from the device flow.
     /// It embeds the client id and secret, so it refreshes itself.
     OAuthToken(String),
@@ -38,7 +20,8 @@ pub enum AuthMethod {
 pub enum Effect {
     Api(ApiRequest),
     Player(PlayerCommand),
-    SaveCredentials(Credentials),
+    FetchLyrics(Option<(u64, TrackId)>),
+    LoadStoredAuth,
     ClearCredentials,
     /// Reads the cached playlist list and liked songs from disk.
     LoadLibraryCache,
@@ -64,6 +47,7 @@ pub enum Effect {
 /// One fresh network result to persist to the library cache.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LibraryCacheWrite {
+    Discovery(super::discovery::FeedPage),
     Playlists(Vec<Playlist>),
     Liked(Vec<Track>),
     PlaylistTracks(PlaylistId, Vec<Track>),
@@ -79,7 +63,17 @@ pub enum ApiRequest {
         client_secret: String,
     },
     Search {
+        request_id: u64,
         query: String,
+    },
+    FetchDiscovery {
+        request_id: u64,
+        target: super::discovery::Target,
+        continuation: Option<String>,
+    },
+    FetchHistory {
+        request_id: u64,
+        continuation: Option<String>,
     },
     FetchPlaylists,
     FetchLiked,
@@ -89,6 +83,11 @@ pub enum ApiRequest {
     /// A radio of songs related to a track, for autoplay at the
     /// queue end.
     FetchRadio(TrackId),
+    StartRadio {
+        request_id: u64,
+        playback_generation: u64,
+        seed: Track,
+    },
     /// The custom cover art of every playlist in the list, for a
     /// playlist whose thumbnail is not one already.
     FetchPlaylistCovers(Vec<PlaylistId>),
@@ -111,7 +110,7 @@ pub enum ApiRequest {
         item_id: String,
     },
     /// Creates a private playlist with the given title.
-    CreatePlaylist(String),
+    CreatePlaylist(u64, String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,9 +120,13 @@ pub enum PlayerCommand {
     /// at once. The engine runs this at a lower priority than an
     /// active download and skips it when the track is already cached.
     Prefetch(Track),
+    /// Prepare precisely the next track; None cancels obsolete preparation.
+    PrepareNext(Option<Track>),
     Pause,
     Resume,
     Seek(Duration),
     SetVolume(f32),
+    SetBalance(f32),
+    SetEqualizer(super::equalizer::Parameters),
     Stop,
 }

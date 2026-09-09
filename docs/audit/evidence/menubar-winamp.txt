@@ -1,0 +1,10 @@
+PASS: Play reaches player
+PASS: Pause reaches player
+PASS: Hide leaves accessible menu
+PASS: Next advances while all windows are hidden
+PASS: Pause works while hidden
+PASS: Show restores a player window
+PASS: Previous reaches player
+PASS: Lyrics opens from menu
+PASS: Lyrics closes from menu
+PASS: Quit exits cleanly

@@ -7,11 +7,12 @@
 //! and the shell, draws, and returns the actions the listener asked
 //! for, the same shape as every other view in `ui`.
 
+mod equalizer;
 mod pixel_text;
 mod playlist;
 mod view;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -84,6 +85,8 @@ pub struct WinampShell {
     shown_notice: Option<(String, f64)>,
     /// Whether the playlist window is attached below the main one.
     pub playlist_open: bool,
+    pub equalizer_open: bool,
+    pub equalizer_shade: bool,
     /// The playlist window's height in skin pixels, one of
     /// `PLAYLIST_MIN_HEIGHT` plus a multiple of `PLAYLIST_RESIZE_STEP`.
     pub playlist_height: u32,
@@ -91,9 +94,6 @@ pub struct WinampShell {
     pub playlist_shade: bool,
     /// How many rows the list has scrolled past.
     pub playlist_scroll: usize,
-    /// The selected rows, by their index in the drawn list (the
-    /// current track, then `upcoming()`).
-    playlist_selection: HashSet<usize>,
     /// A drag's leftover wheel and grip motion, carried to the next
     /// frame so a slow drag still steps once it adds up.
     playlist_wheel: f32,
@@ -122,10 +122,11 @@ impl Default for WinampShell {
             marquee_last_step: 0.0,
             shown_notice: None,
             playlist_open: false,
+            equalizer_open: false,
+            equalizer_shade: false,
             playlist_height: layout::PLAYLIST_MIN_HEIGHT,
             playlist_shade: false,
             playlist_scroll: 0,
-            playlist_selection: HashSet::new(),
             playlist_wheel: 0.0,
             playlist_resize: 0.0,
             playlist_text: pixel_text::PixelText::default(),
@@ -220,7 +221,15 @@ impl WinampShell {
             self.playlist_open,
             self.playlist_shade,
             self.playlist_height,
-        )
+        ) + if self.equalizer_open {
+            if self.equalizer_shade {
+                layout::EQ_SHADE_HEIGHT
+            } else {
+                layout::EQ_HEIGHT
+            }
+        } else {
+            0
+        }
     }
 }
 
@@ -327,7 +336,9 @@ fn is_skin_file(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("wsz") || extension.eq_ignore_ascii_case("zip")
+            extension.eq_ignore_ascii_case("wsz")
+                || extension.eq_ignore_ascii_case("zip")
+                || extension.eq_ignore_ascii_case("wal")
         })
 }
 
@@ -381,6 +392,7 @@ fn apply_on_top(ctx: &egui::Context, on_top: bool) {
 /// Draws the whole window and reads its controls, adding any action a
 /// click or a drag produced to `out`.
 pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<Action>) {
+    crate::ui::keyboard_shortcuts(ui, out);
     let ctx = ui.ctx().clone();
     let unit = unit(state.winamp.scale, ctx.pixels_per_point());
     fit_window(
@@ -393,12 +405,17 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
     let time = ctx.input(|input| input.time);
     let textures = shell.textures(&ctx);
     let skin = shell.skin.clone();
-    let below_y = window_height(shell.shade);
+    let mut below_y = window_height(shell.shade);
     let mut view = View {
         ui,
         origin,
         unit,
         skin: &skin,
+        mask: if shell.shade {
+            skin.regions.shade.as_ref()
+        } else {
+            skin.regions.normal.as_ref()
+        },
         textures: &textures,
     };
     let vis_moving = if shell.shade {
@@ -407,12 +424,33 @@ pub fn show(ui: &mut Ui, state: &State, shell: &mut WinampShell, out: &mut Vec<A
     } else {
         full_window(&mut view, &ctx, state, shell, out, focused, time)
     };
+    if shell.equalizer_open {
+        let mut below = View {
+            ui: view.ui,
+            origin: origin + egui::vec2(0., below_y as f32 * unit),
+            unit,
+            skin: &skin,
+            mask: if shell.equalizer_shade {
+                skin.regions.equalizer_shade.as_ref()
+            } else {
+                skin.regions.equalizer.as_ref()
+            },
+            textures: &textures,
+        };
+        equalizer::show(&mut below, state, shell, out, focused);
+        below_y += if shell.equalizer_shade {
+            layout::EQ_SHADE_HEIGHT
+        } else {
+            layout::EQ_HEIGHT
+        };
+    }
     if shell.playlist_open {
         let mut below = View {
             ui: view.ui,
             origin: origin + egui::vec2(0.0, below_y as f32 * unit),
             unit,
             skin: &skin,
+            mask: None,
             textures: &textures,
         };
         playlist::show(&mut below, &ctx, state, shell, out, focused);
@@ -448,7 +486,7 @@ fn full_window(
     time_display(view, state, shell, time);
     rates(view, state);
     let volume_event = volume_slider(view, state, out);
-    balance_slider(view);
+    balance_slider(view, state, out);
     let position_event = position_slider(view, state, out);
     marquee(view, state, shell, time, volume_event, position_event);
     let vis_moving = visualiser(view, state, shell);
@@ -782,7 +820,11 @@ fn marquee(
     let seek = slider_active_value(position_event)
         .filter(|_| !duration.is_zero())
         .map(|fraction| (duration.mul_f32(fraction), duration));
-    let notice = shell.current_notice(&state.notices, time);
+    let notice = state
+        .playback
+        .error
+        .clone()
+        .or_else(|| shell.current_notice(&state.notices, time));
     let track_line = track_marquee_text(state);
     let text = marquee_priority_text(
         &track_line,
@@ -840,12 +882,32 @@ fn volume_slider(view: &mut View, state: &State, out: &mut Vec<Action>) -> Slide
     event
 }
 
-/// The balance slider, always centred: ytamp's engine has no balance
-/// control, so this draws Winamp's neutral look and nothing more.
-fn balance_slider(view: &mut View) {
-    view.sprite(sprites::balance_frame(14), layout::BALANCE);
-    let thumb_x = layout::BALANCE.x + layout::BALANCE_TRAVEL / 2;
-    view.sprite_at(sprites::BALANCE_THUMB, thumb_x, layout::BALANCE.y + 1);
+/// Stereo balance, independent of EQ bypass.
+fn balance_slider(view: &mut View, state: &State, out: &mut Vec<Action>) {
+    let (response, event) = view.slider(layout::BALANCE, "balance", 14);
+    let mut fraction = slider_fraction(event, (state.playback.balance + 1.) / 2.);
+    if response.double_clicked() {
+        fraction = 0.5;
+        out.push(Action::BalanceSet(0.));
+    } else if let Some(value) = slider_active_value(event) {
+        out.push(Action::BalanceSet(value * 2. - 1.));
+    }
+    let value = fraction * 2. - 1.;
+    view.sprite(
+        sprites::balance_frame((value.abs() * 27.).round() as u32),
+        layout::BALANCE,
+    );
+    let thumb = if response.dragged() || response.is_pointer_button_down_on() {
+        sprites::BALANCE_THUMB_PRESSED
+    } else {
+        sprites::BALANCE_THUMB
+    };
+    view.sprite_at(
+        thumb,
+        layout::BALANCE.x + (fraction * layout::BALANCE_TRAVEL as f32).round() as u32,
+        layout::BALANCE.y + 1,
+    );
+    response.on_hover_text(crate::ui::equalizer::balance_label(value));
 }
 
 fn position_slider(view: &mut View, state: &State, out: &mut Vec<Action>) -> SliderEvent {
@@ -1030,11 +1092,20 @@ fn scope_span(row: u8, previous: u8) -> (u8, u8) {
     }
 }
 
-/// The EQ and PL toggles. EQ has no function yet: the equalizer is a
-/// later part of this plan. PL opens and closes the playlist window,
-/// shell state only, the same as the shade toggle.
+/// Open and close the attached equalizer and playlist panels.
 fn windows_buttons(view: &mut View, shell: &mut WinampShell) {
-    view.sprite(sprites::EQ_OFF, layout::EQ_BUTTON);
+    let (normal, pressed) = if shell.equalizer_open {
+        (sprites::EQ_ON, sprites::EQ_ON_PRESSED)
+    } else {
+        (sprites::EQ_OFF, sprites::EQ_OFF_PRESSED)
+    };
+    if view
+        .button(layout::EQ_BUTTON, normal, pressed, "equalizer")
+        .on_hover_text("Equalizer")
+        .clicked()
+    {
+        shell.equalizer_open = !shell.equalizer_open;
+    }
     let (normal, pressed) = if shell.playlist_open {
         (sprites::PLAYLIST_ON, sprites::PLAYLIST_ON_PRESSED)
     } else {
@@ -1219,8 +1290,7 @@ fn shuffle_repeat(view: &mut View, state: &State, out: &mut Vec<Action>) {
     }
 }
 
-/// The O button: the only lit lamp of Winamp's clutter strip ytamp
-/// draws, since the equalizer and visualizer have no function yet.
+/// The O button in the main window's clutter strip.
 /// Lights while held, and opens the same menu a right-click on the
 /// title bar does.
 fn clutter_bar(view: &mut View, state: &State, out: &mut Vec<Action>) {
@@ -1259,10 +1329,33 @@ fn options_menu(
         {
             out.push(action);
         }
+        if ui.button("Browse skins…").clicked() {
+            out.push(Action::SkinBrowserToggled);
+            ui.close();
+        }
         if ui.button("Open skins folder").clicked() {
             crate::skins_dir::open_folder();
         }
         ui.separator();
+        if let Some(error) = &state.playback.error {
+            ui.label(error);
+            if ui.button("Retry playback").clicked() {
+                out.push(Action::PlaybackRetryRequested);
+                ui.close();
+            }
+            ui.separator();
+        }
+        if ui.button("YouTube history").clicked() {
+            out.push(Action::NavigatedTo(
+                crate::core::state::Page::ListeningHistory,
+            ));
+            out.push(Action::WinampToggled);
+            ui.close();
+        }
+        if ui.button("Lyrics").clicked() {
+            out.push(Action::LyricsToggled);
+            ui.close();
+        }
         if ui.button("Close Winamp mode").clicked() {
             out.push(Action::WinampToggled);
         }

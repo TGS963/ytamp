@@ -114,3 +114,86 @@ fn download_error(error: reqwest::Error) -> DownloadError {
         forbidden: error.status() == Some(reqwest::StatusCode::FORBIDDEN),
     }
 }
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::stream::AudioBuffer;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        time::Duration,
+    };
+    fn server(response: &'static [u8]) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/audio", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0; 2048];
+            let _ = socket.read(&mut request);
+            socket.write_all(response).unwrap();
+        });
+        (url, handle)
+    }
+    #[tokio::test]
+    async fn expired_url_and_dropped_connection_can_retry_with_fresh_bytes() {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        for (response, forbidden) in [
+            (
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .as_slice(),
+                true,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort"
+                    .as_slice(),
+                false,
+            ),
+        ] {
+            let (url, server) = server(response);
+            let buffer = AudioBuffer::new(None);
+            let writer = buffer.writer();
+            let error = download_audio(
+                &http,
+                &ResolvedStream {
+                    url,
+                    user_agent: None,
+                    size: None,
+                },
+                &writer,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(error.forbidden, forbidden);
+            server.join().unwrap();
+            let (url, server) = self::server(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh",
+            );
+            assert!(
+                download_audio(
+                    &http,
+                    &ResolvedStream {
+                        url,
+                        user_agent: None,
+                        size: None
+                    },
+                    &writer
+                )
+                .await
+                .is_ok()
+            );
+            writer.finish();
+            let mut bytes = vec![];
+            buffer.reader().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"fresh");
+            server.join().unwrap();
+        }
+    }
+}

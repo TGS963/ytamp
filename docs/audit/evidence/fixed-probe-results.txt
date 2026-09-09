@@ -1,0 +1,22 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.93s
+     Running `target/debug/examples/audit_probe`
+PASS right click "Title a" opens row menu
+PASS menu queues the intended track
+PASS right click "Artist link" opens row menu
+PASS menu queues the intended track
+PASS right click "Album link" opens row menu
+PASS menu queues the intended track
+PASS right click "+" opens row menu
+PASS menu queues the intended track
+PASS large playlist submenu allows scrolling to New playlist
+PASS large playlist submenu reaches the final playlist
+PASS late search response cannot replace newer results
+PASS signed-out state rejects old account library response
+PASS late auth response cannot undo sign out
+PASS overlapping playlist creation preserves the first track
+PASS overlapping playlist creation preserves the second track
+PASS reopening failed library retries requests
+PASS main queue rows can jump to a track
+PASS pause while loading changes playback intent
+0 failed audit checks

@@ -2,13 +2,13 @@
 //!
 //! `rodio::Decoder` decodes inside the audio callback. A network
 //! stall there is an underrun the listener hears. This module moves
-//! the decode to its own thread, behind two bounded channels: samples
-//! flow one way, seek and stop commands flow the other way. The
+//! the decode to its own thread: a bounded channel carries samples,
+//! and a command channel carries seek/stop without waiting for decoding. The
 //! `Source` side never blocks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
 use std::thread;
 use std::time::Duration;
 
@@ -23,10 +23,6 @@ use crate::vis::AudioTap;
 /// so a short stall never starves the audio callback.
 const SAMPLE_CHANNEL_CAPACITY: usize = 48_000;
 
-/// Pending seek and stop commands. Small: the decoder thread checks
-/// this channel between every sample, so a command never waits long.
-const COMMAND_CHANNEL_CAPACITY: usize = 4;
-
 /// The stream's shape, known once `rodio::Decoder::new` returns.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadyInfo {
@@ -36,7 +32,7 @@ pub struct ReadyInfo {
 }
 
 enum DecoderCommand {
-    Seek(Duration),
+    Seek { generation: u64, position: Duration },
     Stop,
 }
 
@@ -45,8 +41,8 @@ enum DecoderCommand {
 /// arrives, typically carried back by the closure passed to
 /// `spawn_decoder`.
 pub struct DecoderHandle {
-    samples: Receiver<f32>,
-    commands: SyncSender<DecoderCommand>,
+    samples: Receiver<(u64, f32)>,
+    commands: Sender<DecoderCommand>,
     progress: Arc<Progress>,
 }
 
@@ -63,6 +59,7 @@ impl DecoderHandle {
                 * u64::from(ready.sample_rate.get()),
         };
         let source = StreamingSource {
+            generation: 0,
             samples: self.samples,
             commands: self.commands,
             channels: ready.channels,
@@ -78,12 +75,21 @@ impl DecoderHandle {
 
 /// Real samples played since the last seek, and where that seek
 /// landed. Silence samples never count.
-#[derive(Default)]
 struct Progress {
     real_samples: AtomicU64,
     base_nanos: AtomicU64,
-    /// True once the decoder ran out of samples. A seek clears it.
-    ended: AtomicBool,
+    /// Only end-of-stream for this generation may end the current source.
+    ended_generation: AtomicU64,
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            real_samples: AtomicU64::new(0),
+            base_nanos: AtomicU64::new(0),
+            ended_generation: AtomicU64::new(u64::MAX),
+        }
+    }
 }
 
 pub struct PositionHandle {
@@ -122,7 +128,7 @@ pub fn spawn_decoder(
     report: impl FnOnce(Result<ReadyInfo, String>) + Send + 'static,
 ) -> DecoderHandle {
     let (sample_tx, sample_rx) = sync_channel(SAMPLE_CHANNEL_CAPACITY);
-    let (command_tx, command_rx) = sync_channel(COMMAND_CHANNEL_CAPACITY);
+    let (command_tx, command_rx) = channel();
     let progress = Arc::new(Progress::default());
     let thread_progress = progress.clone();
     thread::Builder::new()
@@ -144,7 +150,7 @@ type BufferDecoder = rodio::Decoder<crate::stream::BufferReader>;
 fn run_decoder(
     buffer: AudioBuffer,
     report: impl FnOnce(Result<ReadyInfo, String>),
-    samples: SyncSender<f32>,
+    samples: SyncSender<(u64, f32)>,
     commands: Receiver<DecoderCommand>,
     progress: Arc<Progress>,
 ) {
@@ -195,6 +201,7 @@ fn build_seekable_decoder(
 /// The decoder plus where it stands, in samples since the track
 /// start, so a seek can compute how far to skip.
 struct DecodeState {
+    generation: u64,
     decoder: BufferDecoder,
     buffer: AudioBuffer,
     position_samples: u64,
@@ -206,6 +213,7 @@ impl DecodeState {
         let samples_per_second =
             u64::from(decoder.channels().get()) * u64::from(decoder.sample_rate().get());
         Self {
+            generation: 0,
             decoder,
             buffer,
             position_samples: 0,
@@ -274,13 +282,17 @@ fn samples_at(position: Duration, samples_per_second: u64) -> u64 {
 /// receiver, or when the decoder itself runs out of samples.
 fn decode_until_done(
     state: &mut DecodeState,
-    samples: &SyncSender<f32>,
+    samples: &SyncSender<(u64, f32)>,
     commands: &Receiver<DecoderCommand>,
     progress: &Progress,
 ) {
     loop {
         match commands.try_recv() {
-            Ok(DecoderCommand::Seek(position)) => {
+            Ok(DecoderCommand::Seek {
+                generation,
+                position,
+            }) => {
+                state.generation = generation;
                 apply_seek(state, position);
                 continue;
             }
@@ -294,7 +306,7 @@ fn decode_until_done(
             }
             continue;
         };
-        if samples.send(sample).is_err() {
+        if samples.send((state.generation, sample)).is_err() {
             return;
         }
     }
@@ -314,10 +326,15 @@ fn wait_for_seek_after_end(
     commands: &Receiver<DecoderCommand>,
     progress: &Progress,
 ) -> bool {
-    progress.ended.store(true, Ordering::Release);
+    progress
+        .ended_generation
+        .store(state.generation, Ordering::Release);
     match commands.recv() {
-        Ok(DecoderCommand::Seek(position)) => {
-            progress.ended.store(false, Ordering::Release);
+        Ok(DecoderCommand::Seek {
+            generation,
+            position,
+        }) => {
+            state.generation = generation;
             apply_seek(state, position);
             true
         }
@@ -329,8 +346,9 @@ fn wait_for_seek_after_end(
 /// `next()`: a stall plays silence, so the position stays honest
 /// while it waits for more bytes.
 pub struct StreamingSource {
-    samples: Receiver<f32>,
-    commands: SyncSender<DecoderCommand>,
+    generation: u64,
+    samples: Receiver<(u64, f32)>,
+    commands: Sender<DecoderCommand>,
     channels: ChannelCount,
     sample_rate: SampleRate,
     total_duration: Option<Duration>,
@@ -379,13 +397,24 @@ impl Iterator for StreamingSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        let received = self.samples.try_recv();
-        if let Ok(sample) = received {
-            self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
-            self.tap_sample(sample);
+        // Bound cleanup per callback. Late samples from a prior seek are
+        // never played or counted toward the new position.
+        for _ in 0..64 {
+            // Observe completion before checking the channel: completion is
+            // published after the final send, so that last sample is visible.
+            let ended = self.progress.ended_generation.load(Ordering::Acquire) == self.generation;
+            let received = match self.samples.try_recv() {
+                Ok((generation, _)) if generation != self.generation => continue,
+                Ok((_, sample)) => Ok(sample),
+                Err(error) => Err(error),
+            };
+            if let Ok(sample) = received {
+                self.progress.real_samples.fetch_add(1, Ordering::Relaxed);
+                self.tap_sample(sample);
+            }
+            return decide_next_sample(received, ended);
         }
-        let ended = self.progress.ended.load(Ordering::Acquire);
-        decide_next_sample(received, ended)
+        Some(0.)
     }
 }
 
@@ -433,14 +462,21 @@ impl Source for StreamingSource {
         self.total_duration
     }
 
-    /// Sends the seek to the decoder thread, then drops every sample
-    /// already queued for the old position. A seek beyond the
+    /// Drops queued samples before sending the seek to the decoder
+    /// thread. Generation tags reject late samples from the old position. A seek beyond the
     /// downloaded bytes blocks inside the decoder thread until the
     /// bytes arrive; that thread is not this one, so playback keeps
     /// its callback responsive.
     fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
-        let _ = self.commands.send(DecoderCommand::Seek(position));
+        // Drain before publishing the seek: after publication the channel
+        // may already contain valid samples for the new position.
         drain(&self.samples);
+        self.generation += 1;
+        let _ = self.commands.send(DecoderCommand::Seek {
+            generation: self.generation,
+            position,
+        });
+        self.tap_batch = TapBatch::default();
         self.progress
             .base_nanos
             .store(position.as_nanos() as u64, Ordering::Relaxed);
@@ -449,7 +485,7 @@ impl Source for StreamingSource {
     }
 }
 
-fn drain(samples: &Receiver<f32>) {
+fn drain(samples: &Receiver<(u64, f32)>) {
     while samples.try_recv().is_ok() {}
 }
 
@@ -458,7 +494,7 @@ impl Drop for StreamingSource {
     /// thread may already have ended, or may be blocked on a network
     /// read and only notice this later.
     fn drop(&mut self) {
-        let _ = self.commands.try_send(DecoderCommand::Stop);
+        let _ = self.commands.send(DecoderCommand::Stop);
     }
 }
 
@@ -566,6 +602,38 @@ mod tests {
     }
 
     #[test]
+    fn a_seek_rejects_late_old_samples_and_old_end_of_stream() {
+        let (sample_tx, sample_rx) = sync_channel(8);
+        let (command_tx, command_rx) = channel();
+        let progress = Arc::new(Progress::default());
+        let handle = DecoderHandle {
+            samples: sample_rx,
+            commands: command_tx,
+            progress: progress.clone(),
+        };
+        let (mut source, position) = handle.into_source(ReadyInfo {
+            channels: 1.try_into().unwrap(),
+            sample_rate: 8000.try_into().unwrap(),
+            total_duration: Some(Duration::from_secs(1)),
+        });
+        source.try_seek(Duration::from_millis(500)).unwrap();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(DecoderCommand::Seek { generation: 1, .. })
+        ));
+        progress.ended_generation.store(0, Ordering::Release);
+        sample_tx.send((0, 0.9)).unwrap();
+        assert_eq!(source.next(), Some(0.));
+        sample_tx.send((1, 0.2)).unwrap();
+        sample_tx.send((1, 0.3)).unwrap();
+        progress.ended_generation.store(1, Ordering::Release);
+        assert_eq!(source.next(), Some(0.2));
+        assert_eq!(source.next(), Some(0.3));
+        assert_eq!(source.next(), None);
+        assert_eq!(position.position(), Duration::from_micros(500250));
+    }
+
+    #[test]
     fn a_seek_on_a_complete_buffer_lands_at_the_target() {
         let sample_count = 8_000;
         let buffer = AudioBuffer::from_complete(wav_bytes(8_000, sample_count).into());
@@ -585,9 +653,9 @@ mod tests {
                 None => break,
             }
         }
-        assert!(
-            (3_900..=4_100).contains(&real),
-            "played {real} samples after the seek"
+        assert_eq!(
+            real, 4_000,
+            "every sample after the seek must play exactly once"
         );
         assert!(position.position() >= Duration::from_millis(900));
     }

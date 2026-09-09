@@ -28,6 +28,7 @@ fn main() -> eframe::Result {
         "ytamp",
         options,
         Box::new(|creation| {
+            ytamp::fonts::install(&creation.egui_ctx);
             egui_extras::install_image_loaders(&creation.egui_ctx);
             let (action_sender, action_receiver) = mpsc::channel();
             let repaint_ctx = creation.egui_ctx.clone();

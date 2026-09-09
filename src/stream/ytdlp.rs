@@ -54,6 +54,12 @@ pub struct YtDlpSource {
     fast_path_failures: AtomicU8,
 }
 
+impl Default for YtDlpSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl YtDlpSource {
     pub fn new() -> Self {
         Self {

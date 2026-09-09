@@ -156,6 +156,14 @@ fn library_dir() -> Option<PathBuf> {
     Some(dirs.cache_dir().join("library"))
 }
 
+/// Shares library invalidation and generation-guarded writes on sign-out.
+pub fn load_discovery() -> Option<crate::core::discovery::FeedPage> {
+    read_snapshot(&library_dir()?.join("discovery.json"))
+}
+pub fn save_discovery(page: &crate::core::discovery::FeedPage) {
+    save_named("discovery.json", page);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

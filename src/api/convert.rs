@@ -4,13 +4,12 @@ use std::time::Duration;
 
 use ytmapi_rs::common::YoutubeID;
 use ytmapi_rs::parse::{
-    AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, LibraryPlaylist, ParsedSongAlbum,
-    ParsedSongArtist, PlaylistItem, SearchResultSong, WatchPlaylistTrack,
+    AlbumResult, AlbumSong, ArtistSong, GetAlbum, GetArtist, ParsedSongAlbum, ParsedSongArtist,
+    SearchResultSong, WatchPlaylistTrack,
 };
 
 use crate::core::model::{
-    Album, AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Playlist, PlaylistId, Track,
-    TrackId,
+    Album, AlbumId, AlbumPage, ArtistId, ArtistPage, ArtistRef, Track, TrackId,
 };
 use crate::thumbnails::{preferred, track_art, video_thumbnail};
 
@@ -38,55 +37,6 @@ fn artist_ref(artist: ParsedSongArtist) -> ArtistRef {
     }
 }
 
-pub fn library_playlist(playlist: LibraryPlaylist) -> Playlist {
-    Playlist {
-        id: PlaylistId(playlist.playlist_id.get_raw().to_string()),
-        title: playlist.title,
-        track_count: leading_number(&playlist.tracks),
-        thumbnail_url: preferred(&playlist.thumbnails),
-    }
-}
-
-/// Songs and videos become tracks. Episodes and uploads are out of the
-/// v1 scope and disappear from the list.
-///
-/// ytmapi-rs's `PlaylistSong` and `PlaylistVideo` carry no set-video
-/// id for this browse response, so `playlist_item_id` stays `None`
-/// here for a browser session.
-pub fn playlist_item_to_track(item: PlaylistItem) -> Option<Track> {
-    match item {
-        PlaylistItem::Song(song) => {
-            let (album, album_id) = split_song_album(Some(song.album));
-            Some(Track {
-                id: TrackId(song.video_id.get_raw().to_string()),
-                title: song.title,
-                artists: song.artists.into_iter().map(artist_ref).collect(),
-                album,
-                album_id,
-                duration: parse_duration(&song.duration),
-                thumbnail_url: track_art(&song.thumbnails, song.video_id.get_raw()),
-                playlist_item_id: None,
-            })
-        }
-        PlaylistItem::Video(video) => Some(Track {
-            id: TrackId(video.video_id.get_raw().to_string()),
-            title: video.title,
-            artists: vec![ArtistRef {
-                name: video.channel_name,
-                id: Some(ArtistId(video.channel_id.get_raw().to_string())),
-            }],
-            album: None,
-            album_id: None,
-            duration: parse_duration(&video.duration),
-            thumbnail_url: track_art(&video.thumbnails, video.video_id.get_raw()),
-            playlist_item_id: None,
-        }),
-        PlaylistItem::Episode(_) | PlaylistItem::UploadSong(_) => None,
-    }
-}
-
-/// Splits a parsed song album into its display name and id, so a
-/// track can show its album title and later open that album page.
 fn split_song_album(album: Option<ParsedSongAlbum>) -> (Option<String>, Option<AlbumId>) {
     match album {
         Some(album) => (
@@ -252,11 +202,6 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
 }
 
 /// Reads the number that starts a text like "42 tracks".
-fn leading_number(text: &str) -> Option<usize> {
-    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,12 +213,6 @@ mod tests {
         assert_eq!(parse_duration("245"), Some(Duration::from_secs(245)));
         assert_eq!(parse_duration("bad"), None);
         assert_eq!(parse_duration("1:2:3:4"), None);
-    }
-
-    #[test]
-    fn track_counts_parse_from_byline_text() {
-        assert_eq!(leading_number("42 tracks"), Some(42));
-        assert_eq!(leading_number("no digits"), None);
     }
 
     // `GetAlbum` and `AlbumSong` are `#[non_exhaustive]` in ytmapi-rs, so

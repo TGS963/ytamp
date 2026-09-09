@@ -19,11 +19,12 @@
 //! pointer sweep across many rows never starts a flood of yt-dlp
 //! processes.
 
+pub mod equalizer;
 pub mod source;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::core::action::{Action, PlayerEvent};
 use crate::core::effect::PlayerCommand;
@@ -31,7 +32,8 @@ use crate::core::model::Track;
 use crate::stream::{AudioBuffer, BufferStatus, ResolverChain, disk_cache};
 use source::{DecoderHandle, PositionHandle, ReadyInfo};
 
-const TICK: Duration = Duration::from_millis(250);
+const TICK: Duration = Duration::from_millis(10);
+const POSITION_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The most prefetch downloads that may run at once. Caps the yt-dlp
 /// processes a pointer sweep across many rows can start; the
@@ -43,13 +45,24 @@ pub struct PlayerHandle {
 }
 
 impl PlayerHandle {
-    pub fn send(&self, command: PlayerCommand) {
-        let _ = self.sender.send(PlayerMsg::Command(command));
+    pub fn send(&self, generation: u64, command: PlayerCommand) {
+        let _ = self.sender.send(PlayerMsg::Command {
+            generation,
+            command,
+        });
     }
 }
 
 enum PlayerMsg {
-    Command(PlayerCommand),
+    PreparedReady {
+        token: u64,
+        video_id: String,
+        result: Result<ReadyInfo, String>,
+    },
+    Command {
+        generation: u64,
+        command: PlayerCommand,
+    },
     /// The buffer for an active load, from the cache or a fresh
     /// fetch. Carries the load's generation, so a buffer for a track
     /// the user has since left plays nothing.
@@ -152,7 +165,10 @@ struct Engine {
     http: reqwest::Client,
     output: Option<AudioOutput>,
     generation: u64,
+    report_generation: u64,
     volume: f32,
+    equalizer: equalizer::Control,
+    paused: bool,
     track_loaded: bool,
     /// The video id this engine is loading or playing. Cleared on
     /// `stop`. Lets a `Prefetch` request recognize the active track
@@ -171,16 +187,23 @@ struct Engine {
     /// `PrefetchBufferReady`. A new prefetch request drops when this
     /// reaches `MAX_PREFETCH_IN_FLIGHT`.
     prefetch_in_flight: usize,
+    prefetching: std::collections::HashSet<String>,
     /// The decoder handle for the active load, held between
     /// `spawn_decoder` and its `Ready` report.
     pending_source: Option<DecoderHandle>,
     /// The position of the playing track, from real decoded samples.
     position: Option<PositionHandle>,
+    active_buffer: Option<AudioBuffer>,
+    next_track: Option<Track>,
+    prepare_generation: u64,
+    preparing: Option<(DecoderHandle, AudioBuffer)>,
+    prepared: Option<(String, DecoderHandle, ReadyInfo, AudioBuffer)>,
+    last_position_report: Instant,
 }
 
 struct AudioOutput {
     /// Holds the device open. The player plays into its mixer.
-    _device: rodio::MixerDeviceSink,
+    _device: Option<rodio::MixerDeviceSink>,
     player: rodio::Player,
 }
 
@@ -199,22 +222,44 @@ impl Engine {
             http: reqwest::Client::new(),
             output: None,
             generation: 0,
+            report_generation: 0,
             volume: 1.0,
+            equalizer: equalizer::Control::default(),
+            paused: false,
             track_loaded: false,
             current_track_id: None,
             load_pending: false,
             prefetch_cache: PrefetchCache::new(),
             pending_prefetch: None,
             prefetch_in_flight: 0,
+            prefetching: Default::default(),
             pending_source: None,
             position: None,
+            active_buffer: None,
+            next_track: None,
+            prepare_generation: 0,
+            preparing: None,
+            prepared: None,
+            last_position_report: Instant::now(),
         }
     }
 
     fn run(mut self, receiver: Receiver<PlayerMsg>) {
+        let mut next_tick = Instant::now() + TICK;
         loop {
-            match receiver.recv_timeout(TICK) {
-                Ok(PlayerMsg::Command(command)) => self.apply_command(command),
+            match receiver.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
+                Ok(PlayerMsg::PreparedReady {
+                    token,
+                    video_id,
+                    result,
+                }) => self.apply_prepared(token, video_id, result),
+                Ok(PlayerMsg::Command {
+                    generation,
+                    command,
+                }) => {
+                    self.report_generation = generation;
+                    self.apply_command(command);
+                }
                 Ok(PlayerMsg::BufferReady {
                     generation,
                     video_id,
@@ -222,7 +267,12 @@ impl Engine {
                 }) => self.apply_buffer_ready(generation, video_id, buffer),
                 Ok(PlayerMsg::PrefetchBufferReady { video_id, buffer }) => {
                     self.prefetch_in_flight = self.prefetch_in_flight.saturating_sub(1);
+                    self.prefetching.remove(&video_id);
                     self.prefetch_cache.insert(video_id, buffer);
+                    if let Some(track) = self.next_track.clone() {
+                        self.prefetch(track);
+                    }
+                    self.maybe_prepare();
                 }
                 Ok(PlayerMsg::SourceReady {
                     generation,
@@ -230,20 +280,40 @@ impl Engine {
                     was_complete,
                     result,
                 }) => self.apply_source_ready(generation, video_id, was_complete, result),
-                Err(RecvTimeoutError::Timeout) => self.tick(),
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            if Instant::now() >= next_tick {
+                self.tick();
+                next_tick = Instant::now() + TICK;
+            }
         }
+    }
+
+    fn report(&self, event: PlayerEvent) {
+        (self.deliver)(Action::ForPlayback {
+            generation: self.report_generation,
+            event,
+        });
     }
 
     fn apply_command(&mut self, command: PlayerCommand) {
         match command {
             PlayerCommand::Load(track) => self.load(track),
             PlayerCommand::Prefetch(track) => self.prefetch(track),
-            PlayerCommand::Pause => self.with_player(|player| player.pause()),
-            PlayerCommand::Resume => self.with_player(|player| player.play()),
+            PlayerCommand::PrepareNext(track) => self.prepare_next(track),
+            PlayerCommand::Pause => {
+                self.paused = true;
+                self.with_player(|player| player.pause());
+            }
+            PlayerCommand::Resume => {
+                self.paused = false;
+                self.with_player(|player| player.play());
+            }
             PlayerCommand::Seek(position) => self.seek(position),
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
+            PlayerCommand::SetBalance(value) => self.equalizer.set_balance(value),
+            PlayerCommand::SetEqualizer(parameters) => self.equalizer.set(parameters),
             PlayerCommand::Stop => self.stop(),
         }
     }
@@ -252,10 +322,21 @@ impl Engine {
     /// cache, complete or still filling, streams at once: an earlier
     /// prefetch of the same track is adopted for free.
     fn load(&mut self, track: Track) {
+        let prepared = self
+            .prepared
+            .take()
+            .filter(|(id, _, _, _)| *id == track.id.0);
         self.stop();
         let video_id = track.id.0;
         self.current_track_id = Some(video_id.clone());
         self.load_pending = true;
+        if let Some((_, handle, ready, buffer)) = prepared {
+            log::debug!("using prepared decoder for {video_id}");
+            self.active_buffer = Some(buffer);
+            self.pending_source = Some(handle);
+            self.apply_source_ready(self.generation, video_id, true, Ok(ready));
+            return;
+        }
         match self.prefetch_cache.get(&video_id) {
             Some(buffer) => self.start_decoder(video_id, buffer),
             None => self.fetch_for_load(video_id),
@@ -294,6 +375,7 @@ impl Engine {
     /// Starts a decoder thread over `buffer` and remembers its handle
     /// until the thread's `Ready` report arrives.
     fn start_decoder(&mut self, video_id: String, buffer: AudioBuffer) {
+        self.active_buffer = Some(buffer.clone());
         let generation = self.generation;
         let was_complete = matches!(buffer.status(), BufferStatus::Complete);
         let results = self.self_sender.clone();
@@ -333,18 +415,18 @@ impl Engine {
                 let (channels, sample_rate) = shape
                     .map(|ready| (ready.channels.get(), ready.sample_rate.get()))
                     .unwrap_or_default();
-                (self.deliver)(Action::Player(PlayerEvent::TrackStarted {
+                self.report(PlayerEvent::TrackStarted {
                     duration,
                     channels,
                     sample_rate,
-                }));
+                });
             }
             Err(message) => {
                 if was_complete {
                     disk_cache::remove(&video_id);
                 }
                 self.prefetch_cache.remove(&video_id);
-                (self.deliver)(Action::Player(PlayerEvent::Failed(message)));
+                self.report(PlayerEvent::Failed(message));
             }
         }
         self.resolve_load_pending();
@@ -360,11 +442,17 @@ impl Engine {
         let (source, position) = handle.into_source(ready);
         self.position = Some(position);
         let volume = self.volume;
+        let paused = self.paused;
+        let source = equalizer::Equalized::new(source, self.equalizer.clone());
         let output = self.output()?;
         output.player.stop();
         output.player.set_volume(volume);
         output.player.append(source);
-        output.player.play();
+        if paused {
+            output.player.pause();
+        } else {
+            output.player.play();
+        }
         Ok(ready.total_duration)
     }
 
@@ -375,6 +463,7 @@ impl Engine {
         if let Some(track) = self.pending_prefetch.take() {
             self.prefetch(track);
         }
+        self.maybe_prepare();
     }
 
     /// Warms the cache for `track` in the background. A no-op when
@@ -384,7 +473,7 @@ impl Engine {
     /// never competes for bandwidth.
     fn prefetch(&mut self, track: Track) {
         let video_id = track.id.0.clone();
-        if self.prefetch_cache.contains(&video_id) {
+        if self.prefetch_cache.contains(&video_id) || self.prefetching.contains(&video_id) {
             return;
         }
         if self.current_track_id.as_deref() == Some(video_id.as_str()) {
@@ -403,7 +492,60 @@ impl Engine {
         self.start_prefetch(video_id);
     }
 
+    fn prepare_next(&mut self, track: Option<Track>) {
+        if self.next_track.as_ref().map(|t| &t.id) != track.as_ref().map(|t| &t.id) {
+            self.prepare_generation = self.prepare_generation.wrapping_add(1);
+            self.preparing = None;
+            self.prepared = None;
+        }
+        self.next_track = track;
+        if let Some(track) = self.next_track.clone() {
+            self.prefetch(track);
+        }
+        self.maybe_prepare();
+    }
+    fn maybe_prepare(&mut self) {
+        if self.load_pending || self.preparing.is_some() || self.prepared.is_some() {
+            return;
+        }
+        let Some(track) = &self.next_track else {
+            return;
+        };
+        let video_id = track.id.0.clone();
+        let Some(buffer) = self.prefetch_cache.get(&video_id) else {
+            return;
+        };
+        let token = self.prepare_generation;
+        let results = self.self_sender.clone();
+        let handle = source::spawn_decoder(buffer.clone(), move |result| {
+            let _ = results.send(PlayerMsg::PreparedReady {
+                token,
+                video_id,
+                result,
+            });
+        });
+        self.preparing = Some((handle, buffer));
+    }
+    fn apply_prepared(&mut self, token: u64, video_id: String, result: Result<ReadyInfo, String>) {
+        if token != self.prepare_generation
+            || self.next_track.as_ref().map(|t| t.id.0.as_str()) != Some(video_id.as_str())
+        {
+            return;
+        }
+        let Some((handle, buffer)) = self.preparing.take() else {
+            return;
+        };
+        match result {
+            Ok(ready) => self.prepared = Some((video_id, handle, ready, buffer)),
+            Err(_) => {
+                self.prefetch_cache.remove(&video_id);
+                disk_cache::remove(&video_id);
+            }
+        }
+    }
+
     fn start_prefetch(&mut self, video_id: String) {
+        self.prefetching.insert(video_id.clone());
         self.prefetch_in_flight += 1;
         let resolvers = self.resolvers.clone();
         let http = self.http.clone();
@@ -420,7 +562,7 @@ impl Engine {
                 .map_err(|error| format!("No audio device: {error}"))?;
             let player = rodio::Player::connect_new(device.mixer());
             self.output = Some(AudioOutput {
-                _device: device,
+                _device: Some(device),
                 player,
             });
         }
@@ -452,12 +594,18 @@ impl Engine {
     /// prefetches again after the next start.
     fn stop(&mut self) {
         self.generation += 1;
+        self.paused = false;
         self.track_loaded = false;
         self.current_track_id = None;
         self.load_pending = false;
         self.pending_prefetch = None;
         self.pending_source = None;
         self.position = None;
+        self.active_buffer = None;
+        self.prepare_generation = self.prepare_generation.wrapping_add(1);
+        self.preparing = None;
+        self.prepared = None;
+        self.next_track = None;
         self.with_player(|player| player.stop());
     }
 
@@ -471,16 +619,167 @@ impl Engine {
             return;
         };
         if output.player.empty() {
+            log::debug!("track output drained; reporting end");
             self.track_loaded = false;
-            (self.deliver)(Action::Player(PlayerEvent::TrackEnded));
+            let event = match self.active_buffer.as_ref().map(AudioBuffer::status) {
+                Some(BufferStatus::Failed(message)) => {
+                    PlayerEvent::Failed(format!("Playback interrupted: {message}"))
+                }
+                _ => PlayerEvent::TrackEnded,
+            };
+            self.report(event);
             return;
         }
         if !output.player.is_paused()
+            && self.last_position_report.elapsed() >= POSITION_INTERVAL
             && let Some(position) = &self.position
         {
-            (self.deliver)(Action::Player(PlayerEvent::PositionChanged(
-                position.position(),
-            )));
+            self.last_position_report = Instant::now();
+            self.report(PlayerEvent::PositionChanged(position.position()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> (
+        tokio::runtime::Runtime,
+        Engine,
+        Receiver<PlayerMsg>,
+        Receiver<Action>,
+        rodio::mixer::MixerSource,
+    ) {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, rx) = channel();
+        let (reports, events) = channel();
+        let mut engine = Engine::new(
+            Box::new(move |event| {
+                reports.send(event).unwrap();
+            }),
+            runtime.handle().clone(),
+            Arc::new(ResolverChain::with_default_resolvers()),
+            tx,
+        );
+        let (mixer, source) = rodio::mixer::mixer(2.try_into().unwrap(), 48000.try_into().unwrap());
+        engine.output = Some(AudioOutput {
+            _device: None,
+            player: rodio::Player::connect_new(&mixer),
+        });
+        (runtime, engine, rx, events, source)
+    }
+    fn test_track(id: &str) -> Track {
+        Track {
+            id: crate::core::model::TrackId(id.into()),
+            title: id.into(),
+            artists: vec![],
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail_url: None,
+            playlist_item_id: None,
+        }
+    }
+    fn wave() -> AudioBuffer {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36u32 + 96000).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&48000u32.to_le_bytes());
+        bytes.extend_from_slice(&96000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&96000u32.to_le_bytes());
+        for _ in 0..48000 {
+            bytes.extend_from_slice(&4096i16.to_le_bytes());
+        }
+        let buffer = AudioBuffer::new(None);
+        let writer = buffer.writer();
+        writer.push(&bytes);
+        writer.finish();
+        buffer
+    }
+    #[test]
+    fn prepared_decoder_handoff_outputs_audio_and_canceled_completion_is_ignored() {
+        let (_runtime, mut engine, rx, events, mut mixer) = fixture();
+        engine.prefetch_cache.insert("next".into(), wave());
+        engine.prepare_next(Some(test_track("next")));
+        let PlayerMsg::PreparedReady {
+            token,
+            video_id,
+            result,
+        } = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected decoder ready");
+        };
+        engine.apply_prepared(token, video_id, result);
+        assert!(engine.prepared.is_some());
+        assert!(events.try_recv().is_err());
+        std::thread::sleep(Duration::from_millis(5)); // allow producer to fill PCM queue
+        let started = Instant::now();
+        engine.load(test_track("next"));
+        assert!(engine.track_loaded);
+        assert!(!engine.load_pending);
+        assert!(engine.prepared.is_none());
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Action::ForPlayback {
+                event: PlayerEvent::TrackStarted { .. },
+                ..
+            }
+        ));
+        let sample = (0..2000)
+            .map(|_| mixer.next().unwrap())
+            .find(|v| *v != 0.)
+            .expect("prepared PCM reaches mixer");
+        assert!((sample - 0.125).abs() < 0.001);
+        eprintln!(
+            "Prepared decoder -> first mixer sample: {:?}; end polling interval: {:?}",
+            started.elapsed(),
+            TICK
+        );
+        engine.stop();
+        engine.prefetch_cache.insert("cancel".into(), wave());
+        engine.prepare_next(Some(test_track("cancel")));
+        let PlayerMsg::PreparedReady {
+            token,
+            video_id,
+            result,
+        } = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected ready");
+        };
+        engine.prepare_next(None);
+        engine.apply_prepared(token, video_id, result);
+        assert!(engine.prepared.is_none());
+        assert!(!engine.track_loaded);
+    }
+    #[test]
+    fn failed_stream_reports_failure_with_playback_generation_exactly_once() {
+        let (_runtime, mut engine, _rx, events, _source) = fixture();
+        let buffer = AudioBuffer::new(None);
+        buffer.writer().fail("connection lost".into());
+        engine.active_buffer = Some(buffer);
+        engine.track_loaded = true;
+        engine.report_generation = 71;
+        engine.tick();
+        engine.tick();
+        assert!(
+            matches!(events.try_recv().unwrap(), Action::ForPlayback { generation: 71, event: PlayerEvent::Failed(message) } if message.contains("connection lost"))
+        );
+        assert!(events.try_recv().is_err());
+    }
+    #[test]
+    fn late_decoder_completion_after_stop_cannot_restart_or_report() {
+        let (_runtime, mut engine, _rx, events, _source) = fixture();
+        let stale = engine.generation;
+        engine.stop();
+        engine.apply_source_ready(stale, "old".into(), false, Err("old failure".into()));
+        assert!(!engine.track_loaded);
+        assert!(events.try_recv().is_err());
     }
 }

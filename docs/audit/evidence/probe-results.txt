@@ -1,0 +1,19 @@
+cargo run --offline --example audit_probe
+
+PASS right click "Title a" opens row menu
+PASS menu queues the intended track
+FAIL right click "Artist link" opens row menu
+FAIL right click "Album link" opens row menu
+FAIL right click "+" opens row menu
+FAIL large playlist submenu allows scrolling to New playlist
+FAIL late search response cannot replace newer results
+FAIL signed-out state rejects old account library response
+FAIL late auth response cannot undo sign out
+FAIL overlapping playlist creation preserves the first track
+FAIL overlapping playlist creation preserves the second track
+FAIL reopening failed library retries requests
+FAIL main queue rows can jump to a track
+FAIL pause while loading changes playback intent
+12 failed audit checks
+
+Exit status: 1 (expected while reported defects remain)

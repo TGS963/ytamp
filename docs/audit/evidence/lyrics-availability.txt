@@ -1,0 +1,4 @@
+   Compiling ytamp v0.1.0 (/Users/suvojit/programs/ytamp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.12s
+     Running `target/debug/examples/lyrics_probe 9qnqYL0eNNI`
+PASS: lyrics available (991 characters); attribution present

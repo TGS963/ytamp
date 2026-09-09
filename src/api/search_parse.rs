@@ -10,7 +10,9 @@ use serde_json::Value;
 use ytmapi_rs::common::Thumbnail;
 
 use super::convert;
-use crate::core::model::{Album, AlbumId, Artist, ArtistId, ArtistRef, Track, TrackId};
+use crate::core::model::{
+    Album, AlbumId, Artist, ArtistId, ArtistRef, Playlist, PlaylistId, Track, TrackId,
+};
 use crate::thumbnails;
 
 /// Where a filtered search's shelf lives in the raw response, from the
@@ -33,6 +35,23 @@ pub fn parse_albums(value: &Value) -> Vec<Album> {
 /// Every artist row whose browse id names an artist channel.
 pub fn parse_artists(value: &Value) -> Vec<Artist> {
     parse_shelf(value, "artist", artist_from_row)
+}
+
+/// Playlist browse endpoints carry a VL prefix; playback APIs expect the ID.
+pub fn parse_playlists(value: &Value) -> Vec<Playlist> {
+    parse_shelf(value, "playlist", |row| {
+        let id = row_browse_id(row)?;
+        let id = id.strip_prefix("VL")?;
+        if id.is_empty() {
+            return None;
+        }
+        Some(Playlist {
+            id: PlaylistId(id.to_string()),
+            title: row_title(row)?,
+            track_count: None,
+            thumbnail_url: thumbnails::preferred(&row_thumbnails(row)),
+        })
+    })
 }
 
 /// True when the search shelf in `value` carries at least one row.
@@ -123,7 +142,9 @@ fn artist_from_row(row: &Value) -> Option<Artist> {
 /// album, and its duration. A run with no navigation endpoint and no
 /// recognizable shape (a view count, a play count) names nothing and
 /// is skipped.
-fn parse_song_runs(runs: &[Value]) -> (Vec<ArtistRef>, Option<NamedId>, Option<std::time::Duration>) {
+fn parse_song_runs(
+    runs: &[Value],
+) -> (Vec<ArtistRef>, Option<NamedId>, Option<std::time::Duration>) {
     let mut artists = Vec::new();
     let mut album = None;
     let mut duration = None;
@@ -226,7 +247,10 @@ fn content_runs(runs: &[Value]) -> impl Iterator<Item = &Value> {
 /// The rows of the first `musicShelfRenderer` in a filtered search
 /// response, or none when the response carries no such shelf.
 fn shelf_rows(value: &Value) -> Vec<&Value> {
-    let Some(sections) = value.pointer(SECTION_LIST_POINTER).and_then(Value::as_array) else {
+    let Some(sections) = value
+        .pointer(SECTION_LIST_POINTER)
+        .and_then(Value::as_array)
+    else {
         return Vec::new();
     };
     let Some(shelf_contents) = sections.iter().find_map(music_shelf_contents) else {
@@ -258,7 +282,9 @@ fn row_browse_id(row: &Value) -> Option<&str> {
 /// A song row's video id: from the row's own play data when present,
 /// else from the play button under its thumbnail overlay.
 fn row_video_id(row: &Value) -> Option<String> {
-    let from_play_data = row.pointer("/playlistItemData/videoId").and_then(Value::as_str);
+    let from_play_data = row
+        .pointer("/playlistItemData/videoId")
+        .and_then(Value::as_str);
     let from_overlay = || {
         row.pointer(
             "/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer\
@@ -305,8 +331,24 @@ mod tests {
 
     fn fixture(name: &str) -> Value {
         let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
         serde_json::from_str(&text).expect("valid json")
+    }
+
+    #[test]
+    fn playlist_search_normalizes_ids_and_skips_non_playlist_rows() {
+        let row = |id: &str| {
+            serde_json::json!({"musicResponsiveListItemRenderer": {
+                "navigationEndpoint": {"browseEndpoint": {"browseId": id}},
+                "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Mix"}]}}}]
+            }})
+        };
+        let json = serde_json::json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [{"musicShelfRenderer": {"contents": [row("VLPLtest"), row("UCother"), row("VL")]}}]}}}}]}}});
+        let playlists = parse_playlists(&json);
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].id.0, "PLtest");
+        assert_eq!(playlists[0].title, "Mix");
     }
 
     #[test]

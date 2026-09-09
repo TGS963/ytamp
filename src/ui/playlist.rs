@@ -44,7 +44,19 @@ fn header(ui: &mut egui::Ui, state: &State, theme: &dyn Theme) {
     let thumbnail_url = open_playlist_metadata(state).and_then(|p| p.thumbnail_url.as_deref());
     ui.horizontal(|ui| {
         rows::artwork(ui, theme, thumbnail_url, art_size);
-        ui.label(theme.label(TextRole::Title, "Playlist"));
+        let metadata = open_playlist_metadata(state);
+        ui.vertical(|ui| {
+            ui.add(
+                egui::Label::new(theme.label(
+                    TextRole::Hero,
+                    metadata.map(|p| p.title.as_str()).unwrap_or("Playlist"),
+                ))
+                .truncate(),
+            );
+            if let Some(count) = metadata.and_then(|p| p.track_count) {
+                ui.label(theme.secondary_label(TextRole::Caption, format!("{count} tracks")));
+            }
+        });
     });
 }
 
@@ -55,6 +67,19 @@ fn open_playlist_metadata(state: &State) -> Option<&Playlist> {
     let Page::Playlist(id) = &state.page else {
         return None;
     };
-    let playlists = state.library.playlists.loaded()?;
-    playlists.iter().find(|playlist| &playlist.id == id)
+    state
+        .library
+        .playlists
+        .loaded()
+        .into_iter()
+        .flatten()
+        .chain(
+            state
+                .search
+                .results
+                .loaded()
+                .into_iter()
+                .flat_map(|r| &r.playlists),
+        )
+        .find(|playlist| &playlist.id == id)
 }

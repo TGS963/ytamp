@@ -1,7 +1,7 @@
-//! The official YouTube Data API v3, for account data under OAuth.
+//! OAuth account requests: Data API v3 for library, TV API for history and discovery.
 //!
-//! Google broke OAuth against the internal API in 2025-08, but the
-//! official API is a supported product and keeps working with the
+//! Music web-client OAuth requests can fail while TV-client requests work. The
+//! official Data API supports library operations with the
 //! same device-flow token. The user's playlists and liked videos live
 //! here; search and playback stay on their existing paths.
 //!
@@ -30,16 +30,116 @@ pub struct DataApi {
     http: reqwest::Client,
     token: RwLock<ytmapi_rs::auth::OAuthToken>,
     refresh_client: ytmapi_rs::Client,
+    auth_expired: std::sync::atomic::AtomicBool,
 }
 
 impl DataApi {
     pub fn new(token: ytmapi_rs::auth::OAuthToken) -> Result<Self, String> {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|_| "Couldn’t create a network connection.".to_owned())?;
         Ok(Self {
-            http: reqwest::Client::new(),
+            refresh_client: ytmapi_rs::Client::new_from_reqwest_client(http.clone()),
+            http,
             token: RwLock::new(token),
-            refresh_client: ytmapi_rs::Client::new()
-                .map_err(|error| format!("The HTTP client failed to build: {error}"))?,
+            auth_expired: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+    pub fn needs_sign_in(&self) -> bool {
+        self.auth_expired.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub async fn verify_account(&self) -> Result<(), String> {
+        self.send_with_retry(|http, token| {
+            http.get(format!("{BASE}/playlists?part=id&mine=true&maxResults=1"))
+                .bearer_auth(token)
+        })
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn discovery(
+        &self,
+        target: &crate::core::discovery::Target,
+        continuation: Option<String>,
+    ) -> Result<crate::core::discovery::FeedPage, String> {
+        use crate::core::discovery::Target;
+        let mut body = serde_json::json!({"context":{"client":{"clientName":"TVHTML5","clientVersion":"7.20240925.00.00","hl":"en","gl":"US"}}});
+        let endpoint = match target {
+            Target::Browse { id, params } => {
+                body["browseId"] = id.clone().into();
+                if let Some(params) = params {
+                    body["params"] = params.clone().into();
+                }
+                "browse"
+            }
+            Target::Watch {
+                video,
+                playlist,
+                params,
+            } => {
+                if let Some(video) = video {
+                    body["videoId"] = video.clone().into();
+                }
+                if let Some(playlist) = playlist {
+                    body["playlistId"] = playlist.clone().into();
+                }
+                if let Some(params) = params {
+                    body["params"] = params.clone().into();
+                }
+                "next"
+            }
+        };
+        if let Some(continuation) = continuation {
+            body = serde_json::json!({"context":body["context"],"continuation":continuation});
+        }
+        let value = self
+            .send_with_retry(|http, token| {
+                http.post(format!("https://www.youtube.com/youtubei/v1/{endpoint}"))
+                    .bearer_auth(token)
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+                    )
+                    .timeout(std::time::Duration::from_secs(15))
+                    .json(&body)
+            })
+            .await?;
+        if let Target::Watch {
+            playlist: Some(playlist),
+            ..
+        } = target
+        {
+            super::discovery::parse_radio(&value, playlist)
+        } else {
+            super::discovery::parse(&value)
+        }
+    }
+
+    pub async fn history(
+        &self,
+        continuation: Option<String>,
+    ) -> Result<crate::core::listening_history::HistoryPage, String> {
+        let mut body = serde_json::json!({"context":{"client":{"clientName":"TVHTML5","clientVersion":"7.20240925.00.00","hl":"en","gl":"US"}}});
+        if let Some(continuation) = continuation {
+            body["continuation"] = Value::String(continuation);
+        } else {
+            body["browseId"] = Value::String("FEhistory".into());
+        }
+        let value = self
+            .send_with_retry(|http, token| {
+                http.post("https://www.youtube.com/youtubei/v1/browse")
+                    .bearer_auth(token)
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+                    )
+                    .header("Content-Type", "application/json")
+                    .timeout(std::time::Duration::from_secs(15))
+                    .body(body.to_string())
+            })
+            .await?;
+        super::history::parse(&value)
     }
 
     pub async fn playlists(&self) -> Result<Vec<Playlist>, String> {
@@ -204,6 +304,10 @@ impl DataApi {
         }
         self.refresh_token().await?;
         let second = self.send_with_current_token(&build).await?;
+        if second.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.auth_expired
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         parse_response(second).await
     }
 
@@ -220,10 +324,16 @@ impl DataApi {
 
     async fn refresh_token(&self) -> Result<(), String> {
         let mut token = self.token.write().await;
-        let fresh = token
-            .refresh(&self.refresh_client)
-            .await
-            .map_err(|error| format!("The OAuth refresh failed: {error}"))?;
+        let fresh = token.refresh(&self.refresh_client).await.map_err(|error| {
+            let message = error.to_string();
+            if crate::core::sign_in::SignInFailure::classify(&message)
+                == crate::core::sign_in::SignInFailure::Expired
+            {
+                self.auth_expired
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            format!("The OAuth refresh failed: {message}")
+        })?;
         if let Ok(json) = serde_json::to_string(&fresh)
             && let Err(error) = crate::auth::save_oauth_token(&json)
         {
@@ -257,6 +367,9 @@ async fn parse_response(response: reqwest::Response) -> Result<Value, String> {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         return Err(format!("YouTube answered {status}: {message}"));
+    }
+    if !status.is_success() {
+        return Err(format!("YouTube answered {status}"));
     }
     Ok(body)
 }

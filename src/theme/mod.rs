@@ -13,6 +13,10 @@ use egui::{Color32, FontId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorRole {
+    Surface,
+    Border,
+    AccentSoft,
+    OnAccent,
     PageBackground,
     PanelBackground,
     TextPrimary,
@@ -25,6 +29,7 @@ pub enum ColorRole {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextRole {
+    Hero,
     Title,
     Heading,
     Body,

@@ -68,6 +68,16 @@ pub fn skin_path(name: &str) -> Option<PathBuf> {
 /// file and a rename, so a listing of the folder never sees a half
 /// written skin.
 pub fn install(path: &Path) -> Result<String, String> {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("wal"))
+    {
+        return Err(
+            "Modern .wal skins are not supported. Choose a classic Winamp .wsz skin.".into(),
+        );
+    }
+    // Validate before installing: a rejected archive must not replace a working skin.
+    crate::skin::Skin::load(path).map_err(|error| format!("Could not install skin: {error}"))?;
     let stem = skin_stem(path)
         .ok_or_else(|| "not a Winamp skin: it needs a .wsz or .zip extension".to_string())?;
     let name = path
@@ -124,6 +134,23 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn invalid_and_modern_archives_are_rejected_before_installing() {
+        assert!(
+            install(Path::new("unsupported.wal"))
+                .unwrap_err()
+                .contains("Modern .wal")
+        );
+        let dir = temp_dir("invalid");
+        let path = dir.join("invalid.wsz");
+        fs::write(&path, b"not an archive").unwrap();
+        assert!(
+            install(&path)
+                .unwrap_err()
+                .contains("Could not install skin")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn skin_stem_accepts_wsz_and_zip_case_insensitively() {
         assert_eq!(skin_stem(Path::new("Zaxon.WSZ")), Some("Zaxon".to_string()));

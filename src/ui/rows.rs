@@ -87,7 +87,11 @@ fn track_list_area(
     area.show_rows(ui, row_height, row_count, |ui, row_range| {
         for index in row_range {
             match tracks.get(index) {
-                Some(track) => out.extend(track_row(ui, track, index, tracks, theme, context)),
+                Some(track) => {
+                    ui.push_id((id_salt, index, &track.id), |ui| {
+                        out.extend(track_row(ui, track, index, tracks, theme, context));
+                    });
+                }
                 None => loading_more_row(ui, theme),
             }
         }
@@ -183,21 +187,42 @@ fn track_row(
 /// The row's right-click menu: like or unlike, add to the queue, add
 /// to a playlist, and, on a playlist page, remove from it. Returns at
 /// most one action, the last menu item the user clicked.
-fn row_context_menu(
+pub(super) fn row_context_menu(
     response: &egui::Response,
     track: &Track,
     context: &RowContext,
 ) -> Option<Action> {
     let mut action = None;
-    response.context_menu(|ui| {
-        like_menu_item(ui, track, context, &mut action);
-        if ui.button("Add to queue").clicked() {
-            action = Some(Action::TrackQueued(track.clone()));
-            ui.close();
-        }
-        add_to_playlist_menu(ui, track, context, &mut action);
-        remove_from_playlist_menu_item(ui, track, context, &mut action);
-    });
+    let secondary = response.contains_pointer()
+        && response
+            .ctx
+            .input(|input| input.pointer.secondary_clicked());
+    let command = if secondary {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if response.clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    egui::Popup::context_menu(response)
+        .open_memory(command)
+        .show(|ui| {
+            like_menu_item(ui, track, context, &mut action);
+            if ui.button("Play next").clicked() {
+                action = Some(Action::TrackPlayNext(track.clone()));
+                ui.close();
+            }
+            if ui.button("Start radio").clicked() {
+                action = Some(Action::RadioStartRequested(track.clone()));
+                ui.close();
+            }
+            if ui.button("Add to queue").clicked() {
+                action = Some(Action::TrackQueued(track.clone()));
+                ui.close();
+            }
+            add_to_playlist_menu(ui, track, context, &mut action);
+            remove_from_playlist_menu_item(ui, track, context, &mut action);
+        });
     action
 }
 
@@ -228,15 +253,26 @@ fn add_to_playlist_menu(
     action: &mut Option<Action>,
 ) {
     ui.menu_button("Add to playlist", |ui| {
-        for playlist in context.playlists {
-            if ui.button(&playlist.title).clicked() {
-                *action = Some(Action::TrackAddedToPlaylist {
-                    playlist: playlist.id.clone(),
-                    track: track.clone(),
-                });
-                ui.close();
-            }
-        }
+        let max_height = (ui.ctx().content_rect().height() - 100.0).clamp(80.0, 320.0);
+        ui.set_max_width(280.0);
+        egui::ScrollArea::vertical()
+            .id_salt("playlist-targets")
+            .max_height(max_height)
+            .show(ui, |ui| {
+                for playlist in context.playlists {
+                    if ui
+                        .add(egui::Button::new(&playlist.title).truncate())
+                        .clicked()
+                    {
+                        *action = Some(Action::TrackAddedToPlaylist {
+                            playlist: playlist.id.clone(),
+                            track: track.clone(),
+                        });
+                        ui.close();
+                    }
+                }
+            });
+        ui.separator();
         if ui.button("New playlist...").clicked() {
             *action = Some(Action::CreatePlaylistDialogOpened(Some(track.clone())));
             ui.close();
@@ -348,13 +384,44 @@ fn row_content(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
     let mut action = None;
     let art_size = theme.metric(MetricRole::RowArtSize);
     artwork(ui, theme, track.thumbnail_url.as_deref(), art_size);
-    ui.label(theme.label(TextRole::Body, &track.title));
-    if let Some(artist_action) = artist_labels(ui, track, theme) {
-        action = Some(artist_action);
-    }
-    if let Some(album_action) = album_label(ui, track, theme) {
-        action = Some(album_action);
-    }
+    // Reserve the trailing controls before laying out variable-length text.
+    let trailing = 74.0;
+    let width = (ui.available_width() - trailing - 8.0).max(0.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+            let title_width = (width * 0.48).max(0.0);
+            let (title_rect, _) =
+                ui.allocate_exact_size(egui::vec2(title_width, 24.0), egui::Sense::hover());
+            let mut title_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(title_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            title_ui
+                .add(egui::Label::new(theme.label(TextRole::Body, &track.title)).truncate())
+                .on_hover_text(&track.title);
+            let artist_width = if track.album_id.is_some() {
+                width * 0.25
+            } else {
+                width * 0.48
+            };
+            ui.allocate_ui_with_layout(
+                egui::vec2(artist_width, 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    if let Some(a) = artist_labels(ui, track, theme) {
+                        action = Some(a);
+                    }
+                },
+            );
+            if let Some(a) = album_label(ui, track, theme) {
+                action = Some(a);
+            }
+        },
+    );
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if let Some(duration) = track.duration {
             ui.label(theme.secondary_label(TextRole::Caption, format_duration(duration)));
@@ -389,7 +456,11 @@ pub(crate) fn artist_labels(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme)
 /// artist page and a search, so the row only reports the click.
 fn artist_label(ui: &mut egui::Ui, artist: &ArtistRef, theme: &dyn Theme) -> Option<Action> {
     let label = theme.secondary_label(TextRole::Caption, &artist.name);
-    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+    let response = ui.add(
+        egui::Label::new(label)
+            .truncate()
+            .sense(egui::Sense::click()),
+    );
     response
         .clicked()
         .then(|| Action::ArtistLinkOpened(artist.clone()))
@@ -402,7 +473,11 @@ fn album_label(ui: &mut egui::Ui, track: &Track, theme: &dyn Theme) -> Option<Ac
     let album_id = track.album_id.clone()?;
     let name = track.album.as_deref().unwrap_or("Album");
     let label = theme.secondary_label(TextRole::Caption, name);
-    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+    let response = ui.add(
+        egui::Label::new(label)
+            .truncate()
+            .sense(egui::Sense::click()),
+    );
     response.clicked().then_some(Action::AlbumOpened(album_id))
 }
 
@@ -476,5 +551,266 @@ mod tests {
             dwell_decision(false, Some(10.0), 10.2, 0.4),
             DwellDecision::Reset
         );
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use crate::core::model::{ArtistRef, Playlist, TrackId};
+    use crate::core::state::{Loadable, Page};
+    use crate::theme::DefaultTheme;
+
+    fn sample_track(id: &str) -> Track {
+        Track {
+            id: TrackId(id.to_string()),
+            title: format!("Title {id}"),
+            artists: vec![ArtistRef::named("Artist")],
+            album: Some("Album".into()),
+            album_id: None,
+            duration: Some(Duration::from_secs(200)),
+            thumbnail_url: None,
+            playlist_item_id: None,
+        }
+    }
+
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, tracks: &[Track]) -> Vec<Action> {
+        let liked = Loadable::Loaded(vec![]);
+        let playlists: Vec<Playlist> = vec![];
+        let page = Page::Library;
+        let context = RowContext {
+            liked: &liked,
+            playlists: &playlists,
+            page: &page,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            track_list(ui, "test", tracks, false, &DefaultTheme, &context, &mut out);
+        });
+        output.textures_delta.clear();
+        out
+    }
+
+    /// The visible layers above the page: a popup adds one.
+    fn popup_layers(ctx: &egui::Context) -> usize {
+        ctx.memory(|memory| {
+            memory
+                .areas()
+                .visible_layer_ids()
+                .iter()
+                .filter(|layer| layer.order == egui::Order::Foreground)
+                .count()
+        })
+    }
+
+    fn right_click_at(ctx: &egui::Context, tracks: &[Track], pos: egui::Pos2) -> bool {
+        let button = egui::PointerButton::Secondary;
+        frame(ctx, vec![egui::Event::PointerMoved(pos)], tracks);
+        frame(
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            tracks,
+        );
+        frame(
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            tracks,
+        );
+        let open_after_release = popup_layers(ctx) > 0;
+        frame(ctx, vec![], tracks);
+        frame(ctx, vec![], tracks);
+        let open_two_frames_later = popup_layers(ctx) > 0;
+        eprintln!(
+            "pos {pos:?}: open after release {open_after_release}, two frames later {open_two_frames_later}"
+        );
+        open_two_frames_later
+    }
+
+    fn page_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        state: &crate::core::state::State,
+    ) {
+        let clock = egui::Id::new("test_clock");
+        let time = ctx.data(|data| data.get_temp::<f64>(clock)).unwrap_or(0.0) + 0.016;
+        ctx.data_mut(|data| data.insert_temp(clock, time));
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1370.0, 923.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let _ = crate::ui::view(ui, state, &DefaultTheme);
+        });
+        output.textures_delta.clear();
+    }
+
+    fn page_right_click_at(
+        ctx: &egui::Context,
+        state: &crate::core::state::State,
+        pos: egui::Pos2,
+    ) -> bool {
+        let button = egui::PointerButton::Secondary;
+        page_frame(ctx, vec![egui::Event::PointerMoved(pos)], state);
+        page_frame(
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            state,
+        );
+        page_frame(
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            state,
+        );
+        let after_release = popup_layers(ctx) > 0;
+        page_frame(ctx, vec![], state);
+        page_frame(ctx, vec![], state);
+        let later = popup_layers(ctx) > 0;
+        eprintln!("page pos {pos:?}: open after release {after_release}, two frames later {later}");
+        later
+    }
+
+    #[test]
+    fn a_same_frame_press_and_release_opens_the_menu_too() {
+        use crate::core::model::PlaylistId;
+        use crate::core::state::{AuthState, State};
+        let tracks: Vec<Track> = (0..8).map(|i| sample_track(&i.to_string())).collect();
+        let mut state = State {
+            auth: AuthState::SignedIn,
+            page: Page::Playlist(PlaylistId("p".into())),
+            ..State::default()
+        };
+        state.library.open_playlist = Loadable::Loaded(tracks);
+        state.library.liked = Loadable::Loaded(vec![]);
+        state.library.playlists = Loadable::Loaded(vec![]);
+        let ctx = egui::Context::default();
+        page_frame(&ctx, vec![], &state);
+        page_frame(&ctx, vec![], &state);
+        let pos = egui::pos2(848.0, 371.0);
+        let button = egui::PointerButton::Secondary;
+        page_frame(
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            &state,
+        );
+        let after = popup_layers(&ctx) > 0;
+        page_frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(850.0, 373.0))],
+            &state,
+        );
+        let after_jitter = popup_layers(&ctx) > 0;
+        page_frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(740.0, 371.0))],
+            &state,
+        );
+        let mut after_left_move = popup_layers(&ctx) > 0;
+        for i in 0..70 {
+            page_frame(&ctx, vec![], &state);
+            if after_left_move && popup_layers(&ctx) == 0 {
+                eprintln!("closed {i} frames after the left move");
+                after_left_move = false;
+            }
+        }
+        page_frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(880.0, 400.0))],
+            &state,
+        );
+        let after_move_into_menu = popup_layers(&ctx) > 0;
+        page_frame(&ctx, vec![], &state);
+        let later = popup_layers(&ctx) > 0;
+        eprintln!(
+            "same frame: after {after}, jitter {after_jitter}, left move {after_left_move}, into menu {after_move_into_menu}, later {later}"
+        );
+        assert!(later);
+    }
+
+    #[test]
+    fn a_right_click_on_a_playlist_page_row_opens_the_menu() {
+        use crate::core::model::PlaylistId;
+        use crate::core::state::{AuthState, State};
+        let tracks: Vec<Track> = (0..8).map(|i| sample_track(&i.to_string())).collect();
+        let mut state = State {
+            auth: AuthState::SignedIn,
+            page: Page::Playlist(PlaylistId("p".into())),
+            ..State::default()
+        };
+        state.library.open_playlist = Loadable::Loaded(tracks);
+        state.library.liked = Loadable::Loaded(vec![]);
+        state.library.playlists = Loadable::Loaded(vec![]);
+        let ctx = egui::Context::default();
+        page_frame(&ctx, vec![], &state);
+        page_frame(&ctx, vec![], &state);
+        let middle = page_right_click_at(&ctx, &state, egui::pos2(848.0, 371.0));
+        let ctx2 = egui::Context::default();
+        page_frame(&ctx2, vec![], &state);
+        page_frame(&ctx2, vec![], &state);
+        let right = page_right_click_at(&ctx2, &state, egui::pos2(1228.0, 365.0));
+        assert!(right, "the far right must open the menu");
+        assert!(middle, "the middle must open the menu");
+    }
+
+    #[test]
+    fn a_right_click_anywhere_on_a_row_opens_and_keeps_the_menu() {
+        let tracks: Vec<Track> = (0..5).map(|i| sample_track(&i.to_string())).collect();
+        let ctx = egui::Context::default();
+        frame(&ctx, vec![], &tracks);
+        frame(&ctx, vec![], &tracks);
+        let row_y = 8.0 + 36.0 * 2.5;
+        let middle = right_click_at(&ctx, &tracks, egui::pos2(600.0, row_y));
+        let ctx2 = egui::Context::default();
+        frame(&ctx2, vec![], &tracks);
+        frame(&ctx2, vec![], &tracks);
+        let far_right = right_click_at(&ctx2, &tracks, egui::pos2(1150.0, row_y));
+        assert!(far_right, "the far right must open the menu");
+        assert!(middle, "the middle must open the menu");
     }
 }

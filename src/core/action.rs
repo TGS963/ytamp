@@ -16,11 +16,36 @@ use crate::skin::Skin;
 
 #[derive(Clone, Debug)]
 pub enum Action {
+    /// Account-scoped completion. Stale generations never reach the reducer.
+    ForSession {
+        generation: u64,
+        action: Box<Action>,
+    },
+    DiscoveryOpened(super::discovery::Entry),
+    DiscoveryRequested {
+        more: bool,
+    },
+    DiscoveryLoaded {
+        request_id: u64,
+        target: super::discovery::Target,
+        result: Result<super::discovery::FeedPage, String>,
+    },
+    LibraryRefreshRequested,
+    LikedShuffleRequested,
+    HistoryRequested {
+        more: bool,
+    },
+    HistoryLoaded {
+        request_id: u64,
+        result: Result<super::listening_history::HistoryPage, String>,
+    },
+    QueueRemoved(usize),
     // From the user.
     NavigatedTo(Page),
-    CookieDraftChanged(String),
-    AuthUserDraftChanged(String),
-    CookiesSubmitted,
+    SignInRetryRequested,
+    SignInCancelled,
+    OAuthTokenStored,
+    SessionExpired,
     SignOutRequested,
     OAuthClientIdChanged(String),
     OAuthClientSecretChanged(String),
@@ -46,10 +71,23 @@ pub enum Action {
         start: usize,
     },
     TrackQueued(Track),
+    TrackPlayNext(Track),
+    RadioStartRequested(Track),
+    RadioStartCancelled,
+    RadioStarted {
+        request_id: u64,
+        playback_generation: u64,
+        seed: Track,
+        result: Result<Vec<Track>, String>,
+    },
+    DiscoveryShelfOpened(super::discovery::Shelf),
+    DiscoveryCacheLoaded(super::discovery::FeedPage),
+    NowPlayingOpened,
     /// The pointer rested on a track row long enough to warm its
     /// cache. The view emits this once per dwell.
     TrackHovered(Track),
     PlayToggled,
+    PlaybackRetryRequested,
     NextPressed,
     PreviousPressed,
     /// A double click on a Winamp playlist row: plays the track at
@@ -58,8 +96,17 @@ pub enum Action {
     /// The Winamp playlist's REM menu: drops every explicitly queued
     /// track, leaving the context alone.
     QueueCleared,
+    QueueSelectionRemoved(Vec<usize>),
+    QueueSelectionMoved {
+        selected: Vec<usize>,
+        before: usize,
+    },
     SeekRequested(Duration),
     VolumeSet(f32),
+    BalanceSet(f32),
+    EqualizerChanged(super::equalizer::Parameters),
+    EqualizerPresetSaved(String),
+    EqualizerPresetDeleted(String),
     ShuffleToggled,
     RepeatCycled,
     AutoplayToggled,
@@ -73,6 +120,7 @@ pub enum Action {
     /// Wears the built-in skin (`None`) or a named one from the skins
     /// folder.
     SkinChosen(Option<String>),
+    SkinBrowserToggled,
     /// A `.wsz` or `.zip` file dropped on a window, to install and
     /// wear.
     SkinFileDropped(PathBuf),
@@ -114,12 +162,12 @@ pub enum Action {
 
     // From the shell at startup.
     StoredAuthFound(crate::core::effect::AuthMethod),
-    SessionRestored(crate::core::session::SavedSession),
+    SessionRestored(Box<crate::core::session::SavedSession>),
 
     // From the effect runtime.
     NoticePosted(String),
-    AuthVerified(Result<(), String>),
-    SearchLoaded(Result<SearchResults, String>),
+    AuthVerified(Result<(), super::sign_in::SignInFailure>),
+    SearchLoaded(u64, Result<SearchResults, String>),
     PlaylistsLoaded(Result<Vec<crate::core::model::Playlist>, String>),
     /// Custom cover art fetched for a batch of playlists. Always
     /// carries only the playlists a fetch actually found a cover for.
@@ -160,7 +208,7 @@ pub enum Action {
         result: Result<String, String>,
     },
     /// The server's answer to a `CreatePlaylist` request.
-    PlaylistCreated(Result<Playlist, String>),
+    PlaylistCreated(u64, Result<Playlist, String>),
     /// The server's answer to a fire-and-forget library write: a rate
     /// or a playlist-item removal. `what` names the list the write
     /// touched, so a failure knows what to refetch.
@@ -170,7 +218,22 @@ pub enum Action {
     },
 
     // From the player engine.
+    LyricsToggled,
+    LyricsDelaySet {
+        track: TrackId,
+        seconds: f64,
+    },
+    LyricsReloadRequested,
+    LyricsLoaded {
+        request_id: u64,
+        track: TrackId,
+        result: Result<Option<super::lyrics::Lyrics>, String>,
+    },
     Player(PlayerEvent),
+    ForPlayback {
+        generation: u64,
+        event: PlayerEvent,
+    },
 }
 
 /// The library list an optimistic write changed. `LibraryWriteFinished`

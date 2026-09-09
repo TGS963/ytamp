@@ -1,12 +1,12 @@
 //! Executes effects and sends result actions back to the app.
 //!
 //! Network work runs on a tokio runtime. Every task ends by sending one
-//! action and asking the UI for a repaint. Player commands are still a
-//! stub until the player engine lands.
+//! action and asking the UI for a repaint. Player commands run on the
+//! audio engine thread. Account-scoped completions carry a generation.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::api::Api;
 use crate::auth;
@@ -19,14 +19,22 @@ use crate::skin::Skin;
 use crate::skins_dir;
 use crate::stream::ResolverChain;
 
-type ApiSlot = Arc<RwLock<Option<Api>>>;
+#[derive(Default)]
+struct SessionSlot {
+    generation: u64,
+    api: Option<Api>,
+}
+type ApiSlot = Arc<RwLock<SessionSlot>>;
 
 pub struct EffectRuntime {
     tokio: tokio::runtime::Runtime,
     api: ApiSlot,
+    pending_api: Mutex<Vec<tokio::task::AbortHandle>>,
     actions: Sender<Action>,
     request_repaint: Arc<dyn Fn() + Send + Sync>,
     player: PlayerHandle,
+    pending_lyrics: Mutex<Option<tokio::task::AbortHandle>>,
+    playback_generation: std::sync::atomic::AtomicU64,
 }
 
 impl EffectRuntime {
@@ -49,19 +57,83 @@ impl EffectRuntime {
         );
         Self {
             tokio,
-            api: Arc::new(RwLock::new(None)),
+            api: Arc::new(RwLock::new(SessionSlot::default())),
+            pending_api: Mutex::new(Vec::new()),
             actions,
             request_repaint,
             player,
+            pending_lyrics: Mutex::new(None),
+            playback_generation: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// A synchronous barrier: old disk work finishes before changing accounts;
+    /// queued old work checks the generation and cannot recreate cleared files.
+    pub fn set_session_generation(&self, generation: u64) {
+        let mut slot = self.api.write().expect("api lock");
+        if slot.generation != generation {
+            slot.generation = generation;
+            slot.api = None;
+            for task in self.pending_api.lock().expect("task lock").drain(..) {
+                task.abort();
+            }
+        }
+    }
+
+    fn scoped_delivery(&self) -> impl Fn(Action) + Send + 'static {
+        let generation = self.api.read().expect("api lock").generation;
+        let deliver = self.delivery();
+        move |action| {
+            deliver(Action::ForSession {
+                generation,
+                action: Box::new(action),
+            })
+        }
+    }
+
+    pub fn set_playback_generation(&self, generation: u64) {
+        self.playback_generation
+            .store(generation, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn run(&self, effect: Effect) {
         match effect {
+            Effect::FetchLyrics(request) => {
+                let mut pending = self.pending_lyrics.lock().expect("lyrics task lock");
+                if let Some(task) = pending.take() {
+                    task.abort();
+                }
+                if let Some((request_id, track)) = request {
+                    let deliver = self.delivery();
+                    *pending = Some(
+                        self.tokio
+                            .spawn(async move {
+                                let result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(20),
+                                    crate::api::lyrics::fetch(&track),
+                                )
+                                .await
+                                .unwrap_or_else(|_| {
+                                    Err("The lyrics request timed out. Try again.".into())
+                                });
+                                deliver(Action::LyricsLoaded {
+                                    request_id,
+                                    track,
+                                    result,
+                                });
+                            })
+                            .abort_handle(),
+                    );
+                }
+            }
             Effect::Api(request) => self.run_api_request(request),
-            Effect::SaveCredentials(credentials) => self.save_credentials(credentials),
+            Effect::LoadStoredAuth => self.load_stored_auth(),
             Effect::ClearCredentials => self.clear_credentials(),
-            Effect::Player(command) => self.player.send(command),
+            Effect::Player(command) => self.player.send(
+                self.playback_generation
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                command,
+            ),
             Effect::LoadLibraryCache => self.load_library_cache(),
             Effect::LoadPlaylistTracksCache(id) => self.load_playlist_tracks_cache(id),
             Effect::SaveLibraryCache(write) => self.save_library_cache(write),
@@ -99,39 +171,45 @@ impl EffectRuntime {
 
     fn run_api_request(&self, request: ApiRequest) {
         let api = self.api.clone();
-        let deliver = self.delivery();
-        self.tokio.spawn(async move {
-            execute_api_request(&api, request, &deliver).await;
+        let generation = api.read().expect("api lock").generation;
+        let deliver = self.scoped_delivery();
+        let task = self.tokio.spawn(async move {
+            execute_api_request(&api, generation, request, &deliver).await;
         });
+        let mut pending = self.pending_api.lock().expect("task lock");
+        pending.retain(|task| !task.is_finished());
+        pending.push(task.abort_handle());
     }
 
-    fn save_credentials(&self, credentials: crate::core::effect::Credentials) {
-        let deliver = self.delivery();
+    fn load_stored_auth(&self) {
+        let deliver = self.scoped_delivery();
         self.tokio.spawn_blocking(move || {
-            if let Err(error) = auth::save_credentials(&credentials) {
-                deliver(Action::NoticePosted(format!(
-                    "Saving the sign-in failed: {error}"
-                )));
-            }
+            deliver(match auth::load_auth_method() {
+                Some(method) => Action::StoredAuthFound(method),
+                None => Action::AuthVerified(Err(crate::core::sign_in::SignInFailure::Expired)),
+            });
         });
     }
 
     fn clear_credentials(&self) {
-        *self.api.write().expect("api lock") = None;
+        self.api.write().expect("api lock").api = None;
         let deliver = self.delivery();
-        self.tokio.spawn_blocking(move || {
+        {
             if let Err(error) = auth::delete_credentials() {
                 deliver(Action::NoticePosted(format!("Signing out failed: {error}")));
             }
-        });
+        }
     }
 
     /// Reads the cached playlist list and liked songs, and delivers
     /// them together even when one or both are a miss. The reducer
     /// decides what a miss means for each slot.
     fn load_library_cache(&self) {
-        let deliver = self.delivery();
+        let deliver = self.scoped_delivery();
         self.tokio.spawn_blocking(move || {
+            if let Some(page) = library_cache::load_discovery() {
+                deliver(Action::DiscoveryCacheLoaded(page));
+            }
             let playlists = library_cache::load_playlists();
             let liked = library_cache::load_liked();
             deliver(Action::LibraryCacheLoaded { playlists, liked });
@@ -141,7 +219,7 @@ impl EffectRuntime {
     /// Reads one playlist's cached track list. Delivers nothing on a
     /// miss, since a loading page already shows a spinner.
     fn load_playlist_tracks_cache(&self, id: PlaylistId) {
-        let deliver = self.delivery();
+        let deliver = self.scoped_delivery();
         self.tokio.spawn_blocking(move || {
             if let Some(tracks) = library_cache::load_playlist_tracks(&id) {
                 deliver(Action::PlaylistTracksCacheLoaded(id, tracks));
@@ -153,17 +231,26 @@ impl EffectRuntime {
     /// The reducer has already applied it to the state by the time
     /// this effect runs.
     fn save_library_cache(&self, write: LibraryCacheWrite) {
-        self.tokio.spawn_blocking(move || match write {
-            LibraryCacheWrite::Playlists(playlists) => library_cache::save_playlists(&playlists),
-            LibraryCacheWrite::Liked(tracks) => library_cache::save_liked(&tracks),
-            LibraryCacheWrite::PlaylistTracks(id, tracks) => {
-                library_cache::save_playlist_tracks(&id, &tracks)
+        let api = self.api.clone();
+        let generation = api.read().expect("api lock").generation;
+        self.tokio.spawn_blocking(move || {
+            let guard = api.read().expect("api lock");
+            if guard.generation != generation {
+                return;
+            }
+            match write {
+                LibraryCacheWrite::Discovery(page) => library_cache::save_discovery(&page),
+                LibraryCacheWrite::Playlists(p) => library_cache::save_playlists(&p),
+                LibraryCacheWrite::Liked(t) => library_cache::save_liked(&t),
+                LibraryCacheWrite::PlaylistTracks(id, t) => {
+                    library_cache::save_playlist_tracks(&id, &t)
+                }
             }
         });
     }
 
     fn clear_library_cache(&self) {
-        self.tokio.spawn_blocking(library_cache::clear);
+        library_cache::clear();
     }
 
     /// One closure that sends an action to the app and wakes the UI.
@@ -208,31 +295,47 @@ fn delivery(
 
 async fn execute_api_request(
     slot: &ApiSlot,
+    generation: u64,
     request: ApiRequest,
     deliver: &(impl Fn(Action) + Send),
 ) {
+    if slot.read().expect("api lock").generation != generation {
+        return;
+    }
     match request {
-        ApiRequest::VerifyAuth(method) => deliver(sign_in(slot, &method).await),
+        ApiRequest::VerifyAuth(method) => deliver(sign_in(slot, generation, &method).await),
         ApiRequest::StartOAuth {
             client_id,
             client_secret,
         } => {
-            run_oauth_flow(slot, client_id, client_secret, deliver).await;
+            run_oauth_flow(slot, generation, client_id, client_secret, deliver).await;
         }
         other => {
-            let signed_in = slot.read().expect("api lock").clone();
+            let signed_in = slot.read().expect("api lock").api.clone();
             match signed_in {
-                Some(api) => execute_signed_in(&api, other, deliver).await,
+                Some(api) => {
+                    execute_signed_in(&api, other, deliver).await;
+                    if api.needs_sign_in() {
+                        deliver(Action::SessionExpired);
+                    }
+                }
                 None => deliver(request_failure(other, "not signed in".to_string())),
             }
         }
     }
 }
 
-async fn sign_in(slot: &ApiSlot, method: &crate::core::effect::AuthMethod) -> Action {
+async fn sign_in(
+    slot: &ApiSlot,
+    generation: u64,
+    method: &crate::core::effect::AuthMethod,
+) -> Action {
     match Api::sign_in(method).await {
         Ok(api) => {
-            *slot.write().expect("api lock") = Some(api);
+            let mut guard = slot.write().expect("api lock");
+            if guard.generation == generation {
+                guard.api = Some(api);
+            }
             Action::AuthVerified(Ok(()))
         }
         Err(message) => Action::AuthVerified(Err(message)),
@@ -250,6 +353,7 @@ const OAUTH_POLL_ATTEMPTS: u32 = 60;
 /// sign in with it.
 async fn run_oauth_flow(
     slot: &ApiSlot,
+    generation: u64,
     client_id: String,
     client_secret: String,
     deliver: &(impl Fn(Action) + Send),
@@ -257,18 +361,27 @@ async fn run_oauth_flow(
     let result = oauth_token_from_device_flow(&client_id, &client_secret, deliver).await;
     let action = match result {
         Ok(token_json) => {
-            if let Err(error) = auth::save_oauth_token(&token_json) {
-                deliver(Action::NoticePosted(format!(
-                    "Saving the sign-in failed: {error}"
-                )));
+            {
+                let guard = slot.read().expect("api lock");
+                if guard.generation != generation {
+                    return;
+                }
+                if let Err(error) = auth::save_oauth_token(&token_json) {
+                    deliver(Action::NoticePosted(format!(
+                        "Saving the sign-in failed: {error}"
+                    )));
+                } else {
+                    deliver(Action::OAuthTokenStored);
+                }
             }
             sign_in(
                 slot,
+                generation,
                 &crate::core::effect::AuthMethod::OAuthToken(token_json),
             )
             .await
         }
-        Err(message) => Action::AuthVerified(Err(message)),
+        Err(message) => Action::AuthVerified(Err(message.into())),
     };
     deliver(action);
 }
@@ -309,7 +422,30 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
         ApiRequest::VerifyAuth(_) | ApiRequest::StartOAuth { .. } => {
             unreachable!("handled before the sign-in check")
         }
-        ApiRequest::Search { query } => deliver(Action::SearchLoaded(api.search(&query).await)),
+        ApiRequest::Search { request_id, query } => {
+            deliver(Action::SearchLoaded(request_id, api.search(&query).await))
+        }
+        ApiRequest::FetchDiscovery {
+            request_id,
+            target,
+            continuation,
+        } => {
+            let result = api.discovery(&target, continuation).await;
+            deliver(Action::DiscoveryLoaded {
+                request_id,
+                target,
+                result,
+            });
+        }
+        ApiRequest::FetchHistory {
+            request_id,
+            continuation,
+        } => {
+            deliver(Action::HistoryLoaded {
+                request_id,
+                result: api.history(continuation).await,
+            });
+        }
         ApiRequest::FetchPlaylists => {
             deliver(Action::PlaylistsLoaded(api.library_playlists().await))
         }
@@ -322,6 +458,19 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
         ApiRequest::FetchAlbum(id) => {
             let result = api.album(&id).await;
             deliver(Action::AlbumLoaded(id, result));
+        }
+        ApiRequest::StartRadio {
+            request_id,
+            playback_generation,
+            seed,
+        } => {
+            let result = api.radio(&seed.id).await;
+            deliver(Action::RadioStarted {
+                request_id,
+                playback_generation,
+                seed,
+                result,
+            });
         }
         ApiRequest::FetchRadio(id) => {
             let result = api.radio(&id).await;
@@ -353,8 +502,11 @@ async fn execute_signed_in(api: &Api, request: ApiRequest, deliver: &(impl Fn(Ac
                 result,
             });
         }
-        ApiRequest::CreatePlaylist(title) => {
-            deliver(Action::PlaylistCreated(api.create_playlist(&title).await));
+        ApiRequest::CreatePlaylist(request_id, title) => {
+            deliver(Action::PlaylistCreated(
+                request_id,
+                api.create_playlist(&title).await,
+            ));
         }
     }
 }
@@ -392,14 +544,35 @@ async fn stream_playlist_tracks(api: &Api, id: PlaylistId, deliver: &(impl Fn(Ac
 fn request_failure(request: ApiRequest, message: String) -> Action {
     match request {
         ApiRequest::VerifyAuth(_) | ApiRequest::StartOAuth { .. } => {
-            Action::AuthVerified(Err(message))
+            Action::AuthVerified(Err(message.into()))
         }
-        ApiRequest::Search { .. } => Action::SearchLoaded(Err(message)),
+        ApiRequest::Search { request_id, .. } => Action::SearchLoaded(request_id, Err(message)),
+        ApiRequest::FetchDiscovery {
+            request_id, target, ..
+        } => Action::DiscoveryLoaded {
+            request_id,
+            target,
+            result: Err(message),
+        },
+        ApiRequest::FetchHistory { request_id, .. } => Action::HistoryLoaded {
+            request_id,
+            result: Err(message),
+        },
         ApiRequest::FetchPlaylists => Action::PlaylistsLoaded(Err(message)),
         ApiRequest::FetchLiked => Action::LikedLoaded(Err(message)),
         ApiRequest::FetchPlaylistTracks(id) => Action::PlaylistTracksLoaded(id, Err(message)),
         ApiRequest::FetchArtist(id) => Action::ArtistLoaded(id, Err(message)),
         ApiRequest::FetchAlbum(id) => Action::AlbumLoaded(id, Err(message)),
+        ApiRequest::StartRadio {
+            request_id,
+            playback_generation,
+            seed,
+        } => Action::RadioStarted {
+            request_id,
+            playback_generation,
+            seed,
+            result: Err(message),
+        },
         ApiRequest::FetchRadio(id) => Action::RadioLoaded(id, Err(message)),
         ApiRequest::FetchPlaylistCovers(_) => Action::PlaylistCoversLoaded(vec![]),
         ApiRequest::RateTrack { .. } => Action::LibraryWriteFinished {
@@ -415,6 +588,8 @@ fn request_failure(request: ApiRequest, message: String) -> Action {
             what: LibraryWrite::Playlist(playlist),
             result: Err(message),
         },
-        ApiRequest::CreatePlaylist(_) => Action::PlaylistCreated(Err(message)),
+        ApiRequest::CreatePlaylist(request_id, _) => {
+            Action::PlaylistCreated(request_id, Err(message))
+        }
     }
 }

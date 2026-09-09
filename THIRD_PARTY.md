@@ -73,3 +73,11 @@ belongs to ytamp.
 (`src/ui/winamp/pixel_text.rs`), the same file fastpotify bundles.
 Inter is licensed under the SIL Open Font License 1.1, copied at
 `assets/fonts/OFL.txt`.
+
+## Noto Sans JP
+
+`assets/fonts/NotoSansJP.ttf` is Noto Sans JP from
+https://github.com/google/fonts/tree/main/ofl/notosansjp, licensed under the
+SIL Open Font License 1.1. The full license and copyright notice are in
+`assets/fonts/NotoSansJP-OFL.txt`. It supplies Japanese/CJK fallback glyphs
+for both the normal UI and the Winamp playlist.

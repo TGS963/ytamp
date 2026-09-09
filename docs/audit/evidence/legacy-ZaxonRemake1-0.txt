@@ -1,0 +1,30 @@
+skin: ZaxonRemake1-0
+sheets:
+  main decoded (275x116)
+  cbuttons decoded (136x36)
+  titlebar decoded (344x87)
+  shufrep decoded (92x85)
+  posbar decoded (307x4)
+  volume decoded (68x430)
+  balance decoded (68x430)
+  monoster decoded (58x24)
+  playpaus decoded (42x9)
+  numbers decoded (108x13)
+  nums_ex fell back to a substitute or the built-in skin
+  text decoded (155x18)
+  pledit decoded (280x190)
+  eqmain decoded (275x315)
+  eq_ex decoded (275x82)
+pledit.txt colors:
+  normal: [165, 184, 200]
+  current: [220, 228, 233]
+  normal background: [74, 84, 92]
+  selected background: [65, 74, 81]
+  font: Tahoma
+viscolor.txt colors: 24
+region masks:
+  normal: false
+  shade: false
+  equalizer: false
+  equalizer shade: false
+wrote the preview to skin_probe.png

@@ -44,6 +44,32 @@ impl Mask {
             .any(|(start, end)| x >= *start && x < *end)
     }
 
+    /// Visible rectangles within a sprite, merging identical consecutive rows.
+    /// This keeps curved masks compact without rounding their pixel edges.
+    pub fn visit_rects(
+        &self,
+        area: super::layout::Area,
+        mut visit: impl FnMut(super::layout::Area),
+    ) {
+        let mut y = area.y;
+        let bottom = area.y.saturating_add(area.height).min(self.height);
+        while y < bottom {
+            let spans = self.spans(y);
+            let mut end_y = y + 1;
+            while end_y < bottom && self.spans(end_y) == spans {
+                end_y += 1;
+            }
+            for &(left, right) in spans {
+                let x = left.max(area.x);
+                let end_x = right.min(area.x.saturating_add(area.width));
+                if x < end_x {
+                    visit(super::layout::Area::new(x, y, end_x - x, end_y - y));
+                }
+            }
+            y = end_y;
+        }
+    }
+
     /// Whether the shape is the whole rectangle, so masking is pointless.
     pub fn is_everything(&self) -> bool {
         self.rows.iter().all(|spans| spans == &[(0, self.width)])

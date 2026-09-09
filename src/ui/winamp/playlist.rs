@@ -7,6 +7,7 @@
 //! drawn with the bundled face (`pixel_text`), not the skin's bitmap
 //! font, since track titles carry scripts the bitmap font does not.
 
+#[cfg(test)]
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use crate::skin::{PlaylistStyle, sprites};
 
 use super::pixel_text::PixelText;
 use super::{View, WinampShell, format_minutes_seconds, menu};
+use crate::ui::queue_edit::Editor;
 
 /// One line of the list.
 struct Row {
@@ -52,11 +54,14 @@ pub(super) fn show(
     frame(view, height, focused);
     title_bar(view, ctx, shell);
     let rows = rows(state);
-    list(view, ctx, shell, &rows, height, out);
+    let mut editor = Editor::load(ctx, &state.playback.queue);
+    list(view, ctx, shell, &rows, height, out, &mut editor);
     scrollbar(view, shell, rows.len(), height);
     grip(view, shell, height);
     times(view, state, &rows, height);
-    menus(view, state, shell, &rows, height, out);
+    menus(view, state, shell, &rows, height, out, &mut editor);
+    editor.keyboard(view.ui, state.playback.queue.upcoming().count(), out);
+    editor.store(ctx);
 }
 
 /// The title bar: drags the viewport, and a double click shades the
@@ -277,6 +282,7 @@ fn rgb(color: [u8; 3]) -> Color32 {
 }
 
 /// The rows, in the skin's playlist colours.
+#[allow(clippy::too_many_arguments)]
 fn list(
     view: &mut View,
     ctx: &egui::Context,
@@ -284,6 +290,7 @@ fn list(
     rows: &[Row],
     height: u32,
     out: &mut Vec<Action>,
+    editor: &mut Editor,
 ) {
     let area = list_area(height);
     view.fill(
@@ -310,6 +317,7 @@ fn list(
             offset,
             area,
             out,
+            editor,
         );
     }
 }
@@ -384,6 +392,7 @@ fn draw_row(
     offset: usize,
     area: Area,
     out: &mut Vec<Action>,
+    editor: &mut Editor,
 ) {
     let line = Area::new(
         area.x,
@@ -392,19 +401,15 @@ fn draw_row(
         layout::PLAYLIST_TRACK_HEIGHT,
     );
     let rect = view.rect(line);
-    let response = view
-        .ui
-        .interact(rect, egui::Id::new(("playlist-row", index)), Sense::click());
-    if response.clicked() {
-        let adding = ctx.input(|input| input.modifiers.command || input.modifiers.ctrl);
-        toggle_selection(&mut shell.playlist_selection, index, adding);
-    }
-    if response.double_clicked()
-        && let Some(jump) = row.jump_to
+    let response = view.ui.interact(
+        rect,
+        egui::Id::new(("playlist-row", index)),
+        Sense::click_and_drag(),
+    );
+    if row
+        .jump_to
+        .is_some_and(|index| editor.selected.contains(&index))
     {
-        out.push(Action::QueueJumped(jump));
-    }
-    if shell.playlist_selection.contains(&index) {
         view.fill(
             line.x,
             line.y,
@@ -419,10 +424,20 @@ fn draw_row(
         style.normal
     };
     draw_row_text(view, ctx, &mut shell.playlist_text, row, line, rgb(color));
+    if let Some(index) = row.jump_to {
+        editor.row(view.ui, &response, index, out);
+        menu(
+            egui::Popup::context_menu(&response),
+            view.skin,
+            view.unit,
+            |ui| editor.menu(ui, index, out),
+        );
+    }
 }
 
 /// A click selects a row alone; a modified click adds it to, or drops
 /// it from, the standing selection.
+#[cfg(test)]
 fn toggle_selection(selection: &mut HashSet<usize>, index: usize, adding: bool) {
     if adding {
         if !selection.remove(&index) {
@@ -623,13 +638,15 @@ fn total_upcoming_duration(rows: &[Row]) -> Duration {
 }
 
 /// The five bottom menus: ADD, REM, SEL, MISC, and LIST.
+#[allow(clippy::too_many_arguments)]
 fn menus(
     view: &mut View,
     state: &State,
-    shell: &mut WinampShell,
-    rows: &[Row],
+    _shell: &mut WinampShell,
+    _rows: &[Row],
     height: u32,
     out: &mut Vec<Action>,
+    editor: &mut Editor,
 ) {
     let bottom = height - layout::PLAYLIST_BOTTOM_HEIGHT;
     let unit = view.unit;
@@ -644,8 +661,29 @@ fn menus(
             unit,
             |ui| match name {
                 "add" => add_menu(ui, out),
-                "rem" => rem_menu(ui, out),
-                "sel" => sel_menu(ui, &mut shell.playlist_selection, rows.len()),
+                "rem" => {
+                    if ui
+                        .add_enabled(
+                            !editor.selected.is_empty(),
+                            egui::Button::new("Remove selected"),
+                        )
+                        .clicked()
+                    {
+                        editor.remove(out);
+                        ui.close();
+                    }
+                    rem_menu(ui, out);
+                }
+                "sel" => {
+                    if ui.button("Select all").clicked() {
+                        editor
+                            .selected
+                            .extend(0..state.playback.queue.upcoming().count());
+                    }
+                    if ui.button("Select none").clicked() {
+                        editor.selected.clear();
+                    }
+                }
                 "misc" => misc_menu(ui, state, out),
                 _ => list_menu(ui),
             },
@@ -665,15 +703,6 @@ fn add_menu(ui: &mut Ui, out: &mut Vec<Action>) {
 fn rem_menu(ui: &mut Ui, out: &mut Vec<Action>) {
     if ui.button("Remove all queued songs").clicked() {
         out.push(Action::QueueCleared);
-    }
-}
-
-fn sel_menu(ui: &mut Ui, selection: &mut HashSet<usize>, row_count: usize) {
-    if ui.button("Select all").clicked() {
-        selection.extend(0..row_count);
-    }
-    if ui.button("Select none").clicked() {
-        selection.clear();
     }
 }
 

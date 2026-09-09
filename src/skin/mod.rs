@@ -267,7 +267,7 @@ impl Skin {
 }
 
 /// Whether a file inside a skin is one this reader looks at, so cursors,
-/// readmes, and the equalizer's bitmaps are never inflated.
+/// readmes, and unrelated assets are never inflated.
 fn wanted(file_name: &str) -> bool {
     if matches!(
         file_name,

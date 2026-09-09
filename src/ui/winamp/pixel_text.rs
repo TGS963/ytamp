@@ -5,9 +5,8 @@
 //!
 //! Each line is drawn once at skin resolution with no anti-aliasing,
 //! then cached and nearest-neighbour scaled with the rest of the
-//! skin. The bundled Inter face is the only face: ytamp does not
-//! port fastpotify's `system_fonts` probe or its emoji fallback face,
-//! since track titles need only the script Inter itself covers.
+//! skin. Inter supplies Latin glyphs; Noto Sans JP supplies Japanese
+//! and CJK glyphs using the same fallback as the normal UI.
 //!
 //! `skrifa` reads the face's outlines the same way `epaint` already
 //! does inside egui, and `tiny-skia` fills them with no anti-alias.
@@ -45,7 +44,7 @@ struct Face {
 #[derive(Default)]
 pub struct PixelText {
     lines: HashMap<String, Line>,
-    face: Option<Face>,
+    faces: Option<Vec<Face>>,
 }
 
 impl PixelText {
@@ -54,42 +53,48 @@ impl PixelText {
         self.lines.clear();
     }
 
-    fn face(&mut self) -> Option<&Face> {
-        if self.face.is_none() {
-            let font = skrifa::FontRef::new(FACE_BYTES).ok()?;
-            let size = Size::new(SIZE_PX as f32);
-            let hinting = HintingInstance::new(
-                &font.outline_glyphs(),
-                size,
-                LocationRef::default(),
-                Target::Mono,
-            )
-            .ok();
-            self.face = Some(Face { font, hinting });
-        }
-        self.face.as_ref()
+    fn faces(&mut self) -> &[Face] {
+        self.faces.get_or_insert_with(|| {
+            [FACE_BYTES, crate::fonts::JAPANESE]
+                .into_iter()
+                .filter_map(|bytes| {
+                    let font = skrifa::FontRef::new(bytes).ok()?;
+                    let hinting = HintingInstance::new(
+                        &font.outline_glyphs(),
+                        Size::new(SIZE_PX as f32),
+                        LocationRef::default(),
+                        Target::Mono,
+                    )
+                    .ok();
+                    Some(Face { font, hinting })
+                })
+                .collect()
+        })
     }
 
-    /// The glyph that draws a character: the face's own, or its
-    /// question mark for a character it does not cover.
-    fn glyph_for(face: &Face, character: char) -> Option<skrifa::GlyphId> {
-        face.font
-            .charmap()
-            .map(character)
-            .or_else(|| face.font.charmap().map('?'))
+    fn glyph_for(faces: &[Face], character: char) -> Option<(usize, skrifa::GlyphId)> {
+        faces
+            .iter()
+            .enumerate()
+            .find_map(|(i, face)| face.font.charmap().map(character).map(|g| (i, g)))
+            .or_else(|| faces.first()?.font.charmap().map('?').map(|g| (0, g)))
     }
 
     /// How wide a line would be, in skin pixels, from the face's
     /// advances.
     pub fn width(&mut self, text: &str) -> f32 {
         let size = Size::new(SIZE_PX as f32);
-        let Some(face) = self.face() else {
-            return 0.0;
-        };
-        let metrics = face.font.glyph_metrics(size, LocationRef::default());
+        let faces = self.faces();
         text.chars()
-            .filter_map(|character| Self::glyph_for(face, character))
-            .map(|glyph| metrics.advance_width(glyph).unwrap_or(0.0).round())
+            .filter_map(|character| Self::glyph_for(faces, character))
+            .map(|(i, glyph)| {
+                faces[i]
+                    .font
+                    .glyph_metrics(size, LocationRef::default())
+                    .advance_width(glyph)
+                    .unwrap_or(0.0)
+                    .round()
+            })
             .sum()
     }
 
@@ -118,19 +123,24 @@ impl PixelText {
     fn rasterise(&mut self, text: &str) -> ColorImage {
         let size = Size::new(SIZE_PX as f32);
         let location = LocationRef::default();
-        let Some(face) = self.face() else {
-            return ColorImage::filled([1, 1], Color32::TRANSPARENT);
-        };
-        let metrics = face.font.metrics(size, location);
-        let ascent = metrics.ascent.ceil();
-        let height = (ascent + (-metrics.descent).ceil()).max(1.0) as u32;
+        let faces = self.faces();
+        let ascent = faces
+            .iter()
+            .map(|f| f.font.metrics(size, location).ascent.ceil())
+            .fold(0.0f32, f32::max);
+        let descent = faces
+            .iter()
+            .map(|f| -f.font.metrics(size, location).descent.floor())
+            .fold(0.0f32, f32::max);
+        let height = (ascent + descent).max(1.0) as u32;
 
         let mut paths = Vec::new();
         let mut x = 0.0f32;
         for character in text.chars() {
-            let Some(glyph) = Self::glyph_for(face, character) else {
+            let Some((index, glyph)) = Self::glyph_for(faces, character) else {
                 continue;
             };
+            let face = &faces[index];
             let mut advance = face
                 .font
                 .glyph_metrics(size, location)
@@ -245,6 +255,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn japanese_titles_use_real_fallback_glyphs() {
+        let mut text = PixelText::default();
+        let faces = text.faces();
+        for c in "初音ミク".chars() {
+            let (face, glyph) = PixelText::glyph_for(faces, c).unwrap();
+            assert_eq!(face, 1);
+            assert_ne!(Some(glyph), faces[face].font.charmap().map('?'));
+        }
+        let japanese = text.rasterise("初音ミク");
+        let missing = text.rasterise("????");
+        assert_ne!(japanese, missing);
+    }
+
+    #[test]
     fn a_line_is_ink_on_nothing_at_the_skin_size() {
         let mut text = PixelText::default();
         let image = text.rasterise("Bonobo - Rosewood");
@@ -283,7 +307,7 @@ mod tests {
     #[test]
     fn an_uncovered_character_falls_back_to_the_question_mark_glyph() {
         let mut text = PixelText::default();
-        let face = text.face().expect("the bundled face reads");
+        let face = text.faces();
         let question = PixelText::glyph_for(face, '?');
         // The last codepoint of the supplementary private-use area B:
         // no distributed face maps a glyph to it.

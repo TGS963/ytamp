@@ -44,9 +44,9 @@ fn header(ui: &mut egui::Ui, page: &AlbumPage, theme: &dyn Theme, out: &mut Vec<
     ui.horizontal(|ui| {
         rows::artwork(ui, theme, page.album.thumbnail_url.as_deref(), art_size);
         ui.vertical(|ui| {
-            ui.label(theme.label(TextRole::Title, &page.album.title));
+            super::components::page_title(ui, theme, &page.album.title);
             ui.label(theme.secondary_label(TextRole::Caption, album_subtitle(page)));
-            if ui.button("Play").clicked() {
+            if ui.add(super::components::primary(theme, "Play")).clicked() {
                 out.push(Action::ContextPlayed {
                     tracks: page.tracks.clone(),
                     start: 0,

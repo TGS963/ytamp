@@ -53,6 +53,12 @@ pub struct CurrentTrack {
     pub source: TrackSource,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+enum UpcomingEntry {
+    User(usize),
+    Context(usize),
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     context: Vec<Track>,
@@ -61,6 +67,8 @@ pub struct Queue {
     /// The position of the current context track inside `order`.
     cursor: Option<usize>,
     user_queue: VecDeque<Track>,
+    #[serde(default)]
+    manual_order: Option<Vec<UpcomingEntry>>,
     current: Option<CurrentTrack>,
     pub repeat: RepeatMode,
     pub shuffle: bool,
@@ -77,6 +85,7 @@ impl Queue {
     ) -> Option<Track> {
         let track = tracks.get(start)?.clone();
         let (order, cursor) = play_order(tracks.len(), start, self.shuffle, random_below);
+        self.manual_order = None;
         self.order = order;
         self.context = tracks;
         self.cursor = Some(cursor);
@@ -87,13 +96,119 @@ impl Queue {
         Some(track)
     }
 
+    fn entries(&self) -> Vec<UpcomingEntry> {
+        self.manual_order.clone().unwrap_or_else(|| {
+            (0..self.user_queue.len())
+                .map(UpcomingEntry::User)
+                .chain(
+                    self.cursor
+                        .into_iter()
+                        .flat_map(|c| self.order[c + 1..].iter().copied())
+                        .map(UpcomingEntry::Context),
+                )
+                .collect()
+        })
+    }
+    fn entry_track(&self, entry: UpcomingEntry) -> Option<&Track> {
+        match entry {
+            UpcomingEntry::User(i) => self.user_queue.get(i),
+            UpcomingEntry::Context(i) => self.context.get(i),
+        }
+    }
+    /// Move selected upcoming occurrences before an insertion boundary in the
+    /// original list. Keeps current playback, source identity and duplicates.
+    pub fn move_upcoming(&mut self, selected: &[usize], before: usize) {
+        let entries = self.entries();
+        if before > entries.len() {
+            return;
+        }
+        let selected: std::collections::BTreeSet<_> = selected
+            .iter()
+            .copied()
+            .filter(|i| *i < entries.len())
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        let moving: Vec<_> = selected.iter().map(|i| entries[*i]).collect();
+        let target = before - selected.iter().filter(|i| **i < before).count();
+        let mut remaining: Vec<_> = entries
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !selected.contains(i))
+            .map(|(_, e)| e)
+            .collect();
+        remaining.splice(target..target, moving);
+        self.manual_order = Some(remaining);
+    }
+    /// Remove one upcoming occurrence without moving the current track.
+    pub fn remove_upcoming(&mut self, index: usize) {
+        let Some(entry) = self.entries().get(index).copied() else {
+            return;
+        };
+        if let Some(order) = &mut self.manual_order {
+            order.remove(index);
+        }
+        match entry {
+            UpcomingEntry::User(i) => {
+                self.user_queue.remove(i);
+                self.adjust_removed(entry);
+            }
+            UpcomingEntry::Context(i) => {
+                self.order.retain(|v| *v != i);
+                self.context.remove(i);
+                for v in &mut self.order {
+                    if *v > i {
+                        *v -= 1;
+                    }
+                }
+                self.adjust_removed(entry);
+            }
+        }
+    }
+    fn adjust_removed(&mut self, removed: UpcomingEntry) {
+        if let Some(order) = &mut self.manual_order {
+            for entry in order {
+                match (entry, removed) {
+                    (UpcomingEntry::User(value), UpcomingEntry::User(i))
+                    | (UpcomingEntry::Context(value), UpcomingEntry::Context(i))
+                        if *value > i =>
+                    {
+                        *value -= 1
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    pub fn play_next(&mut self, track: Track) {
+        if let Some(order) = &mut self.manual_order {
+            for entry in order.iter_mut() {
+                if let UpcomingEntry::User(i) = entry {
+                    *i += 1;
+                }
+            }
+            order.insert(0, UpcomingEntry::User(0));
+        }
+        self.user_queue.push_front(track);
+    }
     pub fn queue_track(&mut self, track: Track) {
+        if let Some(order) = &mut self.manual_order {
+            let at = order
+                .iter()
+                .rposition(|e| matches!(e, UpcomingEntry::User(_)))
+                .map_or(0, |i| i + 1);
+            order.insert(at, UpcomingEntry::User(self.user_queue.len()));
+        }
         self.user_queue.push_back(track);
     }
 
     /// Drops every explicitly queued track, leaving the context alone.
     pub fn clear_user_queue(&mut self) {
         self.user_queue.clear();
+        if let Some(order) = &mut self.manual_order {
+            order.retain(|e| matches!(e, UpcomingEntry::Context(_)));
+        }
     }
 
     /// Jumps straight to the track at `index` in [`Self::upcoming`],
@@ -101,41 +216,14 @@ impl Queue {
     /// tracks in between without playing them. Returns the track to
     /// load, or `None` when `index` is out of range.
     pub fn jump_to(&mut self, index: usize) -> Option<Track> {
-        if index < self.user_queue.len() {
-            return self.jump_within_user_queue(index);
-        }
-        self.jump_within_context(index - self.user_queue.len())
-    }
-
-    /// Drops the queued tracks before `index` and plays the one at it.
-    fn jump_within_user_queue(&mut self, index: usize) -> Option<Track> {
-        for _ in 0..index {
-            self.user_queue.pop_front();
-        }
-        let track = self.user_queue.pop_front()?;
-        self.current = Some(CurrentTrack {
-            track: track.clone(),
-            source: TrackSource::UserQueue,
-        });
-        Some(track)
-    }
-
-    /// Drops the whole user queue and moves the cursor to the context
-    /// track `offset` positions past the current one.
-    fn jump_within_context(&mut self, offset: usize) -> Option<Track> {
-        self.user_queue.clear();
-        let cursor = self.cursor?;
-        let target = cursor.checked_add(offset)?.checked_add(1)?;
-        if target >= self.order.len() {
+        if index >= self.upcoming().count() {
             return None;
         }
-        self.cursor = Some(target);
-        let track = self.context[self.order[target]].clone();
-        self.current = Some(CurrentTrack {
-            track: track.clone(),
-            source: TrackSource::Context,
-        });
-        Some(track)
+        let mut track = None;
+        for _ in 0..=index {
+            track = self.next();
+        }
+        track
     }
 
     /// Appends tracks to the end of the context and the play order.
@@ -147,6 +235,9 @@ impl Queue {
     pub fn extend_context(&mut self, tracks: Vec<Track>) {
         let start = self.context.len();
         let new_indices = start..start + tracks.len();
+        if let Some(order) = &mut self.manual_order {
+            order.extend(new_indices.clone().map(UpcomingEntry::Context));
+        }
         self.context.extend(tracks);
         self.order.extend(new_indices);
     }
@@ -158,7 +249,38 @@ impl Queue {
 
     /// An explicit skip. Returns the track to load, or `None` when the
     /// queue is exhausted and playback stops.
+    // A repeatable transport action, not an iterator (Previous can move back).
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Track> {
+        if let Some(entry) = self
+            .manual_order
+            .as_mut()
+            .and_then(|order| (!order.is_empty()).then(|| order.remove(0)))
+        {
+            let (track, source) = match entry {
+                UpcomingEntry::User(i) => {
+                    let track = self.user_queue.remove(i)?;
+                    self.adjust_removed(entry);
+                    (track, TrackSource::UserQueue)
+                }
+                UpcomingEntry::Context(i) => {
+                    let next = self.cursor? + 1;
+                    let position = self.order.iter().position(|v| *v == i)?;
+                    if position < next {
+                        return None;
+                    }
+                    self.order[next..=position].rotate_right(1);
+                    self.cursor = Some(next);
+                    (self.context.get(i)?.clone(), TrackSource::Context)
+                }
+            };
+            self.current = Some(CurrentTrack {
+                track: track.clone(),
+                source,
+            });
+            return Some(track);
+        }
+        self.manual_order = None;
         if let Some(track) = self.user_queue.pop_front() {
             self.current = Some(CurrentTrack {
                 track: track.clone(),
@@ -190,6 +312,15 @@ impl Queue {
     pub fn previous(&mut self) -> Option<Track> {
         let cursor = self.cursor?;
         let previous = self.previous_cursor(cursor);
+        if previous > cursor {
+            self.manual_order = None;
+        } else if let Some(order) = &mut self.manual_order {
+            let replay = self.order[previous + 1..cursor + 1]
+                .iter()
+                .copied()
+                .map(UpcomingEntry::Context);
+            order.splice(0..0, replay);
+        }
         self.cursor = Some(previous);
         let track = self.context[self.order[previous]].clone();
         self.current = Some(CurrentTrack {
@@ -201,6 +332,7 @@ impl Queue {
 
     /// Turns shuffle on or off and reorders the tracks after the current one.
     pub fn set_shuffle(&mut self, on: bool, random_below: RandomBelow) {
+        self.manual_order = None;
         self.shuffle = on;
         let Some(cursor) = self.cursor else {
             return;
@@ -217,14 +349,20 @@ impl Queue {
 
     /// The tracks that play after the current one: the user queue first,
     /// then the rest of the context in play order.
-    pub fn upcoming(&self) -> impl Iterator<Item = &Track> {
-        let context_rest = self
-            .cursor
-            .map(|cursor| &self.order[cursor + 1..])
-            .unwrap_or_default()
-            .iter()
-            .map(|&index| &self.context[index]);
-        self.user_queue.iter().chain(context_rest)
+    pub fn upcoming(&self) -> Box<dyn Iterator<Item = &Track> + '_> {
+        if let Some(order) = &self.manual_order {
+            Box::new(order.iter().filter_map(|e| self.entry_track(*e)))
+        } else {
+            let rest = self
+                .cursor
+                .map(|c| &self.order[c + 1..])
+                .unwrap_or_default();
+            Box::new(
+                self.user_queue
+                    .iter()
+                    .chain(rest.iter().filter_map(|i| self.context.get(*i))),
+            )
+        }
     }
 
     /// The track that would play after the current one, without
@@ -234,6 +372,9 @@ impl Queue {
     pub fn peek_next(&self) -> Option<Track> {
         if self.repeat == RepeatMode::One {
             return self.current().cloned();
+        }
+        if let Some(entry) = self.manual_order.as_ref().and_then(|o| o.first()) {
+            return self.entry_track(*entry).cloned();
         }
         if let Some(track) = self.user_queue.front() {
             return Some(track.clone());
@@ -320,6 +461,111 @@ mod tests {
 
     fn current_id(queue: &Queue) -> &str {
         &queue.current().expect("a current track").id.0
+    }
+
+    #[test]
+    fn previous_preserves_pending_manual_edits() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b", "c", "d"]), 0, &mut no_random);
+        queue.move_upcoming(&[2], 0);
+        queue.previous();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|t| t.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "b", "c"]
+        );
+        queue.next();
+        queue.previous();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|t| t.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "b", "c"]
+        );
+    }
+    #[test]
+    fn manual_order_preserves_sources_duplicates_repeat_and_restart() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b", "b", "c"]), 0, &mut no_random);
+        queue.queue_track(track("u"));
+        queue.queue_track(track("v"));
+        queue.move_upcoming(&[2, 4], 0); // b,c,u,v,b
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|t| t.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c", "u", "v", "b"]
+        );
+        let json = serde_json::to_string(&queue).unwrap();
+        queue = serde_json::from_str(&json).unwrap();
+        assert_eq!(current_id(&queue), "a");
+        assert_eq!(queue.peek_next().unwrap().id.0, "b");
+        for id in ["b", "c", "u", "v", "b"] {
+            assert_eq!(queue.next().unwrap().id.0, id);
+        }
+        assert!(queue.next().is_none());
+        queue.repeat = RepeatMode::All;
+        for id in ["a", "b", "c", "b", "a"] {
+            assert_eq!(queue.next().unwrap().id.0, id);
+        }
+    }
+    #[test]
+    fn edits_after_reordering_keep_indices_and_current_intact() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b", "c", "d"]), 0, &mut no_random);
+        queue.queue_track(track("u"));
+        queue.move_upcoming(&[3], 0); // d,u,b,c
+        queue.remove_upcoming(2); // b
+        queue.queue_track(track("v")); // d,u,v,c
+        queue.extend_context(tracks(&["e"]));
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|t| t.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "u", "v", "c", "e"]
+        );
+        queue.clear_user_queue();
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|t| t.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["d", "c", "e"]
+        );
+        let before = queue.clone();
+        assert!(queue.jump_to(usize::MAX).is_none());
+        assert_eq!(queue, before);
+        assert_eq!(queue.jump_to(1).unwrap().id.0, "c");
+        assert_eq!(queue.next().unwrap().id.0, "e");
+    }
+    #[test]
+    fn invalid_jump_keeps_explicit_queue() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b"]), 0, &mut no_random);
+        queue.queue_track(track("u"));
+        let before = queue.clone();
+        assert!(queue.jump_to(999).is_none());
+        assert_eq!(queue, before);
+    }
+    #[test]
+    fn removing_upcoming_entries_preserves_current_and_repeat_order() {
+        let mut queue = Queue::default();
+        queue.play_context(tracks(&["a", "b", "c", "d"]), 0, &mut no_random);
+        queue.queue_track(track("u"));
+        queue.remove_upcoming(2); // c, after user-queued u and context b.
+        assert_eq!(current_id(&queue), "a");
+        assert!(!queue.contains(&TrackId("c".into())));
+        queue.remove_upcoming(0); // u
+        queue.remove_upcoming(usize::MAX); // no effect
+        queue.repeat = RepeatMode::All;
+        assert_eq!(queue.next().unwrap().id.0, "b");
+        assert_eq!(queue.next().unwrap().id.0, "d");
+        assert_eq!(queue.next().unwrap().id.0, "a");
     }
 
     #[test]

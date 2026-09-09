@@ -19,17 +19,106 @@ use super::state::{AuthState, Dialog, Loadable, Page, PlayStatus, State};
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 
 pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> Vec<Effect> {
+    let generation = state.playback_generation;
+    let lyrics_request = state.lyrics.request_id;
+    let lyrics_open = state.lyrics.open;
+    let mut effects = update_inner(state, action, random_below);
+    if effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::Player(PlayerCommand::Load(_) | PlayerCommand::Stop)
+        )
+    }) {
+        state.playback_generation = generation.wrapping_add(1);
+    }
+    state.lyrics.request_id = state.lyrics.request_id.max(lyrics_request);
+    if lyrics_open
+        && state.page != Page::NowPlaying
+        && !state.lyrics.open
+        && !effects
+            .iter()
+            .any(|e| matches!(e, Effect::FetchLyrics(None)))
+    {
+        effects.push(Effect::FetchLyrics(None));
+    }
+    effects.extend(super::lyrics::sync(state));
+    effects
+}
+fn update_inner(state: &mut State, action: Action, random_below: RandomBelow) -> Vec<Effect> {
     match action {
+        action @ (Action::LyricsToggled
+        | Action::LyricsDelaySet { .. }
+        | Action::LyricsReloadRequested
+        | Action::LyricsLoaded { .. }) => super::lyrics::apply(state, action),
+        Action::ForPlayback { generation, event } => {
+            if generation != state.playback_generation {
+                return vec![];
+            }
+            apply_player_event(state, event)
+        }
+        Action::ForSession { generation, action } => {
+            if generation != state.session_generation {
+                return vec![];
+            }
+            update_inner(state, *action, random_below)
+        }
+        action @ (Action::DiscoveryOpened(_)
+        | Action::DiscoveryRequested { .. }
+        | Action::DiscoveryLoaded { .. }) => super::discovery::apply(state, action),
+        Action::HistoryRequested { more } => state.listening_history.request(more),
+        action @ Action::HistoryLoaded { .. } => {
+            state.listening_history.apply(action);
+            vec![]
+        }
+        Action::LibraryRefreshRequested => {
+            if matches!(
+                state.library.playlists,
+                Loadable::Loading | Loadable::Refreshing(_)
+            ) || matches!(
+                state.library.liked,
+                Loadable::Loading | Loadable::Refreshing(_)
+            ) {
+                return vec![];
+            }
+            state.library.playlists = Loadable::NotAsked;
+            state.library.liked = Loadable::NotAsked;
+            fetch_missing_library(state)
+        }
+        Action::QueueRemoved(index) => {
+            state.playback.queue.remove_upcoming(index);
+            prefetch_next(state)
+        }
         Action::NavigatedTo(page) => navigate(state, page),
-        Action::CookieDraftChanged(draft) => {
-            state.sign_in.draft = draft;
+        Action::OAuthTokenStored => {
+            state.sign_in.saved_account = true;
             vec![]
         }
-        Action::AuthUserDraftChanged(draft) => {
-            state.sign_in.authuser_draft = draft;
+        Action::SignInCancelled => {
+            state.session_generation += 1;
+            state.sign_in.oauth_url = None;
+            state.auth = if state.sign_in.saved_account {
+                AuthState::ConnectionFailed
+            } else {
+                AuthState::SignedOut
+            };
             vec![]
         }
-        Action::CookiesSubmitted => submit_cookies(state),
+        Action::SignInRetryRequested => {
+            if !state.sign_in.saved_account || state.auth == AuthState::Verifying {
+                return vec![];
+            }
+            state.session_generation += 1;
+            state.auth = AuthState::Verifying;
+            state.sign_in.oauth_url = None;
+            vec![Effect::LoadStoredAuth]
+        }
+        Action::SessionExpired => {
+            if state.auth == AuthState::SignedIn {
+                state.auth = AuthState::Expired;
+                state.sign_in.saved_account = true;
+            }
+            vec![]
+        }
         Action::SignOutRequested => sign_out(state),
         Action::OAuthClientIdChanged(draft) => {
             state.sign_in.client_id_draft = draft;
@@ -50,7 +139,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             vec![]
         }
         Action::SearchSubmitted => submit_search(state),
-        Action::SearchLoaded(result) => {
+        Action::SearchLoaded(request_id, result) => {
+            if request_id != state.search.request_id {
+                return vec![];
+            }
             set_loadable(&mut state.search.results, result);
             vec![]
         }
@@ -79,27 +171,166 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         Action::PlaylistTracksCacheLoaded(id, tracks) => {
             apply_playlist_tracks_cache(state, id, tracks)
         }
+        Action::LikedShuffleRequested => {
+            let tracks = state.library.liked.loaded().cloned().unwrap_or_default();
+            if tracks.is_empty() {
+                return vec![];
+            }
+            let start = random_below(tracks.len());
+            state.playback.queue.set_shuffle(true, random_below);
+            play_context(state, tracks, start, random_below)
+        }
         Action::ContextPlayed { tracks, start } => play_context(state, tracks, start, random_below),
+        Action::NowPlayingOpened => {
+            if state.page != Page::NowPlaying {
+                state.history.push(state.page.clone());
+                state.page = Page::NowPlaying;
+            }
+            vec![]
+        }
+        Action::DiscoveryShelfOpened(shelf) => {
+            state.history.push(state.page.clone());
+            state.page = Page::DiscoveryShelf(Box::new(shelf));
+            vec![]
+        }
+        Action::DiscoveryCacheLoaded(page) => {
+            let feed = &mut state.discovery.home;
+            if !feed.loaded {
+                feed.page = page;
+                feed.loaded = true;
+            }
+            vec![]
+        }
+        Action::TrackPlayNext(track) => {
+            state.playback.queue.play_next(track);
+            prefetch_next(state)
+        }
+        Action::RadioStartCancelled => {
+            state.discovery.radio_loading = false;
+            state.discovery.radio_request_id = state.discovery.radio_request_id.wrapping_add(1);
+            vec![]
+        }
+        Action::RadioStartRequested(seed) => {
+            state.discovery.radio_loading = true;
+            state.discovery.radio_request_id = state.discovery.radio_request_id.wrapping_add(1);
+            vec![Effect::Api(ApiRequest::StartRadio {
+                request_id: state.discovery.radio_request_id,
+                playback_generation: state.playback_generation,
+                seed,
+            })]
+        }
+        Action::RadioStarted {
+            request_id,
+            playback_generation,
+            seed,
+            result,
+        } => {
+            if request_id != state.discovery.radio_request_id {
+                return vec![];
+            }
+            state.discovery.radio_loading = false;
+            if playback_generation != state.playback_generation {
+                return vec![];
+            }
+            state.discovery.radio_request_id = state.discovery.radio_request_id.wrapping_add(1);
+            match result {
+                Ok(mut tracks) if !tracks.is_empty() => {
+                    tracks.retain(|t| t.id != seed.id);
+                    tracks.insert(0, seed);
+                    play_context(state, tracks, 0, random_below)
+                }
+                Ok(_) => {
+                    state
+                        .notices
+                        .push("No radio is available for this song.".into());
+                    vec![]
+                }
+                Err(e) => {
+                    state.notices.push(format!("Couldn’t start radio: {e}"));
+                    vec![]
+                }
+            }
+        }
         Action::TrackQueued(track) => {
             state.playback.queue.queue_track(track);
             prefetch_next(state)
         }
         Action::TrackHovered(track) => hover_prefetch(state, track),
         Action::PlayToggled => toggle_play(state),
+        Action::PlaybackRetryRequested => {
+            if state.playback.error.is_some() {
+                restart_current(state)
+            } else {
+                vec![]
+            }
+        }
         Action::NextPressed => advance_or_start_radio(state, |state| state.playback.queue.next()),
         Action::PreviousPressed => go_previous(state),
         Action::QueueJumped(index) => {
+            if index >= state.playback.queue.upcoming().count() {
+                return vec![];
+            }
             load_or_stop(state, |state| state.playback.queue.jump_to(index))
+        }
+        Action::QueueSelectionRemoved(mut indices) => {
+            indices.sort_unstable();
+            indices.dedup();
+            for index in indices.into_iter().rev() {
+                state.playback.queue.remove_upcoming(index);
+            }
+            prefetch_next(state)
+        }
+        Action::QueueSelectionMoved { selected, before } => {
+            state.playback.queue.move_upcoming(&selected, before);
+            prefetch_next(state)
         }
         Action::QueueCleared => {
             state.playback.queue.clear_user_queue();
             prefetch_next(state)
         }
         Action::SeekRequested(position) => {
+            let position = state
+                .playback
+                .track_duration
+                .map_or(position, |duration| position.min(duration));
             state.playback.position = position;
-            vec![Effect::Player(PlayerCommand::Seek(position))]
+            if state.playback.loading || state.playback.resume_position.is_some() {
+                state.playback.resume_position = Some(position);
+                vec![]
+            } else {
+                vec![Effect::Player(PlayerCommand::Seek(position))]
+            }
         }
         Action::VolumeSet(volume) => set_volume(state, volume),
+        Action::BalanceSet(value) => {
+            let value = if value.is_finite() {
+                value.clamp(-1., 1.)
+            } else {
+                0.
+            };
+            state.playback.balance = value;
+            vec![Effect::Player(PlayerCommand::SetBalance(value))]
+        }
+        Action::EqualizerChanged(parameters) => {
+            let parameters = parameters.normalized();
+            if state.equalizer.parameters == parameters {
+                return vec![];
+            }
+            state.equalizer.parameters = parameters;
+            vec![Effect::Player(PlayerCommand::SetEqualizer(parameters))]
+        }
+        Action::EqualizerPresetSaved(name) => {
+            if !state.equalizer.save_preset(&name) {
+                state
+                    .notices
+                    .push("Enter a preset name; at most 32 custom presets can be saved.".into());
+            }
+            vec![]
+        }
+        Action::EqualizerPresetDeleted(name) => {
+            state.equalizer.presets.retain(|p| p.name != name);
+            vec![]
+        }
         Action::ShuffleToggled => {
             let on = !state.playback.queue.shuffle;
             state.playback.queue.set_shuffle(on, random_below);
@@ -126,6 +357,10 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             state.winamp.on_top = !state.winamp.on_top;
             vec![]
         }
+        Action::SkinBrowserToggled => {
+            state.skin_browser_open = !state.skin_browser_open;
+            vec![]
+        }
         Action::SkinChosen(skin) => wear_skin(state, skin),
         Action::SkinFileDropped(path) => vec![Effect::InstallSkin(path)],
         // Shell-only: `App::reduce` intercepts `SkinLoaded` before it
@@ -148,10 +383,25 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             vec![]
         }
         Action::StoredAuthFound(method) => {
+            state.sign_in.saved_account = true;
+            let crate::core::effect::AuthMethod::OAuthToken(json) = &method;
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                state.sign_in.client_id_draft = value
+                    .get("client_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .into();
+                state.sign_in.client_secret_draft = value
+                    .get("client_secret")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .into();
+            }
+            state.session_generation += 1;
             state.auth = AuthState::Verifying;
             vec![Effect::Api(ApiRequest::VerifyAuth(method))]
         }
-        Action::SessionRestored(session) => restore_session(state, session),
+        Action::SessionRestored(session) => restore_session(state, *session),
         Action::NoticePosted(message) => {
             state.notices.push(message);
             vec![]
@@ -184,7 +434,9 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
             track,
             result,
         } => finish_playlist_item_add(state, playlist, track, result),
-        Action::PlaylistCreated(result) => finish_playlist_create(state, result),
+        Action::PlaylistCreated(request_id, result) => {
+            finish_playlist_create(state, request_id, result)
+        }
         Action::LibraryWriteFinished { what, result } => finish_library_write(state, what, result),
         Action::Player(event) => apply_player_event(state, event),
     }
@@ -195,7 +447,22 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
 fn navigate(state: &mut State, page: Page) -> Vec<Effect> {
     state.history.clear();
     let effects = match page {
+        Page::Home => {
+            let mut effects = fetch_missing_library(state);
+            if !state.discovery.home.loaded {
+                effects.extend(
+                    state
+                        .discovery
+                        .home
+                        .request(super::discovery::Target::home(), false),
+                );
+            }
+            effects
+        }
         Page::Library => fetch_missing_library(state),
+        Page::ListeningHistory if !state.listening_history.loaded => {
+            state.listening_history.request(false)
+        }
         _ => vec![],
     };
     state.page = page;
@@ -209,12 +476,18 @@ fn navigate(state: &mut State, page: Page) -> Vec<Effect> {
 fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
     let mut effects = vec![];
     let mut needs_cache = false;
-    if state.library.playlists == Loadable::NotAsked {
+    if matches!(
+        state.library.playlists,
+        Loadable::NotAsked | Loadable::Failed(_)
+    ) {
         state.library.playlists = Loadable::Loading;
         effects.push(Effect::Api(ApiRequest::FetchPlaylists));
         needs_cache = true;
     }
-    if state.library.liked == Loadable::NotAsked {
+    if matches!(
+        state.library.liked,
+        Loadable::NotAsked | Loadable::Failed(_)
+    ) {
         state.library.liked = Loadable::Loading;
         state.library.liked_loading_more = false;
         state.library.incoming_liked.clear();
@@ -227,42 +500,10 @@ fn fetch_missing_library(state: &mut State) -> Vec<Effect> {
     effects
 }
 
-fn submit_cookies(state: &mut State) -> Vec<Effect> {
-    if state.sign_in.draft.trim().is_empty() {
+fn start_oauth(state: &mut State) -> Vec<Effect> {
+    if state.auth == AuthState::Verifying {
         return vec![];
     }
-    let parsed = match super::cookie_paste::credentials_from_paste(&state.sign_in.draft) {
-        Ok(parsed) => parsed,
-        Err(problem) => {
-            state.auth = AuthState::Failed(problem);
-            return vec![];
-        }
-    };
-    let credentials = crate::core::effect::Credentials {
-        cookies: parsed.cookies,
-        authuser: normalized_authuser(&state.sign_in.authuser_draft),
-        headers: parsed.headers,
-    };
-    state.auth = AuthState::Verifying;
-    vec![
-        Effect::SaveCredentials(credentials.clone()),
-        Effect::Api(ApiRequest::VerifyAuth(
-            crate::core::effect::AuthMethod::Browser(credentials),
-        )),
-    ]
-}
-
-/// The account index for the X-Goog-AuthUser header: "0" when the
-/// field stays empty.
-fn normalized_authuser(draft: &str) -> String {
-    let trimmed = draft.trim();
-    if trimmed.is_empty() {
-        return "0".to_string();
-    }
-    trimmed.to_string()
-}
-
-fn start_oauth(state: &mut State) -> Vec<Effect> {
     let client_id = state.sign_in.client_id_draft.trim().to_string();
     let client_secret = state.sign_in.client_secret_draft.trim().to_string();
     if client_id.is_empty() || client_secret.is_empty() {
@@ -270,6 +511,7 @@ fn start_oauth(state: &mut State) -> Vec<Effect> {
             AuthState::Failed("Enter both the OAuth client id and the client secret.".to_string());
         return vec![];
     }
+    state.session_generation += 1;
     state.auth = AuthState::Verifying;
     state.sign_in.oauth_url = None;
     vec![Effect::Api(ApiRequest::StartOAuth {
@@ -280,11 +522,17 @@ fn start_oauth(state: &mut State) -> Vec<Effect> {
 
 /// Back to the sign-in page with a fresh state. Playback stops and
 /// the queue empties: nothing of the session stays audible. Only the
-/// volume setting survives.
+/// volume and equalizer settings survive.
 fn sign_out(state: &mut State) -> Vec<Effect> {
+    let equalizer = state.equalizer.clone();
     let volume = state.playback.volume;
+    let balance = state.playback.balance;
+    let generation = state.session_generation + 1;
     *state = State::default();
+    state.session_generation = generation;
     state.playback.volume = volume;
+    state.playback.balance = balance;
+    state.equalizer = equalizer;
     vec![
         Effect::Player(PlayerCommand::Stop),
         Effect::ClearCredentials,
@@ -292,14 +540,26 @@ fn sign_out(state: &mut State) -> Vec<Effect> {
     ]
 }
 
-fn finish_sign_in(state: &mut State, result: Result<(), String>) -> Vec<Effect> {
+fn finish_sign_in(
+    state: &mut State,
+    result: Result<(), super::sign_in::SignInFailure>,
+) -> Vec<Effect> {
     match result {
         Ok(()) => {
             state.auth = AuthState::SignedIn;
-            navigate(state, Page::Library)
+            state.sign_in.saved_account = true;
+            state.sign_in.oauth_url = None;
+            navigate(state, Page::Home)
         }
         Err(message) => {
-            state.auth = AuthState::Failed(message);
+            state.sign_in.oauth_url = None;
+            state.auth = match message {
+                super::sign_in::SignInFailure::Connection => AuthState::ConnectionFailed,
+                super::sign_in::SignInFailure::Expired => AuthState::Expired,
+                super::sign_in::SignInFailure::Configuration => {
+                    AuthState::Failed(message.message().into())
+                }
+            };
             vec![]
         }
     }
@@ -310,8 +570,12 @@ fn submit_search(state: &mut State) -> Vec<Effect> {
     if query.is_empty() {
         return vec![];
     }
+    state.search.request_id += 1;
     state.search.results = Loadable::Loading;
-    vec![Effect::Api(ApiRequest::Search { query })]
+    vec![Effect::Api(ApiRequest::Search {
+        request_id: state.search.request_id,
+        query,
+    })]
 }
 
 /// A click on an artist row with no id: runs a name search in place
@@ -411,10 +675,17 @@ fn go_back(state: &mut State) -> Vec<Effect> {
     };
     state.page = previous.clone();
     match previous {
+        Page::Discovery(entry) => state.discovery.collection.request(entry.target, false),
         Page::Playlist(id) => start_playlist_load(state, id),
         Page::Artist(id) => reopen_artist(state, id),
         Page::Album(id) => reopen_album(state, id),
-        Page::SignIn | Page::Search | Page::Library => vec![],
+        Page::SignIn
+        | Page::Search
+        | Page::Home
+        | Page::NowPlaying
+        | Page::DiscoveryShelf(_)
+        | Page::Library
+        | Page::ListeningHistory => vec![],
     }
 }
 
@@ -796,11 +1067,18 @@ fn toggle_play(state: &mut State) -> Vec<Effect> {
             vec![Effect::Player(PlayerCommand::Pause)]
         }
         PlayStatus::Paused => {
-            state.playback.status = PlayStatus::Playing;
+            state.playback.status = if state.playback.loading {
+                PlayStatus::Loading
+            } else {
+                PlayStatus::Playing
+            };
             vec![Effect::Player(PlayerCommand::Resume)]
         }
         PlayStatus::Stopped => restart_current(state),
-        PlayStatus::Loading => vec![],
+        PlayStatus::Loading => {
+            state.playback.status = PlayStatus::Paused;
+            vec![Effect::Player(PlayerCommand::Pause)]
+        }
     }
 }
 
@@ -811,8 +1089,10 @@ fn restart_current(state: &mut State) -> Vec<Effect> {
         return vec![];
     };
     let position = state.playback.position;
+    let effects = load_track(state, Some(track));
     state.playback.resume_position = (!position.is_zero()).then_some(position);
-    load_track(state, Some(track))
+    state.playback.position = position;
+    effects
 }
 
 /// Opens or closes the Winamp skin window. Opening it loads the worn
@@ -838,19 +1118,39 @@ fn wear_skin(state: &mut State, skin: Option<String>) -> Vec<Effect> {
 }
 
 fn restore_session(state: &mut State, session: crate::core::session::SavedSession) -> Vec<Effect> {
+    state.lyrics.delays = session
+        .lyrics_delays
+        .clone()
+        .into_iter()
+        .filter(|(_, value)| value.is_finite() && *value != 0.0)
+        .map(|(id, value)| (id, value.clamp(-30.0, 30.0)))
+        .collect();
+    state.equalizer = session.equalizer.clone().normalized();
     state.playback.position = session.position();
     state.playback.queue = session.queue;
     state.playback.volume = session.volume.clamp(0.0, 1.0);
+    state.playback.balance = if session.balance.is_finite() {
+        session.balance.clamp(-1., 1.)
+    } else {
+        0.
+    };
     state.playback.autoplay = session.autoplay;
+    state.playback.loading = false;
     state.playback.status = PlayStatus::Stopped;
     state.winamp = session.winamp;
     state.playback.track_duration = state
         .playback
         .queue
         .current()
-        .and_then(|track| track.duration);
+        .and_then(|track| track.duration)
+        .or(session
+            .track_duration_secs
+            .filter(|s| *s > 0)
+            .map(Duration::from_secs));
     vec![
         Effect::Player(PlayerCommand::SetVolume(state.playback.volume)),
+        Effect::Player(PlayerCommand::SetBalance(state.playback.balance)),
+        Effect::Player(PlayerCommand::SetEqualizer(state.equalizer.parameters)),
         Effect::LoadSkin(state.winamp.skin.clone()),
         Effect::RefreshSkinList,
     ]
@@ -877,7 +1177,10 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
             channels,
             sample_rate,
         } => {
-            state.playback.status = PlayStatus::Playing;
+            state.playback.loading = false;
+            if state.playback.status != PlayStatus::Paused {
+                state.playback.status = PlayStatus::Playing;
+            }
             state.playback.track_duration = duration.or(state.playback.track_duration);
             state.playback.channels = channels;
             state.playback.sample_rate = sample_rate;
@@ -896,8 +1199,9 @@ fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
             advance_or_start_radio(state, |state| state.playback.queue.on_track_end())
         }
         PlayerEvent::Failed(message) => {
+            state.playback.loading = false;
             state.playback.status = PlayStatus::Stopped;
-            state.notices.push(message);
+            state.playback.error = Some(message);
             vec![]
         }
     }
@@ -918,6 +1222,7 @@ fn stop_playback(state: &mut State) -> Vec<Effect> {
     if state.playback.status == PlayStatus::Stopped {
         return vec![];
     }
+    state.playback.loading = false;
     state.playback.status = PlayStatus::Stopped;
     vec![Effect::Player(PlayerCommand::Stop)]
 }
@@ -962,6 +1267,9 @@ fn advance_or_start_radio(
 /// remembering the request so a late or stale result can be told
 /// apart from a fresh one.
 fn start_radio_fetch(state: &mut State, track_id: TrackId) -> Vec<Effect> {
+    state.playback.error = None;
+    state.playback.resume_position = None;
+    state.playback.loading = true;
     state.playback.status = PlayStatus::Loading;
     state.playback.radio_request = Some(track_id.clone());
     vec![Effect::Api(ApiRequest::FetchRadio(track_id))]
@@ -1011,6 +1319,9 @@ fn load_track(state: &mut State, track: Option<Track>) -> Vec<Effect> {
     let Some(track) = track else {
         return vec![];
     };
+    state.playback.error = None;
+    state.playback.resume_position = None;
+    state.playback.loading = true;
     state.playback.status = PlayStatus::Loading;
     state.playback.position = Duration::ZERO;
     state.playback.track_duration = track.duration;
@@ -1020,10 +1331,9 @@ fn load_track(state: &mut State, track: Option<Track>) -> Vec<Effect> {
 /// The effect that warms the cache for the track after the current
 /// one, or no effect when the queue has nothing more to play.
 fn prefetch_next(state: &State) -> Vec<Effect> {
-    match state.playback.queue.peek_next() {
-        Some(track) => vec![Effect::Player(PlayerCommand::Prefetch(track))],
-        None => vec![],
-    }
+    vec![Effect::Player(PlayerCommand::PrepareNext(
+        state.playback.queue.peek_next(),
+    ))]
 }
 
 /// Warms the cache for a track the pointer has rested on, unless
@@ -1183,14 +1493,18 @@ fn adjust_playlist_count(state: &mut State, id: &PlaylistId, delta: i64) {
 /// The create-playlist dialog's Create button. An empty title is
 /// ignored, so an accidental Enter on an untouched field does
 /// nothing. Otherwise the dialog closes and the track it remembered,
-/// if any, waits in `pending_playlist_track` for `finish_playlist_create`.
+/// if any, waits in `pending_playlist_tracks` for `finish_playlist_create`.
 fn request_playlist_create(state: &mut State, title: String) -> Vec<Effect> {
     let title = title.trim().to_string();
     if title.is_empty() {
         return vec![];
     }
-    state.pending_playlist_track = dialog_then_add(state.dialog.take());
-    vec![Effect::Api(ApiRequest::CreatePlaylist(title))]
+    state.playlist_request_id += 1;
+    let id = state.playlist_request_id;
+    state
+        .pending_playlist_tracks
+        .insert(id, dialog_then_add(state.dialog.take()));
+    vec![Effect::Api(ApiRequest::CreatePlaylist(id, title))]
 }
 
 fn dialog_then_add(dialog: Option<Dialog>) -> Option<Track> {
@@ -1208,10 +1522,16 @@ fn set_create_playlist_draft(state: &mut State, draft: String) {
 
 /// Applies the server's answer to a create request: inserts the new
 /// playlist at the front of the library list, or reports the failure.
-/// A remembered track from `pending_playlist_track` chains straight
+/// A remembered track from `pending_playlist_tracks` chains straight
 /// into an add, the same way a row's "Add to playlist" click would.
-fn finish_playlist_create(state: &mut State, result: Result<Playlist, String>) -> Vec<Effect> {
-    let then_add = state.pending_playlist_track.take();
+fn finish_playlist_create(
+    state: &mut State,
+    request_id: u64,
+    result: Result<Playlist, String>,
+) -> Vec<Effect> {
+    let Some(then_add) = state.pending_playlist_tracks.remove(&request_id) else {
+        return vec![];
+    };
     match result {
         Ok(playlist) => apply_playlist_created(state, playlist, then_add),
         Err(message) => {
@@ -1333,6 +1653,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retry_then_skip_does_not_seek_the_next_song_to_the_failed_position() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("failed"), track("next")],
+                start: 0,
+            },
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::PositionChanged(Duration::from_secs(73))),
+        );
+        apply(
+            &mut state,
+            Action::Player(PlayerEvent::Failed("offline".into())),
+        );
+        apply(&mut state, Action::PlaybackRetryRequested);
+        apply(&mut state, Action::NextPressed);
+        assert_eq!(state.playback.position, Duration::ZERO);
+        assert!(state.playback.resume_position.is_none());
+        assert!(state.playback.error.is_none());
+    }
+    #[test]
+    fn repeated_recovery_keeps_position_until_the_stream_starts() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("recovery")],
+                start: 0,
+            },
+        );
+        let send = |state: &mut State, event| {
+            let generation = state.playback_generation;
+            apply(state, Action::ForPlayback { generation, event })
+        };
+        send(
+            &mut state,
+            PlayerEvent::PositionChanged(Duration::from_secs(73)),
+        );
+        send(&mut state, PlayerEvent::Failed("connection lost".into()));
+        for _ in 0..3 {
+            apply(&mut state, Action::PlayToggled);
+            assert_eq!(state.playback.position, Duration::from_secs(73));
+            send(&mut state, PlayerEvent::Failed("expired stream".into()));
+        }
+        apply(&mut state, Action::PlayToggled);
+        let effects = send(
+            &mut state,
+            PlayerEvent::TrackStarted {
+                duration: Some(Duration::from_secs(200)),
+                channels: 2,
+                sample_rate: 44100,
+            },
+        );
+        assert!(
+            effects.contains(&Effect::Player(PlayerCommand::Seek(Duration::from_secs(
+                73
+            ))))
+        );
+    }
+
     fn no_random(_: usize) -> usize {
         0
     }
@@ -1342,33 +1726,173 @@ mod tests {
     }
 
     #[test]
-    fn cookie_submission_saves_and_verifies() {
-        const FULL: &str = "SID=a; SAPISID=b; __Secure-3PAPISID=c; __Secure-3PSID=d";
+    fn rapid_skips_ignore_every_kind_of_late_player_report() {
         let mut state = State::default();
-        state.sign_in.draft = format!("  {FULL}  ");
-        state.sign_in.authuser_draft = " 2 ".into();
-        let effects = apply(&mut state, Action::CookiesSubmitted);
-        let credentials = crate::core::effect::Credentials {
-            cookies: FULL.into(),
-            authuser: "2".into(),
-            headers: vec![],
-        };
-        assert_eq!(state.auth, AuthState::Verifying);
-        assert_eq!(
-            effects,
-            vec![
-                Effect::SaveCredentials(credentials.clone()),
-                Effect::Api(ApiRequest::VerifyAuth(
-                    crate::core::effect::AuthMethod::Browser(credentials)
-                )),
-            ]
+        state.playback.autoplay = false;
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a"), track("b"), track("c")],
+                start: 0,
+            },
         );
+        state.playback.queue.repeat = super::super::queue::RepeatMode::All;
+        for step in 0..1000 {
+            let stale = state.playback_generation;
+            apply(
+                &mut state,
+                if step % 3 == 0 {
+                    Action::PreviousPressed
+                } else {
+                    Action::NextPressed
+                },
+            );
+            let expected = state.playback.clone();
+            for event in [
+                PlayerEvent::TrackStarted {
+                    duration: Some(Duration::from_secs(999)),
+                    channels: 6,
+                    sample_rate: 96000,
+                },
+                PlayerEvent::PositionChanged(Duration::from_secs(999)),
+                PlayerEvent::TrackEnded,
+                PlayerEvent::Failed("old error".into()),
+            ] {
+                let effects = apply(
+                    &mut state,
+                    Action::ForPlayback {
+                        generation: stale,
+                        event,
+                    },
+                );
+                assert!(effects.is_empty());
+                assert_eq!(state.playback.queue, expected.queue);
+                assert_eq!(state.playback.status, expected.status);
+                assert_eq!(state.playback.position, expected.position);
+                assert!(state.notices.is_empty());
+            }
+        }
+        let stale = state.playback_generation;
+        apply(&mut state, Action::SignOutRequested);
+        apply(
+            &mut state,
+            Action::ForPlayback {
+                generation: stale,
+                event: PlayerEvent::TrackEnded,
+            },
+        );
+        assert!(state.playback.queue.current().is_none());
+    }
+    #[test]
+    fn seek_during_loading_keeps_last_target_and_pause_until_ready() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(&mut state, Action::PlayToggled);
+        for second in 0..100 {
+            assert!(
+                apply(
+                    &mut state,
+                    Action::SeekRequested(Duration::from_secs(second))
+                )
+                .is_empty()
+            );
+        }
+        let generation = state.playback_generation;
+        let effects = apply(
+            &mut state,
+            Action::ForPlayback {
+                generation,
+                event: PlayerEvent::TrackStarted {
+                    duration: None,
+                    channels: 2,
+                    sample_rate: 48000,
+                },
+            },
+        );
+        assert_eq!(state.playback.status, PlayStatus::Paused);
+        assert!(
+            effects.contains(&Effect::Player(PlayerCommand::Seek(Duration::from_secs(
+                99
+            ))))
+        );
+        assert!(state.playback.resume_position.is_none());
+    }
+    #[test]
+    fn pause_during_loading_survives_the_decoder_ready_event() {
+        let mut state = State::default();
+        apply(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("a")],
+                start: 0,
+            },
+        );
+        apply(&mut state, Action::PlayToggled);
+        assert_eq!(state.playback.status, PlayStatus::Paused);
+        let effects = apply(
+            &mut state,
+            Action::Player(PlayerEvent::TrackStarted {
+                duration: None,
+                channels: 2,
+                sample_rate: 44100,
+            }),
+        );
+        assert_eq!(state.playback.status, PlayStatus::Paused);
+        assert!(!effects.contains(&Effect::Player(PlayerCommand::Resume)));
+        assert_eq!(
+            apply(&mut state, Action::PlayToggled),
+            vec![Effect::Player(PlayerCommand::Resume)]
+        );
+        assert_eq!(state.playback.status, PlayStatus::Playing);
     }
 
     #[test]
-    fn an_empty_authuser_field_means_account_zero() {
-        assert_eq!(normalized_authuser("  "), "0");
-        assert_eq!(normalized_authuser(" 1 "), "1");
+    fn a_late_previous_account_result_cannot_change_a_new_account() {
+        let mut state = State {
+            auth: AuthState::SignedIn,
+            session_generation: 4,
+            ..State::default()
+        };
+        apply(&mut state, Action::SignOutRequested);
+        apply(
+            &mut state,
+            Action::StoredAuthFound(super::super::effect::AuthMethod::OAuthToken("test".into())),
+        );
+        let current = state.session_generation;
+        apply(
+            &mut state,
+            Action::ForSession {
+                generation: current,
+                action: Box::new(Action::AuthVerified(Ok(()))),
+            },
+        );
+        let liked = state.library.liked.clone();
+        let effects = apply(
+            &mut state,
+            Action::ForSession {
+                generation: 4,
+                action: Box::new(Action::LikedPageLoaded {
+                    tracks: vec![track("old")],
+                    finished: true,
+                }),
+            },
+        );
+        assert!(effects.is_empty(), "stale results must not write the cache");
+        assert_eq!(state.library.liked, liked);
+        assert_eq!(state.auth, AuthState::SignedIn);
+    }
+
+    #[test]
+    fn repeated_refresh_does_not_start_overlapping_page_streams() {
+        let mut state = State::default();
+        assert!(!apply(&mut state, Action::LibraryRefreshRequested).is_empty());
+        assert!(apply(&mut state, Action::LibraryRefreshRequested).is_empty());
     }
 
     #[test]
@@ -1397,38 +1921,36 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_without_session_cookies_fails_at_once() {
+    fn home_shuffle_uses_liked_music_and_leaves_empty_library_alone() {
         let mut state = State::default();
-        state.sign_in.draft = "SAPISID=b; YSC=x".into();
-        let effects = apply(&mut state, Action::CookiesSubmitted);
-        assert_eq!(effects, vec![]);
-        let AuthState::Failed(message) = &state.auth else {
-            panic!("expected a failure, got {:?}", state.auth);
-        };
-        assert!(message.contains("SID"));
-        assert!(message.contains("__Secure-3PSID"));
+        assert!(apply(&mut state, Action::LikedShuffleRequested).is_empty());
+        state.library.liked = Loadable::Loaded(vec![track("a"), track("b")]);
+        let effects = update(&mut state, Action::LikedShuffleRequested, &mut |n| n - 1);
+        assert!(state.playback.queue.shuffle);
+        assert_eq!(state.playback.queue.current().unwrap().id.0, "b");
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Player(PlayerCommand::Load(_))))
+        );
     }
-
     #[test]
-    fn empty_cookie_submission_does_nothing() {
-        let mut state = State::default();
-        state.sign_in.draft = "  ".into();
-        assert_eq!(apply(&mut state, Action::CookiesSubmitted), vec![]);
-        assert_eq!(state.auth, AuthState::SignedOut);
-    }
-
-    #[test]
-    fn sign_in_success_opens_the_library_and_fetches_it() {
+    fn sign_in_success_opens_home_and_fetches_library() {
         let mut state = State::default();
         let effects = apply(&mut state, Action::AuthVerified(Ok(())));
         assert_eq!(state.auth, AuthState::SignedIn);
-        assert_eq!(state.page, Page::Library);
+        assert_eq!(state.page, Page::Home);
         assert_eq!(
             effects,
             vec![
                 Effect::Api(ApiRequest::FetchPlaylists),
                 Effect::Api(ApiRequest::FetchLiked),
                 Effect::LoadLibraryCache,
+                Effect::Api(ApiRequest::FetchDiscovery {
+                    request_id: 1,
+                    target: super::super::discovery::Target::home(),
+                    continuation: None
+                }),
             ]
         );
     }
@@ -1564,8 +2086,10 @@ mod tests {
 
     #[test]
     fn opening_an_artist_pushes_history_and_fetches() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         let effects = apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         assert_eq!(state.page, Page::Artist(ArtistId("ar1".into())));
         assert_eq!(state.history, vec![Page::Search]);
@@ -1578,8 +2102,10 @@ mod tests {
 
     #[test]
     fn opening_the_same_artist_twice_is_a_no_op() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         let effects = apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         assert_eq!(effects, vec![]);
@@ -1588,8 +2114,10 @@ mod tests {
 
     #[test]
     fn an_artist_search_request_fills_and_submits_the_search() {
-        let mut state = State::default();
-        state.page = Page::Library;
+        let mut state = State {
+            page: Page::Library,
+            ..State::default()
+        };
         let effects = apply(
             &mut state,
             Action::ArtistSearchRequested("Radiohead".to_string()),
@@ -1601,6 +2129,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![Effect::Api(ApiRequest::Search {
+                request_id: 1,
                 query: "Radiohead".to_string()
             })]
         );
@@ -1608,8 +2137,10 @@ mod tests {
 
     #[test]
     fn back_pops_and_restores_a_playlist() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::PlaylistOpened(PlaylistId("p1".into())));
         apply(
             &mut state,
@@ -1631,8 +2162,10 @@ mod tests {
 
     #[test]
     fn back_onto_a_loaded_album_does_not_refetch() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::AlbumOpened(AlbumId("al1".into())));
         apply(
             &mut state,
@@ -1647,8 +2180,10 @@ mod tests {
 
     #[test]
     fn back_with_an_empty_history_does_nothing() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         let effects = apply(&mut state, Action::BackPressed);
         assert_eq!(state.page, Page::Search);
         assert_eq!(effects, vec![]);
@@ -1656,8 +2191,10 @@ mod tests {
 
     #[test]
     fn a_stale_artist_result_is_ignored() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         apply(&mut state, Action::NavigatedTo(Page::Search));
         apply(
@@ -1669,8 +2206,10 @@ mod tests {
 
     #[test]
     fn a_failed_album_load_sets_failed() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::AlbumOpened(AlbumId("al1".into())));
         apply(
             &mut state,
@@ -1681,8 +2220,10 @@ mod tests {
 
     #[test]
     fn sidebar_navigation_clears_history() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         assert_eq!(state.history, vec![Page::Search]);
         apply(&mut state, Action::NavigatedTo(Page::Library));
@@ -1691,8 +2232,10 @@ mod tests {
 
     #[test]
     fn sign_out_resets_browse_and_history() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         apply(&mut state, Action::ArtistOpened(ArtistId("ar1".into())));
         apply(&mut state, Action::SignOutRequested);
         assert_eq!(state.page, Page::SignIn);
@@ -1949,14 +2492,16 @@ mod tests {
         apply(&mut state, Action::AutoplayToggled);
         let saved = crate::core::session::SavedSession::capture(&state);
         let mut restored = State::default();
-        apply(&mut restored, Action::SessionRestored(saved));
+        apply(&mut restored, Action::SessionRestored(Box::new(saved)));
         assert!(!restored.playback.autoplay);
     }
 
     #[test]
     fn an_artist_link_with_an_id_opens_the_page_and_keeps_the_name() {
-        let mut state = State::default();
-        state.page = Page::Library;
+        let mut state = State {
+            page: Page::Library,
+            ..State::default()
+        };
         let artist = ArtistRef {
             name: "Nitrogen".into(),
             id: Some(ArtistId("UC1".into())),
@@ -1972,8 +2517,10 @@ mod tests {
 
     #[test]
     fn an_artist_link_without_an_id_searches_the_name() {
-        let mut state = State::default();
-        state.page = Page::Library;
+        let mut state = State {
+            page: Page::Library,
+            ..State::default()
+        };
         let artist = ArtistRef::named("Nitrogen");
         let effects = apply(&mut state, Action::ArtistLinkOpened(artist));
         assert_eq!(state.page, Page::Search);
@@ -1984,8 +2531,10 @@ mod tests {
 
     #[test]
     fn a_failed_artist_page_from_a_link_falls_back_to_search() {
-        let mut state = State::default();
-        state.page = Page::Library;
+        let mut state = State {
+            page: Page::Library,
+            ..State::default()
+        };
         let id = ArtistId("UC1".into());
         apply(
             &mut state,
@@ -2006,6 +2555,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![Effect::Api(ApiRequest::Search {
+                request_id: 1,
                 query: "Nitrogen".to_string()
             })]
         );
@@ -2013,8 +2563,10 @@ mod tests {
 
     #[test]
     fn a_failed_artist_page_without_a_link_name_shows_the_failure() {
-        let mut state = State::default();
-        state.page = Page::Search;
+        let mut state = State {
+            page: Page::Search,
+            ..State::default()
+        };
         let id = ArtistId("UC1".into());
         apply(&mut state, Action::ArtistOpened(id.clone()));
         apply(
@@ -2092,7 +2644,7 @@ mod tests {
         let saved = crate::core::session::SavedSession::capture(&state);
 
         let mut restored = State::default();
-        apply(&mut restored, Action::SessionRestored(saved));
+        apply(&mut restored, Action::SessionRestored(Box::new(saved)));
         assert_eq!(restored.playback.status, PlayStatus::Stopped);
         assert_eq!(restored.playback.position, Duration::from_secs(30));
 
@@ -2111,7 +2663,10 @@ mod tests {
         );
         assert_eq!(
             effects,
-            vec![Effect::Player(PlayerCommand::Seek(Duration::from_secs(30)))]
+            vec![
+                Effect::Player(PlayerCommand::PrepareNext(None)),
+                Effect::Player(PlayerCommand::Seek(Duration::from_secs(30)))
+            ]
         );
         assert_eq!(restored.playback.position, Duration::from_secs(30));
     }
@@ -2143,7 +2698,7 @@ mod tests {
         );
         assert_eq!(
             effects,
-            vec![Effect::Player(PlayerCommand::Prefetch(track("b")))]
+            vec![Effect::Player(PlayerCommand::PrepareNext(Some(track("b"))))]
         );
     }
 
@@ -2160,7 +2715,7 @@ mod tests {
         let effects = apply(&mut state, Action::TrackQueued(track("q")));
         assert_eq!(
             effects,
-            vec![Effect::Player(PlayerCommand::Prefetch(track("q")))]
+            vec![Effect::Player(PlayerCommand::PrepareNext(Some(track("q"))))]
         );
     }
 
@@ -2178,7 +2733,7 @@ mod tests {
         assert_eq!(effects.len(), 1);
         assert!(matches!(
             effects[0],
-            Effect::Player(PlayerCommand::Prefetch(_))
+            Effect::Player(PlayerCommand::PrepareNext(Some(_)))
         ));
     }
 
@@ -2196,7 +2751,7 @@ mod tests {
         let effects = apply(&mut state, Action::RepeatCycled); // All -> One
         assert_eq!(
             effects,
-            vec![Effect::Player(PlayerCommand::Prefetch(track("a")))]
+            vec![Effect::Player(PlayerCommand::PrepareNext(Some(track("a"))))]
         );
     }
 
@@ -2214,7 +2769,7 @@ mod tests {
         let effects = apply(&mut state, Action::LikedLoaded(Err("offline".into())));
         assert_eq!(state.library.liked, Loadable::Loaded(vec![track("cached")]));
         assert_eq!(state.notices, vec!["offline".to_string()]);
-        assert_eq!(effects, vec![]);
+        assert!(effects.is_empty());
     }
 
     #[test]
@@ -2227,7 +2782,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_start_at_the_queue_end_prefetches_nothing() {
+    fn a_track_start_at_the_queue_end_cancels_preparation() {
         let mut state = State::default();
         apply(
             &mut state,
@@ -2244,7 +2799,10 @@ mod tests {
                 sample_rate: 44_100,
             }),
         );
-        assert_eq!(effects, vec![]);
+        assert_eq!(
+            effects,
+            vec![Effect::Player(PlayerCommand::PrepareNext(None))]
+        );
     }
 
     #[test]
@@ -2578,7 +3136,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_jumped_past_the_end_stops_playback() {
+    fn queue_jumped_past_the_end_preserves_playback() {
         let mut state = State::default();
         apply(
             &mut state,
@@ -2587,9 +3145,10 @@ mod tests {
                 start: 0,
             },
         );
+        let before = state.playback.clone();
         let effects = apply(&mut state, Action::QueueJumped(5));
-        assert_eq!(effects, vec![Effect::Player(PlayerCommand::Stop)]);
-        assert_eq!(state.playback.status, PlayStatus::Stopped);
+        assert!(effects.is_empty());
+        assert_eq!(state.playback.status, before.status);
     }
 
     #[test]
@@ -2882,8 +3441,10 @@ mod tests {
 
     #[test]
     fn a_confirmed_add_appends_the_row_to_the_open_playlist() {
-        let mut state = State::default();
-        state.page = Page::Playlist(PlaylistId("p1".into()));
+        let mut state = State {
+            page: Page::Playlist(PlaylistId("p1".into())),
+            ..State::default()
+        };
         state.library.open_playlist = Loadable::Loaded(vec![]);
         apply(
             &mut state,
@@ -2901,8 +3462,10 @@ mod tests {
 
     #[test]
     fn a_confirmed_add_is_ignored_once_the_user_left_the_playlist() {
-        let mut state = State::default();
-        state.page = Page::Library;
+        let mut state = State {
+            page: Page::Library,
+            ..State::default()
+        };
         state.library.open_playlist = Loadable::Loaded(vec![]);
         apply(
             &mut state,
@@ -2975,11 +3538,13 @@ mod tests {
 
     #[test]
     fn an_empty_playlist_title_is_ignored() {
-        let mut state = State::default();
-        state.dialog = Some(Dialog::CreatePlaylist {
-            title_draft: "  ".into(),
-            then_add: None,
-        });
+        let mut state = State {
+            dialog: Some(Dialog::CreatePlaylist {
+                title_draft: "  ".into(),
+                then_add: None,
+            }),
+            ..State::default()
+        };
         let effects = apply(&mut state, Action::PlaylistCreateRequested("  ".into()));
         assert_eq!(effects, vec![]);
         assert!(state.dialog.is_some());
@@ -2987,16 +3552,18 @@ mod tests {
 
     #[test]
     fn creating_a_playlist_closes_the_dialog_and_requests_it() {
-        let mut state = State::default();
-        state.dialog = Some(Dialog::CreatePlaylist {
-            title_draft: "Chill".into(),
-            then_add: None,
-        });
+        let mut state = State {
+            dialog: Some(Dialog::CreatePlaylist {
+                title_draft: "Chill".into(),
+                then_add: None,
+            }),
+            ..State::default()
+        };
         let effects = apply(&mut state, Action::PlaylistCreateRequested("Chill".into()));
         assert_eq!(state.dialog, None);
         assert_eq!(
             effects,
-            vec![Effect::Api(ApiRequest::CreatePlaylist("Chill".into()))]
+            vec![Effect::Api(ApiRequest::CreatePlaylist(1, "Chill".into()))]
         );
     }
 
@@ -3004,9 +3571,10 @@ mod tests {
     fn a_created_playlist_is_inserted_at_the_front_and_cached() {
         let mut state = State::default();
         state.library.playlists = Loadable::Loaded(vec![counted_playlist("old", Some(1))]);
+        apply(&mut state, Action::PlaylistCreateRequested("New".into()));
         let effects = apply(
             &mut state,
-            Action::PlaylistCreated(Ok(counted_playlist("new", Some(0)))),
+            Action::PlaylistCreated(1, Ok(counted_playlist("new", Some(0)))),
         );
         let Loadable::Loaded(playlists) = &state.library.playlists else {
             panic!("expected the playlists slot to stay loaded");
@@ -3025,15 +3593,17 @@ mod tests {
 
     #[test]
     fn creating_a_playlist_with_a_remembered_track_chains_the_add() {
-        let mut state = State::default();
-        state.dialog = Some(Dialog::CreatePlaylist {
-            title_draft: "Chill".into(),
-            then_add: Some(track("a")),
-        });
+        let mut state = State {
+            dialog: Some(Dialog::CreatePlaylist {
+                title_draft: "Chill".into(),
+                then_add: Some(track("a")),
+            }),
+            ..State::default()
+        };
         apply(&mut state, Action::PlaylistCreateRequested("Chill".into()));
         let effects = apply(
             &mut state,
-            Action::PlaylistCreated(Ok(counted_playlist("new", Some(0)))),
+            Action::PlaylistCreated(1, Ok(counted_playlist("new", Some(0)))),
         );
         assert!(
             effects
@@ -3045,7 +3615,8 @@ mod tests {
     #[test]
     fn a_failed_create_posts_a_notice() {
         let mut state = State::default();
-        let effects = apply(&mut state, Action::PlaylistCreated(Err("nope".into())));
+        apply(&mut state, Action::PlaylistCreateRequested("New".into()));
+        let effects = apply(&mut state, Action::PlaylistCreated(1, Err("nope".into())));
         assert_eq!(effects, vec![]);
         assert_eq!(state.notices, vec!["nope".to_string()]);
     }

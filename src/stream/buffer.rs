@@ -317,7 +317,7 @@ impl Read for BufferReader {
                 }
                 ReadDecision::Eof => return Ok(0),
                 ReadDecision::Failed(message) => {
-                    return Err(io::Error::new(io::ErrorKind::Other, message));
+                    return Err(io::Error::other(message));
                 }
                 ReadDecision::Blocked => {
                     inner = condvar.wait(inner).expect("buffer mutex poisoned");

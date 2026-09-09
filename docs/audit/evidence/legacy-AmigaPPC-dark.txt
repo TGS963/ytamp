@@ -1,0 +1,30 @@
+skin: AmigaPPC-dark
+sheets:
+  main decoded (275x116)
+  cbuttons decoded (136x36)
+  titlebar decoded (344x87)
+  shufrep decoded (92x85)
+  posbar decoded (307x10)
+  volume decoded (68x433)
+  balance fell back to a substitute or the built-in skin
+  monoster decoded (56x24)
+  playpaus decoded (42x9)
+  numbers decoded (99x13)
+  nums_ex decoded (108x13)
+  text decoded (155x18)
+  pledit decoded (280x186)
+  eqmain decoded (275x315)
+  eq_ex decoded (275x56)
+pledit.txt colors:
+  normal: [127, 79, 79]
+  current: [0, 0, 0]
+  normal background: [255, 255, 255]
+  selected background: [127, 0, 0]
+  font: Arial
+viscolor.txt colors: 24
+region masks:
+  normal: false
+  shade: false
+  equalizer: false
+  equalizer shade: false
+wrote the preview to skin_probe.png

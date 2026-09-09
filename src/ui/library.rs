@@ -19,7 +19,21 @@ pub fn view(
     context: &RowContext,
     out: &mut Vec<Action>,
 ) {
-    ui.label(theme.label(TextRole::Title, "Library"));
+    ui.horizontal(|ui| {
+        super::components::page_title(ui, theme, "Library");
+        if ui
+            .add(super::components::secondary(theme, "Refresh"))
+            .clicked()
+        {
+            out.push(Action::LibraryRefreshRequested);
+        }
+        if ui
+            .add(super::components::primary(theme, "New playlist..."))
+            .clicked()
+        {
+            out.push(Action::CreatePlaylistDialogOpened(None));
+        }
+    });
     ui.add_space(theme.metric(MetricRole::GapLarge));
     playlists_section(ui, state, theme, out);
     ui.add_space(theme.metric(MetricRole::GapLarge));
@@ -27,7 +41,8 @@ pub fn view(
 }
 
 fn playlists_section(ui: &mut egui::Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
-    ui.label(theme.label(TextRole::Heading, "Playlists"));
+    super::components::heading(ui, theme, "Playlists");
+    ui.add_space(super::components::SECTION_GAP);
     match &state.library.playlists {
         Loadable::NotAsked | Loadable::Loading => {
             ui.spinner();
@@ -86,7 +101,8 @@ fn liked_section(
     context: &RowContext,
     out: &mut Vec<Action>,
 ) {
-    ui.label(theme.label(TextRole::Heading, "Liked songs"));
+    super::components::heading(ui, theme, "Liked songs");
+    ui.add_space(super::components::SECTION_GAP);
     match &state.library.liked {
         Loadable::NotAsked | Loadable::Loading => {
             ui.spinner();

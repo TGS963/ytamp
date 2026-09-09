@@ -54,7 +54,7 @@ fn header(ui: &mut egui::Ui, page: &ArtistPage, theme: &dyn Theme) {
     let art_size = theme.metric(MetricRole::PlayerArtSize);
     ui.horizontal(|ui| {
         rows::artwork(ui, theme, page.thumbnail_url.as_deref(), art_size);
-        ui.label(theme.label(TextRole::Title, &page.name));
+        super::components::page_title(ui, theme, &page.name);
     });
 }
 
@@ -68,7 +68,7 @@ fn top_songs_section(
     if page.top_songs.is_empty() {
         return;
     }
-    ui.label(theme.label(TextRole::Heading, "Top songs"));
+    super::components::heading(ui, theme, "Top songs");
     let max_height = theme.metric(MetricRole::RowHeight) * TOP_SONGS_VISIBLE_ROWS;
     rows::track_list_capped(
         ui,

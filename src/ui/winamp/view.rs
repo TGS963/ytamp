@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use egui::{Color32, Id, Pos2, Rect, Response, Sense, TextureId, Ui, pos2, vec2};
 
 use crate::skin::layout::Area;
-use crate::skin::{Sheet, Skin, Sprite, font};
+use crate::skin::{Mask, Sheet, Skin, Sprite, font};
 
 /// What a drag on a slider did this frame.
 #[derive(Clone, Copy)]
@@ -27,6 +27,7 @@ pub struct View<'a> {
     pub origin: Pos2,
     pub unit: f32,
     pub skin: &'a Skin,
+    pub mask: Option<&'a Mask>,
     pub textures: &'a HashMap<Sheet, TextureId>,
 }
 
@@ -52,19 +53,31 @@ impl View<'_> {
         let Some(&texture) = self.textures.get(&sprite.sheet) else {
             return;
         };
-        let (width, height) = (bitmap.width as f32, bitmap.height as f32);
-        let uv = Rect::from_min_max(
-            pos2(clipped.x as f32 / width, clipped.y as f32 / height),
-            pos2(
-                (clipped.x + clipped.width) as f32 / width,
-                (clipped.y + clipped.height) as f32 / height,
-            ),
-        );
-        let dest = Rect::from_min_size(
-            self.origin + vec2(x as f32, y as f32) * self.unit,
-            vec2(clipped.width as f32, clipped.height as f32) * self.unit,
-        );
-        painter.image(texture, dest, uv, Color32::WHITE);
+        let mut mesh = egui::Mesh::with_texture(texture);
+        self.visible_rects(Area::new(x, y, clipped.width, clipped.height), |area| {
+            let sx = clipped.x + area.x - x;
+            let sy = clipped.y + area.y - y;
+            let uv = Rect::from_min_max(
+                pos2(
+                    sx as f32 / bitmap.width as f32,
+                    sy as f32 / bitmap.height as f32,
+                ),
+                pos2(
+                    (sx + area.width) as f32 / bitmap.width as f32,
+                    (sy + area.height) as f32 / bitmap.height as f32,
+                ),
+            );
+            mesh.add_rect_with_uv(self.rect(area), uv, Color32::WHITE);
+        });
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    fn visible_rects(&self, area: Area, mut visit: impl FnMut(Area)) {
+        if let Some(mask) = self.mask {
+            mask.visit_rects(area, visit);
+        } else {
+            visit(area);
+        }
     }
 
     pub fn sprite_at(&self, sprite: Sprite, x: u32, y: u32) {
@@ -86,11 +99,11 @@ impl View<'_> {
 
     /// A block of skin pixels in one flat colour.
     pub fn fill(&self, x: u32, y: u32, width: u32, height: u32, color: Color32) {
-        let rect = Rect::from_min_size(
-            self.origin + vec2(x as f32, y as f32) * self.unit,
-            vec2(width as f32, height as f32) * self.unit,
-        );
-        self.ui.painter().rect_filled(rect, 0.0, color);
+        let mut mesh = egui::Mesh::default();
+        self.visible_rects(Area::new(x, y, width, height), |area| {
+            mesh.add_colored_rect(self.rect(area), color);
+        });
+        self.ui.painter().add(egui::Shape::mesh(mesh));
     }
 
     /// A line of the skin's bitmap font, cut off at the area's edge.
@@ -107,8 +120,21 @@ impl View<'_> {
     }
 
     pub fn interact(&mut self, area: Area, id: &str, sense: Sense) -> Response {
-        let rect = self.rect(area);
-        self.ui.interact(rect, Id::new(("winamp", id)), sense)
+        let id = Id::new(("winamp", id));
+        let outside = self.mask.is_some_and(|mask| {
+            self.ui.ctx().pointer_hover_pos().is_some_and(|pos| {
+                let local = (pos - self.origin) / self.unit;
+                local.x < 0.
+                    || local.y < 0.
+                    || !mask.contains(local.x.floor() as u32, local.y.floor() as u32)
+            })
+        });
+        let rect = if outside && !self.ui.ctx().is_being_dragged(id) {
+            Rect::NOTHING
+        } else {
+            self.rect(area)
+        };
+        self.ui.interact(rect, id, sense)
     }
 
     /// A button drawn pressed while the pointer holds it down.
@@ -181,5 +207,89 @@ impl View<'_> {
             return SliderEvent::Committed(value);
         }
         SliderEvent::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mask_rectangles_preserve_every_visible_pixel_without_overlap() {
+        let mask = Mask::from_polygons(
+            40,
+            20,
+            &[
+                vec![(0, 0), (20, 0), (0, 20)],
+                vec![(25, 2), (40, 2), (40, 18), (25, 18)],
+            ],
+        );
+        let area = Area::new(3, 4, 30, 12);
+        let mut coverage = [0u8; 800];
+        mask.visit_rects(area, |rect| {
+            for y in rect.y..rect.y + rect.height {
+                for x in rect.x..rect.x + rect.width {
+                    coverage[(y * 40 + x) as usize] += 1;
+                }
+            }
+        });
+        for y in 0..20 {
+            for x in 0..40 {
+                assert_eq!(
+                    coverage[(y * 40 + x) as usize],
+                    u8::from(area.contains(x, y) && mask.contains(x, y)),
+                    "pixel {x},{y}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn transparent_part_of_a_control_does_not_accept_clicks() {
+        let ctx = egui::Context::default();
+        let mask = Mask::from_polygons(20, 20, &[vec![(0, 0), (5, 0), (5, 20), (0, 20)]]);
+        let skin = Skin::builtin();
+        let textures = HashMap::new();
+        let frame = |events| {
+            let mut clicked = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(100., 100.))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let mut view = View {
+                        ui,
+                        origin: Pos2::ZERO,
+                        unit: 1.,
+                        skin: &skin,
+                        mask: Some(&mask),
+                        textures: &textures,
+                    };
+                    clicked = view
+                        .interact(Area::new(0, 0, 20, 20), "masked", Sense::click())
+                        .clicked();
+                },
+            );
+            output.textures_delta.clear();
+            clicked
+        };
+        frame(vec![]);
+        for (x, expected) in [(12., false), (2., true)] {
+            let pos = pos2(x, 10.);
+            frame(vec![egui::Event::PointerMoved(pos)]);
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }]);
+            let clicked = frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }]);
+            assert_eq!(clicked, expected);
+        }
     }
 }

@@ -37,3 +37,8 @@ ytmapi-rs = { version = "0.3.3", features = ["reqwest", "serde_json"] }
 [profile.release]
 lto = "thin"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder", "objc2-core-foundation"] }
