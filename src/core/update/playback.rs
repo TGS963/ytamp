@@ -129,6 +129,7 @@ pub(super) fn restore_session(
             .track_duration_secs
             .filter(|s| *s > 0)
             .map(Duration::from_secs));
+    sync_queue_duration(state);
     vec![
         Effect::Player(PlayerCommand::SetVolume(state.playback.volume)),
         Effect::Player(PlayerCommand::SetBalance(state.playback.balance)),
@@ -152,6 +153,13 @@ pub(super) fn set_volume(state: &mut State, volume: f32) -> Vec<Effect> {
     vec![Effect::Player(PlayerCommand::SetVolume(volume))]
 }
 
+fn sync_queue_duration(state: &mut State) {
+    let id = state.playback.queue.current().map(|track| track.id.clone());
+    if let (Some(id), Some(duration)) = (id, state.playback.track_duration) {
+        state.playback.queue.set_duration(&id, duration);
+    }
+}
+
 pub(super) fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<Effect> {
     match event {
         PlayerEvent::TrackStarted {
@@ -164,6 +172,7 @@ pub(super) fn apply_player_event(state: &mut State, event: PlayerEvent) -> Vec<E
                 state.playback.status = PlayStatus::Playing;
             }
             state.playback.track_duration = duration.or(state.playback.track_duration);
+            sync_queue_duration(state);
             state.playback.channels = channels;
             state.playback.sample_rate = sample_rate;
             let mut effects = prefetch_next(state);

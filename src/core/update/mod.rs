@@ -74,6 +74,7 @@ pub fn update(state: &mut State, action: Action, random_below: RandomBelow) -> V
         effects.push(Effect::FetchLyrics(None));
     }
     effects.extend(super::lyrics::sync(state));
+    effects.extend(super::durations::sync(state));
     effects
 }
 fn update_inner(state: &mut State, action: Action, random_below: RandomBelow) -> Vec<Effect> {
@@ -105,6 +106,10 @@ fn update_inner(state: &mut State, action: Action, random_below: RandomBelow) ->
         }
         Action::NoticePosted(message) => {
             state.notices.push(message);
+            vec![]
+        }
+        Action::TrackDurationsLoaded(result) => {
+            super::durations::complete(state, result);
             vec![]
         }
         Action::Player(event) => apply_player_event(state, event),

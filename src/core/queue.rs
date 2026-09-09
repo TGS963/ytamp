@@ -115,6 +115,32 @@ impl Queue {
             UpcomingEntry::Context(i) => self.context.get(i),
         }
     }
+    /// Updates every queued occurrence without changing playback order.
+    pub fn set_duration(&mut self, id: &TrackId, duration: std::time::Duration) {
+        for track in self
+            .context
+            .iter_mut()
+            .chain(self.user_queue.iter_mut())
+            .chain(self.current.iter_mut().map(|current| &mut current.track))
+            .filter(|track| &track.id == id)
+        {
+            track.duration = Some(duration);
+        }
+    }
+
+    /// Adds catalog metadata without replacing a duration measured by the decoder.
+    pub fn fill_missing_duration(&mut self, id: &TrackId, duration: std::time::Duration) {
+        for track in self
+            .context
+            .iter_mut()
+            .chain(self.user_queue.iter_mut())
+            .chain(self.current.iter_mut().map(|current| &mut current.track))
+            .filter(|track| &track.id == id && track.duration.is_none())
+        {
+            track.duration = Some(duration);
+        }
+    }
+
     /// Move selected upcoming occurrences before an insertion boundary in the
     /// original list. Keeps current playback, source identity and duplicates.
     pub fn move_upcoming(&mut self, selected: &[usize], before: usize) {

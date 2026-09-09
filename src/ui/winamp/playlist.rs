@@ -261,7 +261,7 @@ fn rows(state: &State) -> Vec<Row> {
     if let Some(track) = queue.current() {
         rows.push(Row {
             label: row_text(1, track),
-            duration: track.duration,
+            duration: state.playback.track_duration.or(track.duration),
             current: true,
             jump_to: None,
         });
@@ -513,7 +513,9 @@ fn fit_text(text: &mut PixelText, label: &str, width: f32) -> String {
 }
 
 fn duration_text(duration: Option<Duration>) -> String {
-    format_minutes_seconds(duration.unwrap_or_default())
+    duration
+        .map(format_minutes_seconds)
+        .unwrap_or_else(|| "--:--".into())
 }
 
 /// The handle in the right-hand tiles, dragged to scroll.
@@ -614,7 +616,7 @@ fn times(view: &mut View, state: &State, rows: &[Row], height: u32) {
     );
 
     let total = total_upcoming_duration(rows);
-    let total_text = format_minutes_seconds(total);
+    let total_text = duration_text(total);
     let (x, dy) = layout::PLAYLIST_TRACK_TIME;
     view.text(
         &total_text,
@@ -630,10 +632,10 @@ fn position_over_duration_text(position: Duration, duration: Duration) -> String
     )
 }
 
-fn total_upcoming_duration(rows: &[Row]) -> Duration {
+fn total_upcoming_duration(rows: &[Row]) -> Option<Duration> {
     rows.iter()
         .filter(|row| !row.current)
-        .filter_map(|row| row.duration)
+        .map(|row| row.duration)
         .sum()
 }
 
@@ -748,6 +750,29 @@ mod tests {
     }
 
     #[test]
+    fn decoded_duration_is_shown_in_the_current_playlist_row() {
+        let mut state = State::default();
+        crate::core::update::update(
+            &mut state,
+            Action::ContextPlayed {
+                tracks: vec![track("amethyst", None)],
+                start: 0,
+            },
+            &mut |_| 0,
+        );
+        crate::core::update::update(
+            &mut state,
+            Action::Player(crate::core::action::PlayerEvent::TrackStarted {
+                duration: Some(Duration::from_secs(450)),
+                channels: 2,
+                sample_rate: 44100,
+            }),
+            &mut |_| 0,
+        );
+        assert_eq!(duration_text(rows(&state)[0].duration), "7:30");
+    }
+
+    #[test]
     fn rows_are_numbered_the_way_winamp_did() {
         let mut with_artist = track("a", None);
         with_artist.title = "Rosewood".into();
@@ -797,9 +822,9 @@ mod tests {
     }
 
     #[test]
-    fn duration_text_reads_none_as_zero() {
+    fn missing_duration_is_not_displayed_as_zero() {
         assert_eq!(duration_text(Some(Duration::from_secs(65))), "1:05");
-        assert_eq!(duration_text(None), "0:00");
+        assert_eq!(duration_text(None), "--:--");
     }
 
     #[test]
@@ -832,7 +857,10 @@ mod tests {
                 jump_to: Some(1),
             },
         ];
-        assert_eq!(total_upcoming_duration(&rows), Duration::from_secs(100));
+        assert_eq!(
+            total_upcoming_duration(&rows),
+            Some(Duration::from_secs(100))
+        );
     }
 
     #[test]

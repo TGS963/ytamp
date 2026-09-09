@@ -9,7 +9,7 @@ pub mod history;
 mod official;
 mod search_parse;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::{AuthToken, OAuthToken};
@@ -103,6 +103,12 @@ impl Api {
     }
     pub async fn radio(&self, id: &TrackId) -> Result<Vec<Track>, String> {
         fetch_radio(self.anonymous().await?, id).await
+    }
+    pub async fn track_durations(
+        &self,
+        ids: &[TrackId],
+    ) -> Result<Vec<(TrackId, Duration)>, String> {
+        self.session.data.track_durations(ids).await
     }
     pub async fn library_playlists(&self) -> Result<Vec<Playlist>, String> {
         self.session.data.playlists().await

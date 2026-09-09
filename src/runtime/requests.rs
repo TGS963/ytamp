@@ -94,6 +94,11 @@ pub(super) async fn execute_signed_in(
             let result = api.artist(&id).await;
             deliver(Action::ArtistLoaded(id, result));
         }
+        ApiRequest::FetchTrackDurations(ids) => {
+            deliver(Action::TrackDurationsLoaded(
+                api.track_durations(&ids).await,
+            ));
+        }
         ApiRequest::FetchAlbum(id) => {
             let result = api.album(&id).await;
             deliver(Action::AlbumLoaded(id, result));
@@ -205,6 +210,7 @@ pub(super) fn request_failure(request: ApiRequest, message: String) -> Action {
         ApiRequest::FetchLiked => Action::LikedLoaded(Err(message)),
         ApiRequest::FetchPlaylistTracks(id) => Action::PlaylistTracksLoaded(id, Err(message)),
         ApiRequest::FetchArtist(id) => Action::ArtistLoaded(id, Err(message)),
+        ApiRequest::FetchTrackDurations(_) => Action::TrackDurationsLoaded(Err(message)),
         ApiRequest::FetchAlbum(id) => Action::AlbumLoaded(id, Err(message)),
         ApiRequest::StartRadio {
             request_id,

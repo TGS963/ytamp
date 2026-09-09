@@ -17,6 +17,7 @@ The reducer controls queue and generation state. The player owns the audio devic
 
 - Track identity is [`src/core/model.rs`](../../../../src/core/model.rs).
 - The reducer entry point is [`src/core/update/mod.rs`](../../../../src/core/update/mod.rs).
+- Missing queue durations resolve through [`src/core/durations.rs`](../../../../src/core/durations.rs); decoded audio durations take precedence.
 - The player handle sends commands in [`src/player/mod.rs`](../../../../src/player/mod.rs).
 - Audio source and buffer contracts start in [`src/stream/mod.rs`](../../../../src/stream/mod.rs).
 - Audio and lyrics clients share the [RustyPipe cache factory](../../../../src/rustypipe_client.rs).

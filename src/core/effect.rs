@@ -75,6 +75,7 @@ pub enum ApiRequest {
         request_id: u64,
         continuation: Option<String>,
     },
+    FetchTrackDurations(Vec<TrackId>),
     FetchPlaylists,
     FetchLiked,
     FetchPlaylistTracks(PlaylistId),

@@ -4,6 +4,7 @@
 //! clock, or the filesystem.
 
 pub mod action;
+pub mod durations;
 pub mod effect;
 pub mod equalizer;
 pub mod model;

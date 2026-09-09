@@ -2073,3 +2073,43 @@ fn a_failed_playlist_write_refetches_its_tracks_and_the_playlists() {
         ]
     );
 }
+
+#[test]
+fn decoded_duration_updates_duplicate_queue_entries_and_survives_replay() {
+    let mut state = State::default();
+    apply(
+        &mut state,
+        Action::ContextPlayed {
+            tracks: vec![track("amethyst"), track("other"), track("amethyst")],
+            start: 0,
+        },
+    );
+    state.playback.queue.queue_track(track("amethyst"));
+    apply(
+        &mut state,
+        Action::Player(PlayerEvent::TrackStarted {
+            duration: Some(Duration::from_secs(450)),
+            channels: 2,
+            sample_rate: 44100,
+        }),
+    );
+    assert_eq!(
+        state.playback.queue.current().unwrap().duration,
+        Some(Duration::from_secs(450))
+    );
+    for track in state
+        .playback
+        .queue
+        .upcoming()
+        .filter(|track| track.id.0 == "amethyst")
+    {
+        assert_eq!(track.duration, Some(Duration::from_secs(450)));
+    }
+    state.playback.queue.clear_user_queue();
+    apply(&mut state, Action::NextPressed);
+    apply(&mut state, Action::PreviousPressed);
+    assert_eq!(
+        state.playback.queue.current().unwrap().duration,
+        Some(Duration::from_secs(450))
+    );
+}

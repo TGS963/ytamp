@@ -137,6 +137,7 @@ pub struct PlaybackState {
     pub status: PlayStatus,
     pub position: Duration,
     pub track_duration: Option<Duration>,
+    pub duration_lookup: super::durations::Lookup,
     pub volume: f32,
     /// Stereo balance: -1 left, 0 centered, +1 right.
     pub balance: f32,
@@ -168,6 +169,7 @@ impl Default for PlaybackState {
             status: PlayStatus::default(),
             position: Duration::ZERO,
             track_duration: None,
+            duration_lookup: Default::default(),
             volume: 1.0,
             balance: 0.0,
             resume_position: None,

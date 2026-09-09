@@ -1,3 +1,8 @@
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
+
 use serde_json::Value;
 
 use crate::core::model::{ArtistId, ArtistRef, Playlist, PlaylistId, Track, TrackId};
@@ -69,6 +74,29 @@ impl DataApi {
         self.delete(&format!("{BASE}/playlists?id={}", id.0)).await
     }
 
+    /// Looks up the known durations for video ids through the authenticated
+    /// Data API. Missing, live, and malformed entries are absent from the
+    /// result.
+    pub async fn track_durations(
+        &self,
+        ids: &[TrackId],
+    ) -> Result<Vec<(TrackId, Duration)>, String> {
+        let mut unique = HashSet::new();
+        let ids: Vec<TrackId> = ids
+            .iter()
+            .filter(|id| unique.insert(id.0.as_str()))
+            .cloned()
+            .collect();
+        let mut durations = Vec::new();
+        for batch in ids.chunks(50) {
+            let ids = batch.iter().map(|id| id.0.as_str()).collect::<Vec<_>>();
+            let url = format!("{BASE}/videos?part=contentDetails&id={}", ids.join(","));
+            let page = self.get_json(&url).await?;
+            durations.extend(durations_in_response(batch, &page));
+        }
+        Ok(durations)
+    }
+
     async fn tracks_of(
         &self,
         playlist_id: &str,
@@ -95,10 +123,9 @@ impl DataApi {
 
     async fn fill_durations(&self, tracks: &mut [Track]) {
         for batch in tracks.chunks_mut(50) {
-            let ids: Vec<&str> = batch.iter().map(|track| track.id.0.as_str()).collect();
-            let url = format!("{BASE}/videos?part=contentDetails&id={}", ids.join(","));
-            match self.get_json(&url).await {
-                Ok(page) => apply_durations(batch, &page),
+            let ids: Vec<TrackId> = batch.iter().map(|track| track.id.clone()).collect();
+            match self.track_durations(&ids).await {
+                Ok(durations) => apply_durations(batch, &durations),
                 Err(error) => {
                     log::warn!("duration lookup failed: {error}");
                     return;
@@ -206,17 +233,43 @@ fn display_channel_title(title: &str) -> String {
     title.strip_suffix(" - Topic").unwrap_or(title).to_string()
 }
 
-fn apply_durations(tracks: &mut [Track], page: &Value) {
-    for item in items_of(page) {
-        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-        let duration = item
-            .pointer("/contentDetails/duration")
-            .and_then(Value::as_str)
-            .and_then(parse_iso8601_duration);
-        if let Some(track) = tracks.iter_mut().find(|track| track.id.0 == id) {
-            track.duration = duration;
+fn apply_durations(tracks: &mut [Track], durations: &[(TrackId, Duration)]) {
+    for track in tracks {
+        if let Some((_, duration)) = durations.iter().find(|(id, _)| *id == track.id) {
+            track.duration = Some(*duration);
         }
     }
+}
+
+fn durations_in_response(ids: &[TrackId], page: &Value) -> Vec<(TrackId, Duration)> {
+    let expected: HashSet<&str> = ids.iter().map(|id| id.0.as_str()).collect();
+    let mut found = HashMap::new();
+    for item in items_of(page) {
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(duration) = item
+            .pointer("/contentDetails/duration")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_duration)
+            .filter(|duration| !duration.is_zero())
+        else {
+            continue;
+        };
+        if expected.contains(id) {
+            found.entry(id).or_insert(duration);
+        }
+    }
+
+    let mut returned = HashSet::new();
+    ids.iter()
+        .filter(|id| returned.insert(id.0.as_str()))
+        .filter_map(|id| {
+            found
+                .get(id.0.as_str())
+                .map(|duration| (id.clone(), *duration))
+        })
+        .collect()
 }
 
 fn parse_iso8601_duration(text: &str) -> Option<std::time::Duration> {
@@ -277,6 +330,34 @@ mod tests {
             Some(Duration::from_secs(45))
         );
         assert_eq!(parse_iso8601_duration("P1D"), None);
+    }
+
+    #[test]
+    fn duration_response_keeps_requested_valid_unique_ids() {
+        let ids = vec![
+            TrackId("known".into()),
+            TrackId("duplicate".into()),
+            TrackId("known".into()),
+            TrackId("missing".into()),
+            TrackId("malformed".into()),
+            TrackId("live".into()),
+        ];
+        let page = serde_json::json!({"items":[
+            {"id":"known","contentDetails":{"duration":"PT7M30S"}},
+            {"id":"duplicate","contentDetails":{"duration":"PT45S"}},
+            {"id":"known","contentDetails":{"duration":"PT1S"}},
+            {"id":"malformed","contentDetails":{"duration":"not-a-duration"}},
+            {"id":"live","contentDetails":{"duration":"PT0S"}},
+            {"id":"unrequested","contentDetails":{"duration":"PT9M"}}
+        ]});
+
+        assert_eq!(
+            durations_in_response(&ids, &page),
+            vec![
+                (TrackId("known".into()), Duration::from_secs(450)),
+                (TrackId("duplicate".into()), Duration::from_secs(45)),
+            ]
+        );
     }
 
     #[test]

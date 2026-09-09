@@ -229,6 +229,7 @@ pub enum Action {
         track: TrackId,
         result: Result<Option<super::lyrics::Lyrics>, String>,
     },
+    TrackDurationsLoaded(Result<Vec<(TrackId, Duration)>, String>),
     Player(PlayerEvent),
     ForPlayback {
         generation: u64,
