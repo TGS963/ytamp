@@ -65,6 +65,28 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Stage desktop package
+        run: python scripts/package.py --binary target/debug/ytamp${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Set up Windows Mesa software rendering
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.0/mesa3d-26.2.0-release-msvc.7z
+          MESA_SHA256: dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.0-release-msvc.7z'
+          $mesa = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.0'
+          Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $env:MESA_SHA256) {
+            throw 'Mesa archive checksum did not match.'
+          }
+          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$mesa" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Mesa archive extraction failed.'
+          }
+          Copy-Item -LiteralPath "$mesa\x64\opengl32.dll", "$mesa\x64\libgallium_wgl.dll" -Destination target/debug
+          New-Item -ItemType File -Path target/debug/ytamp.exe.local -Force | Out-Null
       - name: Start Linux application
         if: runner.os == 'Linux'
         env:
@@ -72,6 +94,9 @@ jobs:
         run: dbus-run-session -- xvfb-run -a python3 scripts/check-startup.py target/debug/ytamp
       - name: Start Windows application
         if: runner.os == 'Windows'
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          LIBGL_ALWAYS_SOFTWARE: '1'
         run: python scripts/check-startup.py target/debug/ytamp.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

@@ -6,6 +6,7 @@
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod branding;
 pub mod core;
 pub mod fonts;
 pub mod library_cache;

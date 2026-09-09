@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ytamp
+Comment=YouTube Music, native and fast
+Exec=ytamp
+Icon=io.github.TGS963.ytamp
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=ytamp
+StartupNotify=true

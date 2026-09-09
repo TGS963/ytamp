@@ -89,7 +89,7 @@ mod native {
             let status = NSStatusBar::systemStatusBar().statusItemWithLength(-1.);
             status.setMenu(Some(&menu));
             if let Some(button) = status.button(mtm) {
-                button.setTitle(&NSString::from_str("♫"));
+                button.setImage(Some(&crate::branding::status_image()));
                 button.setToolTip(Some(&NSString::from_str("ytamp")));
             }
             Self {

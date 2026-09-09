@@ -64,7 +64,7 @@ impl App {
             self.state.winamp.scale,
             ctx.pixels_per_point(),
         );
-        let mut builder = egui::ViewportBuilder::default()
+        let mut builder = crate::branding::viewport()
             .with_title("ytamp")
             .with_visible(open)
             .with_decorations(false)
@@ -219,7 +219,7 @@ impl eframe::App for App {
             let open = self.state.skin_browser_open;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("skin-browser"),
-                egui::ViewportBuilder::default()
+                crate::branding::viewport()
                     .with_title("Skins — ytamp")
                     .with_visible(open)
                     .with_inner_size([600., 650.])
@@ -239,7 +239,7 @@ impl eframe::App for App {
             let open = self.state.lyrics.open;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("lyrics"),
-                egui::ViewportBuilder::default()
+                crate::branding::viewport()
                     .with_title("Lyrics — ytamp")
                     .with_visible(open)
                     .with_inner_size([420., 520.])

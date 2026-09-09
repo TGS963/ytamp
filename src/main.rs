@@ -17,7 +17,7 @@ fn main() -> eframe::Result {
         // channel for shaped skins. Every viewport shares the root's
         // GL config, so the root asks for transparency too. The pages
         // paint an opaque background, so nothing shows through.
-        viewport: egui::ViewportBuilder::default()
+        viewport: ytamp::branding::viewport()
             .with_inner_size([1100.0, 720.0])
             .with_min_inner_size([700.0, 480.0])
             .with_transparent(true)
@@ -28,6 +28,7 @@ fn main() -> eframe::Result {
         "ytamp",
         options,
         Box::new(|creation| {
+            ytamp::branding::install_dock_icon();
             ytamp::fonts::install(&creation.egui_ctx);
             egui_extras::install_image_loaders(&creation.egui_ctx);
             let (action_sender, action_receiver) = mpsc::channel();

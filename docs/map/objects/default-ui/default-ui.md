@@ -18,6 +18,7 @@ Views read state and return actions. The app shell connects those views to the r
 - The view boundary is [`src/ui/mod.rs`](../../../../src/ui/mod.rs).
 - Home composition is [`src/ui/home.rs`](../../../../src/ui/home.rs).
 - Shared controls are [`src/ui/components/mod.rs`](../../../../src/ui/components/mod.rs).
+- Desktop artwork and window identity are [`src/branding.rs`](../../../../src/branding.rs).
 - The app shell is [`src/app.rs`](../../../../src/app.rs).
 
 ## Connected to

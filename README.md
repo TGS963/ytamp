@@ -1,5 +1,7 @@
 # ytamp
 
+<img src="assets/branding/icon.png" width="96" height="96" alt="ytamp lightning-bolt icon">
+
 **YouTube Music, native and fast.** ytamp is a YouTube Music client written in
 Rust with [egui](https://github.com/emilk/egui). It has no browser engine.
 
@@ -179,6 +181,17 @@ cargo clippy --all-targets -- -D warnings
 
 The audit probe is also an automated test. It drives the real egui views and
 reducer with synthetic data, without network calls or account writes.
+
+Create a desktop package with Python 3.11 or later:
+
+```bash
+cargo build --release --locked
+python3 scripts/package.py
+```
+
+The script stages a macOS app bundle, a Linux desktop tree, or a Windows folder under `dist/`. It does not sign or install the package. Linux packages use the app ID `io.github.TGS963.ytamp`. Install the staged `usr/` tree under the same system prefix as the executable.
+
+The app uses the supplied plain Aero lightning-bolt artwork. The macOS menu bar uses a monochrome template of the bolt. Imported Winamp skins retain their original bitmap lettering.
 
 ## License
 

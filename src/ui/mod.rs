@@ -139,6 +139,26 @@ pub(super) fn panel_frame(ui: &Ui, theme: &dyn Theme, role: ColorRole) -> egui::
     egui::Frame::side_top_panel(ui.style()).fill(theme.color(role))
 }
 
+fn brand_header(ui: &mut Ui, theme: &dyn Theme) {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Image::new(egui::include_image!("../../assets/branding/icon.png"))
+                .fit_to_exact_size(egui::vec2(32., 32.)),
+        );
+        let title = theme.label(TextRole::Heading, "ytamp").strong();
+        let (position, text, response) = egui::Label::new(title).layout_in_ui(ui);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), "ytamp")
+        });
+        // Align the visible letters with the icon, accounting for the font descent.
+        ui.painter().galley(
+            position - egui::vec2(0., 2.),
+            text,
+            ui.visuals().text_color(),
+        );
+    });
+}
+
 fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     let frame = panel_frame(ui, theme, ColorRole::PanelBackground).inner_margin(12);
     let width = if ui.ctx().content_rect().width() < 900. {
@@ -151,21 +171,7 @@ fn sidebar(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>)
         .frame(frame)
         .show(ui, |ui| {
             ui.add_space(16.);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28., 28.), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, 8, theme.color(ColorRole::Accent));
-                ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        rect.min + egui::vec2(10., 7.),
-                        rect.min + egui::vec2(21., 14.),
-                        rect.min + egui::vec2(10., 21.),
-                    ],
-                    theme.color(ColorRole::OnAccent),
-                    egui::Stroke::NONE,
-                ));
-                ui.label(theme.label(TextRole::Heading, "ytamp").strong());
-            });
+            brand_header(ui, theme);
             ui.add_space(28.);
             nav_item(
                 ui,
