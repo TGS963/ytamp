@@ -142,9 +142,11 @@ Linux needs a graphical X11 or Wayland session, an OpenGL-capable driver, and an
 The session D-Bus service enables Linux media controls. Windows media controls use the app's native window handle.
 The optional `yt-dlp` fallback must be on `PATH` on each platform.
 
-[Desktop CI](.github/workflows/platforms.yml) builds and tests Windows and Linux.
-It also starts the native app and checks that its window stays open without a panic.
-Linux CI uses Xvfb and software OpenGL.
+[Routine CI](.github/workflows/platforms.yml) runs one Linux job for code changes: formatting, map checks, Clippy, and library tests. It caches dependencies without workspace or incremental build output. Documentation-only pushes do not start Rust builds, except for system-map changes.
+
+[Release builds](.github/workflows/release.yml) run manually or on `v*` tags. They produce Linux and Windows archives plus a universal macOS app for Apple Silicon and Intel. A tag must match the version in `Cargo.toml`. Manual runs upload packages as workflow artifacts. Tag runs create a draft GitHub release. Packages are not signed for distribution or notarized.
+
+[Desktop validation](docs/audit/2026-09-09-branding.md) records the completed Windows/Linux build, test, packaging, and native startup checks.
 
 ## Design
 

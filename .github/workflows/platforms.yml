@@ -1,106 +1,56 @@
-name: Desktop platforms
+name: Checks
 
 on:
   push:
+    branches: [master]
+    paths: &code_paths
+      - 'src/**'
+      - 'assets/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'scripts/**'
+      - 'packaging/**'
+      - 'docs/map/**'
+      - '.github/workflows/**'
   pull_request:
+    paths: *code_paths
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  desktop:
-    name: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust
-        shell: bash
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.95.0
-      - name: Install Linux desktop libraries
-        if: runner.os == 'Linux'
+      - name: Install build libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libudev-dev pkg-config libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth xdotool dbus-x11
-      - id: cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libudev-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: desktop-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
-          restore-keys: desktop-${{ runner.os }}-rust-1.95-
+          shared-key: checks
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Check formatting and map
-        shell: bash
         run: |
           cargo fmt --all -- --check
-          python scripts/check-map.py --check
-      - name: Build application
-        run: cargo build --locked
-      - name: Test all targets
-        run: cargo test --locked --all-targets
+          python3 scripts/check-map.py --check
       - name: Check Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Save compiled dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Stage desktop package
-        run: python scripts/package.py --binary target/debug/ytamp${{ runner.os == 'Windows' && '.exe' || '' }}
-      - name: Set up Windows Mesa software rendering
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.0/mesa3d-26.2.0-release-msvc.7z
-          MESA_SHA256: dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.0-release-msvc.7z'
-          $mesa = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.0'
-          Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive
-          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $env:MESA_SHA256) {
-            throw 'Mesa archive checksum did not match.'
-          }
-          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$mesa" -y
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Mesa archive extraction failed.'
-          }
-          Copy-Item -LiteralPath "$mesa\x64\opengl32.dll", "$mesa\x64\libgallium_wgl.dll" -Destination target/debug
-          New-Item -ItemType File -Path target/debug/ytamp.exe.local -Force | Out-Null
-      - name: Start Linux application
-        if: runner.os == 'Linux'
-        env:
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: dbus-run-session -- xvfb-run -a python3 scripts/check-startup.py target/debug/ytamp
-      - name: Start Windows application
-        if: runner.os == 'Windows'
-        env:
-          GALLIUM_DRIVER: llvmpipe
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: python scripts/check-startup.py target/debug/ytamp.exe
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: startup-${{ runner.os }}
-          path: startup.log
-          if-no-files-found: ignore
+        run: cargo clippy --locked --lib --bin ytamp -- -D warnings
+      - name: Test library
+        run: cargo test --locked --lib

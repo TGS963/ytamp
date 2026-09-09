@@ -1,0 +1,4 @@
+PASS: image menu hides the app
+PASS: image menu restores the app
+PASS: image menu opens lyrics
+PASS: image menu closes lyrics
