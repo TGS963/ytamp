@@ -120,11 +120,29 @@ These are playback effects; downloaded audio is unchanged.
 
 ## Build
 
-Build the single binary with Rust 1.95 or newer:
+Use Rust 1.95 or newer. On Windows, install the MSVC Rust toolchain and Visual Studio Build Tools with the C++ workload.
+On macOS, install the Xcode command-line tools.
+
+On Ubuntu 24.04, install the desktop build dependencies:
 
 ```bash
-cargo build --release
+sudo apt-get install build-essential pkg-config libasound2-dev libdbus-1-dev libudev-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev
 ```
+
+Build and run the application:
+
+```bash
+cargo build --locked --release
+cargo run --locked --release
+```
+
+Linux needs a graphical X11 or Wayland session, an OpenGL-capable driver, and an audio device for playback.
+The session D-Bus service enables Linux media controls. Windows media controls use the app's native window handle.
+The optional `yt-dlp` fallback must be on `PATH` on each platform.
+
+[Desktop CI](.github/workflows/platforms.yml) builds and tests Windows and Linux.
+It also starts the native app and checks that its window stays open without a panic.
+Linux CI uses Xvfb and software OpenGL.
 
 ## Design
 

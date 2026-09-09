@@ -3,3 +3,4 @@
 /rustypipe_reports/
 __pycache__/
 *.py[cod]
+/startup.log

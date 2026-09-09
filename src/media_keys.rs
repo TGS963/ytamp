@@ -3,6 +3,8 @@
 //! souvlaki backs this with MPRIS on Linux, the system transport
 //! controls on Windows, and MPNowPlayingInfoCenter on macOS.
 
+#[cfg(windows)]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
@@ -21,10 +23,37 @@ impl MediaKeys {
     /// Attaches to the OS controls. A failure downgrades to a no-op
     /// integration and a log line, never a broken app.
     pub fn attach(deliver: impl Fn(Action) + Send + 'static) -> Self {
+        Self::attach_with_handle(None, deliver)
+    }
+
+    #[cfg(windows)]
+    pub fn attach_to_window(
+        window: &impl HasWindowHandle,
+        deliver: impl Fn(Action) + Send + 'static,
+    ) -> Self {
+        Self::attach_with_handle(window_hwnd(window), deliver)
+    }
+
+    #[cfg(not(windows))]
+    pub fn attach_to_window(
+        _window: &impl raw_window_handle::HasWindowHandle,
+        deliver: impl Fn(Action) + Send + 'static,
+    ) -> Self {
+        Self::attach(deliver)
+    }
+
+    fn attach_with_handle(
+        hwnd: Option<*mut std::ffi::c_void>,
+        deliver: impl Fn(Action) + Send + 'static,
+    ) -> Self {
+        if requires_window_handle() && hwnd.is_none() {
+            log::warn!("media keys unavailable: Windows requires a window handle");
+            return Self::unavailable();
+        }
         let config = PlatformConfig {
             display_name: "ytamp",
             dbus_name: "ytamp",
-            hwnd: None,
+            hwnd,
         };
         let controls = MediaControls::new(config)
             .and_then(|mut controls| {
@@ -39,6 +68,14 @@ impl MediaKeys {
             .ok();
         Self {
             controls,
+            shown_track: None,
+            shown_status: PlayStatus::Stopped,
+        }
+    }
+
+    fn unavailable() -> Self {
+        Self {
+            controls: None,
             shown_track: None,
             shown_status: PlayStatus::Stopped,
         }
@@ -59,6 +96,18 @@ impl MediaKeys {
             show_playback(controls, state);
         }
     }
+}
+
+#[cfg(windows)]
+fn window_hwnd(window: &impl HasWindowHandle) -> Option<*mut std::ffi::c_void> {
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    Some(handle.hwnd.get() as *mut std::ffi::c_void)
+}
+
+fn requires_window_handle() -> bool {
+    cfg!(windows)
 }
 
 fn event_action(event: MediaControlEvent) -> Option<Action> {
@@ -102,5 +151,16 @@ fn show_playback(controls: &mut MediaControls, state: &State) {
     };
     if let Err(error) = controls.set_playback(playback) {
         log::warn!("playback status update failed: {error:?}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_window_handle_disables_media_keys_without_panicking() {
+        let keys = MediaKeys::attach(|_| {});
+        assert!(keys.controls.is_none());
     }
 }

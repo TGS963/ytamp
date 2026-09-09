@@ -36,7 +36,7 @@ fn main() -> eframe::Result {
                 repaint_ctx.request_repaint()
             });
             let key_ctx = creation.egui_ctx.clone();
-            let media_keys = media_keys::MediaKeys::attach(move |action| {
+            let media_keys = media_keys::MediaKeys::attach_to_window(creation, move |action| {
                 if action_sender.send(action).is_ok() {
                     key_ctx.request_repaint();
                 }

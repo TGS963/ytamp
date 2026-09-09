@@ -1,0 +1,71 @@
+name: Desktop platforms
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.95.0
+      - name: Install Linux desktop libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libudev-dev pkg-config libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth xdotool dbus-x11
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: desktop-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: desktop-${{ runner.os }}-rust-1.95-
+      - name: Check formatting and map
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          python scripts/check-map.py --check
+      - name: Build application
+        run: cargo build --locked
+      - name: Test all targets
+        run: cargo test --locked --all-targets
+      - name: Check Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Start Linux application
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: dbus-run-session -- xvfb-run -a python3 scripts/check-startup.py target/debug/ytamp
+      - name: Start Windows application
+        if: runner.os == 'Windows'
+        run: python scripts/check-startup.py target/debug/ytamp.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: startup-${{ runner.os }}
+          path: startup.log
+          if-no-files-found: ignore
