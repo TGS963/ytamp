@@ -165,7 +165,9 @@ cargo run --locked --release
 ```
 
 Windows and Linux need OpenGL 2.0 or newer and an audio device for playback.
-Linux also needs a graphical X11 or Wayland session.
+Linux also needs a graphical X11 or Wayland session. The file picker uses
+XDG Desktop Portal with a backend for your desktop (for example,
+`xdg-desktop-portal-gtk` on GTK desktops).
 The session D-Bus service enables Linux media controls. Windows media controls use the app's native window handle.
 The optional `yt-dlp` fallback must be on `PATH` on each platform.
 
