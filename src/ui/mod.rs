@@ -11,6 +11,9 @@ mod library;
 mod listening_history;
 pub mod local_files;
 mod local_playback;
+mod notifications;
+#[cfg(test)]
+mod notifications_tests;
 mod now_playing;
 mod player_bar;
 mod playlist;
@@ -40,6 +43,7 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) -> Vec<Action> {
             player_bar::view(ui, state, theme, &mut actions);
         }
         sign_in::view(ui, state, theme, &mut actions);
+        notifications::view(ui, state, theme, &mut actions);
         components::focus_outline(ui, theme);
         return actions;
     }
@@ -49,8 +53,8 @@ pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme) -> Vec<Action> {
     if state.queue_open {
         queue::view(ui, state, theme, &mut actions);
     }
-    notices(ui, state, theme, &mut actions);
     page(ui, state, theme, &mut actions);
+    notifications::view(ui, state, theme, &mut actions);
     create_playlist_dialog(ui, state, &mut actions);
     components::focus_outline(ui, theme);
     actions
@@ -385,73 +389,6 @@ fn back_button(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Acti
         out.push(Action::BackPressed);
     }
     ui.add_space(theme.metric(MetricRole::GapSmall));
-}
-
-fn notices(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
-    if state.notices.is_empty()
-        && state.playback.error.is_none()
-        && !state.discovery.radio_loading
-        && !state.imports.pending()
-    {
-        return;
-    }
-    egui::Panel::top("notices")
-        .frame(panel_frame(ui, theme, ColorRole::PanelBackground).inner_margin(12.))
-        .show(ui, |ui| {
-            local_files::progress(ui, state, out);
-            if state.discovery.radio_loading {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Starting radio…");
-                    if ui.button("Cancel").clicked() {
-                        out.push(Action::RadioStartCancelled);
-                    }
-                });
-            }
-            playback_notice(ui, state, theme, out);
-            egui::ScrollArea::vertical()
-                .max_height(120.)
-                .show(ui, |ui| {
-                    for (index, notice) in state.notices.iter().enumerate() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(notice);
-                            if ui.small_button("Dismiss").clicked() {
-                                out.push(Action::NoticeDismissed(index));
-                            }
-                        });
-                    }
-                });
-        });
-}
-
-fn playback_notice(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
-    let Some(error) = &state.playback.error else {
-        return;
-    };
-    ui.horizontal_wrapped(|ui| {
-        if let Some(track) = state
-            .playback
-            .queue
-            .current()
-            .filter(|track| track.is_local())
-        {
-            ui.label(
-                theme
-                    .label(TextRole::Body, format!("Couldn’t play {}", track.title))
-                    .color(theme.color(ColorRole::Danger)),
-            )
-            .on_hover_text(error);
-            ui.weak("Locate the file or try again.");
-        } else {
-            ui.colored_label(theme.color(ColorRole::Danger), error);
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        local_files::recovery(ui, state, out);
-        if ui.button("Retry playback").clicked() {
-            out.push(Action::PlaybackRetryRequested);
-        }
-    });
 }
 
 /// The "New playlist" window, drawn only while `state.dialog` holds a

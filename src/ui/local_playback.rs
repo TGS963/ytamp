@@ -10,7 +10,6 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme) -> Vec<Action> 
     super::keyboard_shortcuts(ui, &mut out);
     super::player_bar::view(ui, state, theme, &mut out);
     sidebar(ui, state, theme, &mut out);
-    super::notices(ui, state, theme, &mut out);
     egui::CentralPanel::default()
         .frame(
             egui::Frame::central_panel(ui.style())
@@ -18,6 +17,7 @@ pub fn view(ui: &mut egui::Ui, state: &State, theme: &dyn Theme) -> Vec<Action> 
                 .inner_margin(egui::Margin::symmetric(24, 18)),
         )
         .show(ui, |ui| content(ui, state, theme, &mut out));
+    super::notifications::view(ui, state, theme, &mut out);
     out
 }
 

@@ -1,7 +1,7 @@
 ---
 kind: object
 status: verified
-verified: 2026-09-09
+verified: 2026-09-22
 universe: live
 ---
 
@@ -20,6 +20,8 @@ Views read state and return actions. The app shell connects those views to the r
 - Shared controls are [`src/ui/components/mod.rs`](../../../../src/ui/components/mod.rs).
 - Desktop artwork and window identity are [`src/branding.rs`](../../../../src/branding.rs).
 - The app shell is [`src/app.rs`](../../../../src/app.rs).
+
+Playback errors, notices, and task progress use the notification card in [`src/ui/notifications.rs`](../../../../src/ui/notifications.rs). The card overlays the page above the player. It keeps technical details collapsed and returns recovery actions.
 
 ## Connected to
 

@@ -14,13 +14,15 @@ use crate::theme::{ColorRole, MetricRole, TextRole, Theme};
 use super::panel_frame;
 use super::rows::{artist_labels, artwork, format_duration};
 
+pub(super) const HEIGHT: f32 = 124.;
+
 pub fn view(ui: &mut Ui, state: &State, theme: &dyn Theme, out: &mut Vec<Action>) {
     let frame = panel_frame(ui, theme, ColorRole::PanelBackground)
         .inner_margin(egui::Margin::symmetric(20, 10))
         .stroke(egui::Stroke::new(1., theme.color(ColorRole::Border)));
     let compact = ui.ctx().content_rect().width() < 1000.;
     egui::Panel::bottom("player_bar")
-        .exact_size(124.)
+        .exact_size(HEIGHT)
         .frame(frame)
         .show(ui, |ui| {
             let available = ui.available_width();
